@@ -56,7 +56,7 @@ namespace KspContinuum
                 if (identities.Length != 1 || identities[0].Length == "--continuum-research-run=".Length) throw new InvalidOperationException("One nonempty run identity required.");
                 run = identities[0].Substring("--continuum-research-run=".Length);
                 Assembly game = typeof(PSystemManager).Assembly;
-                if (game.ManifestModule.ModuleVersionId != new Guid("10657063-2fc3-43a7-84fa-d39e75e877bf") || ScaleCheckpointLoadState.HashFile(game.Location) != "8a20892953fc14c02f352b393eb6712c665156d94a7d846d16c20a7de3e22f27") throw new InvalidOperationException("Pinned game differs.");
+                StartupPinnedGameIdentity.Require(game);
                 active = this; harmony = new Harmony(Owner);
                 AddScope(typeof(PSystemManager), "SetupPSystem", 100670643);
                 AddScope(typeof(PSystemManager), "SpawnBody", 100670646);
@@ -164,7 +164,7 @@ namespace KspContinuum
         static void LoadMenu(GameScenes scene) { active.Mark("before-highlogic-load-" + scene); HighLogic.LoadScene(scene); active.Mark("after-highlogic-load-invocation-" + scene); }
         void Mark(string name) { points.Add(new Point { name = name, ticks = Stopwatch.GetTimestamp() - epoch, engineSeconds = Time.realtimeSinceStartup }); }
         void SceneLoaded(Scene scene, LoadSceneMode mode) { Mark("scene-loaded-" + scene.buildIndex + "-" + mode); }
-        public static void ObserveForMenu() { StartupModelTiming.ObserveForMenu(); if (active != null && !active.exported) { active.Mark("owned-mainmenu-observation"); active.Export("menu-observed"); active.Cleanup(); } }
+        public static void ObserveForMenu() { StartupPinnedGameIdentity.ObserveForMenu(); StartupModelTiming.ObserveForMenu(); if (active != null && !active.exported) { active.Mark("owned-mainmenu-observation"); active.Export("menu-observed"); active.Cleanup(); } }
         public void Update() { if (active == this && !exported && HighLogic.LoadedScene == GameScenes.MAINMENU) ObserveForMenu(); }
         void Export(string status)
         {

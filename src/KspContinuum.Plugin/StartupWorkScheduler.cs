@@ -41,9 +41,7 @@ namespace KspContinuum
                 if (identities.Length != 1 || identities[0].Length == "--continuum-research-run=".Length)
                     throw new InvalidOperationException("One owned run identity required.");
                 Assembly game = typeof(GameDatabase).Assembly;
-                if (game.ManifestModule.ModuleVersionId != new Guid("10657063-2fc3-43a7-84fa-d39e75e877bf") ||
-                    ScaleCheckpointLoadState.HashFile(game.Location) != "8a20892953fc14c02f352b393eb6712c665156d94a7d846d16c20a7de3e22f27")
-                    throw new InvalidOperationException("Pinned game differs.");
+                StartupPinnedGameIdentity.Require(game);
                 Type iterator = typeof(GameDatabase).GetNestedType("<LoadObjects>d__90", BindingFlags.NonPublic);
                 move = iterator == null ? null : AccessTools.DeclaredMethod(iterator, "MoveNext", Type.EmptyTypes);
                 Type partsIterator = typeof(PartLoader).GetNestedType("<CompileParts>d__56", BindingFlags.NonPublic);

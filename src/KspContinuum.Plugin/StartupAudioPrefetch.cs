@@ -16,7 +16,6 @@ namespace KspContinuum
     public sealed class StartupAudioPrefetch : MonoBehaviour
     {
         const string Owner = "continuum.startup-audio-prefetch";
-        const string AssemblySha = "8a20892953fc14c02f352b393eb6712c665156d94a7d846d16c20a7de3e22f27";
         const int Slots = 8;
         const long EncodedLimit = 32L * 1024 * 1024;
         static StartupAudioPrefetch active;
@@ -55,8 +54,7 @@ namespace KspContinuum
                 if (identities.Length != 1) throw new InvalidOperationException("One owned run identity required.");
                 runId = identities[0].Substring("--continuum-research-run=".Length);
                 Assembly assembly = typeof(GameDatabase).Assembly;
-                if (assembly.ManifestModule.ModuleVersionId != new Guid("10657063-2fc3-43a7-84fa-d39e75e877bf") ||
-                    ScaleCheckpointLoadState.HashFile(assembly.Location) != AssemblySha) throw new InvalidOperationException("Pinned game differs.");
+                StartupPinnedGameIdentity.Require(assembly);
                 if (!candidate) { status = "observation-only"; return; }
                 Type iterator = typeof(DatabaseLoaderAudio).GetNestedType("<Load>d__0", BindingFlags.NonPublic);
                 MethodInfo move = iterator == null ? null : AccessTools.DeclaredMethod(iterator, "MoveNext", Type.EmptyTypes);

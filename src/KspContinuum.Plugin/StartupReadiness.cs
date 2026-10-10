@@ -40,9 +40,7 @@ namespace KspContinuum
                 if (!System.IO.File.Exists(System.IO.Path.Combine(KSPUtil.ApplicationRootPath, "continuum-lab.local.json")))
                     throw new InvalidOperationException("Private laboratory required.");
                 Assembly assembly = typeof(PSystemSetup).Assembly;
-                if (assembly.ManifestModule.ModuleVersionId != new Guid("10657063-2fc3-43a7-84fa-d39e75e877bf") ||
-                    ScaleCheckpointLoadState.HashFile(assembly.Location) != "8a20892953fc14c02f352b393eb6712c665156d94a7d846d16c20a7de3e22f27")
-                    throw new InvalidOperationException("Pinned game differs.");
+                StartupPinnedGameIdentity.Require(assembly);
                 Type iterator = typeof(PSystemSetup).GetNestedType("<SetupLaunchSites>d__38", BindingFlags.NonPublic);
                 Type screen = typeof(LoadingScreen).GetNestedType("<UpdateLoadingScreen>d__27", BindingFlags.NonPublic);
                 MethodInfo move = iterator == null ? null : AccessTools.DeclaredMethod(iterator, "MoveNext");
