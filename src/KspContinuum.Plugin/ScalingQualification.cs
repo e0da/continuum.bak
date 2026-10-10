@@ -226,6 +226,7 @@ namespace KspContinuum
             FlightAeroFieldRenderer.Report field = FlightAeroFieldRenderer.Start(FlightGlobals.ActiveVessel, directory, runId);
             if (field != null && field.status != "installed-experimental") throw new InvalidOperationException("Aero field preparation rejected: " + field.reason);
             FlightGpuTiming.StartOwned(gameObject, directory, runId);
+            FlightCameraChain.Start(FlightGlobals.ActiveVessel, directory, runId);
             return new Probe(null,false,simulationSeconds,wallTimeout,simulationSeconds > 0 ? directory : null);
         }
         static double OptionalNumber(string[] arguments,string prefix,double fallback,double minimum,double maximum)
@@ -320,12 +321,14 @@ namespace KspContinuum
         {
             try
             {
+                FlightCameraChain.Finish("completed");
                 FlightAeroFieldRenderer.ObservePixelsAfterWindow();
                 FlightDiagnosticControls.RecordEnd(directory);
                 report.requestedCatchupSeconds=requestedCatchup; report.settleSeconds=settleSeconds;
                 File.WriteAllText(Path.Combine(directory, "markers.json"), ReportJson.Encode(report));
                 string reason; bool valid = atmosphericStress ? AtmosphericStressComplete(report, out reason) :
                     Stable(report, physicsWarp ? RequestedPhysicsWarp : 1, out reason, normalAtmosphere);
+                if (FlightCameraChain.FailureReason != null) { valid = false; reason = "camera-chain-invalid: " + FlightCameraChain.FailureReason; }
                 if (setDragStressCandidate && !AeroSetDragProviderQualification.EndStressWindow())
                 { valid = false; reason = "setdrag-stress-provider-invalid"; }
                 bool sourceUnchanged = !ScaleCheckpointLoadState.Requested || ScaleCheckpointLoadState.SourceUnchanged();
@@ -479,6 +482,8 @@ namespace KspContinuum
         }
         void Finish(string status, int code)
         {
+            try { FlightCameraChain.Stop(status); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
             if (FlightGpuTiming.StopOwned(ok => Finish(status, ok ? code : 2)))
             {
                 active = false;

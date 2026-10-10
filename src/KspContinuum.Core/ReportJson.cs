@@ -61,6 +61,9 @@ namespace KspContinuum
                 (type.FullName == "KspContinuum.FlightDiagnosticControlReport" ||
                  type.FullName == "KspContinuum.AssetGenerationReport" ||
                  type.FullName == "KspContinuum.AssetGenerationCapability" ||
+                 type.FullName == "KspContinuum.FlightCameraChain+Report" ||
+                 type.FullName == "KspContinuum.FlightCameraChain+CamRow" ||
+                 type.FullName == "KspContinuum.FlightCameraChain+SceneRow" ||
                  type.FullName == "KspContinuum.FlightRenderCensus+Report" ||
                  type.FullName == "KspContinuum.FlightRenderCensus+CameraRow" ||
                  type.FullName == "KspContinuum.FlightRenderCensus+ShaderRow" ||

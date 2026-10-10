@@ -87,6 +87,7 @@ fn run() -> Result<()> {
             "--flight-max-delta",
             "--flight-seconds",
             "--flight-settle-seconds",
+            "--flight-camera-chain",
             "--flight-warp",
             "--flight-atmosphere",
             "--flight-resolution",

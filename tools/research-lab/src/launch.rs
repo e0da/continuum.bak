@@ -301,6 +301,7 @@ const FLIGHT_KEYS: &[(&str, &str)] = &[
     ("maximumDelta", "max-delta"),
     ("seconds", "seconds"),
     ("settleSeconds", "settle-seconds"),
+    ("cameraChain", "camera-chain"),
     ("warp", "warp"),
     ("atmosphere", "atmosphere"),
     ("resolution", "resolution"),

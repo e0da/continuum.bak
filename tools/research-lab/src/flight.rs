@@ -25,6 +25,8 @@ pub struct Request {
     pub perturbation: String,
     pub pulse_delta_v: f64,
     pub callback_attribution: bool,
+    #[serde(default)]
+    pub camera_chain: bool,
     pub hide_vessel: bool,
     pub no_aero_fx: bool,
     pub aero_quality: Option<u32>,
@@ -198,6 +200,7 @@ impl Request {
             perturbation: perturbation.to_string(),
             pulse_delta_v: number("--flight-pulse-delta-v", 0.25, 0.001, 100.0)?,
             callback_attribution: boolean("--flight-callback-attribution")?,
+            camera_chain: boolean("--flight-camera-chain")?,
             hide_vessel: boolean("--flight-hide-vessel")?,
             no_aero_fx: boolean("--flight-no-aero-fx")?,
             aero_quality,
@@ -228,6 +231,9 @@ impl Request {
             format!("--continuum-flight-settle={}", self.settle_seconds),
             format!("--continuum-flight-catchup={}", self.maximum_delta),
         ];
+        if self.camera_chain {
+            args.push("--continuum-flight-camera-chain".into());
+        }
         if let Some(target) = self.entry_target_altitude {
             args.push(format!("--continuum-flight-entry-target={target}"));
         }
@@ -656,7 +662,8 @@ pub fn analyze(
 
     Ok(
         json!({"schema":"continuum-flight-profile-summary/v1","status":"capture-validated","runId":run_id,"request":request,
-        "intrusiveDiagnosticsRequested":request.native_sample || request.callback_attribution || request.gpu_timing_library.is_some(),
+        "intrusiveDiagnosticsRequested":request.native_sample || request.callback_attribution || request.camera_chain || request.gpu_timing_library.is_some(),
+        "cameraChainRequested":request.camera_chain,
         "vesselRenderingTreatmentRequested":request.hide_vessel,
         "aeroEffectsTreatmentRequested":request.no_aero_fx || request.aero_quality.is_some() || request.aero_batch || request.aero_field,
         "aeroBatchRequested":request.aero_batch,
@@ -668,7 +675,7 @@ pub fn analyze(
         "optionalPhaseAccounting":{"earlyUpdateMilliseconds":costs.get(early_name),"preUpdateMilliseconds":costs.get(pre_name),
             "preLateUpdateParentMilliseconds":costs.get(prelate_name),"preLatePhaseAccountedMilliseconds":prelate,
             "preLatePhaseUsesParent":costs.contains_key(prelate_name)},
-        "comparisonEligibility":if request.native_sample || request.callback_attribution || request.gpu_timing_library.is_some() {"intrusive-diagnostic-perturbation; prohibited-clean-comparison-to-uninstrumented"} else {"unprofiled-flight-only-with-matched-perturbation-checkpoint-controls-and-declared-rendering-treatment"},
+        "comparisonEligibility":if request.native_sample || request.callback_attribution || request.camera_chain || request.gpu_timing_library.is_some() {"intrusive-diagnostic-perturbation; prohibited-clean-comparison-to-uninstrumented"} else {"unprofiled-flight-only-with-matched-perturbation-checkpoint-controls-and-declared-rendering-treatment"},
         "scope":"diagnostic-flight-capture-only-not-gameplay-qualification","frames":frames.len(),"wallSeconds":wall,"simulatedSeconds":simulation,
         "achievedSimulationRate":simulation/wall,"requestedRate":request.warp,"normalizedSimulationRate":simulation/wall/request.warp as f64,
         "meanFps":frames.len() as f64/sampled_wall,"frameMilliseconds":distribution(intervals)?,"fixedCallbacksPerRenderedFrame":distribution(steps)?,
@@ -703,6 +710,7 @@ pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> 
         "render-census.json",
         "material-census.json",
         "gpu-timing.json",
+        "camera-chain.json",
     ] {
         let path = directory.join(name);
         if path.exists() {
@@ -772,9 +780,111 @@ fn retain_aero_fixture(directory: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
+fn camera_chain_summary(chain: &Value, capture: &Value, run_id: &str, pid: u32) -> Result<Value> {
+    if chain["schema"] != "continuum-flight-camera-chain/v1"
+        || chain["runId"] != run_id || chain["processId"].as_u64() != Some(pid as u64)
+        || chain["vesselId"] != capture["frames"][0]["vesselId"]
+        || chain["status"] != "completed" || chain["hooksRemoved"] != true
+        || chain["cleanupStatus"] != "removed-owned-hooks"
+    {
+        return Err("camera-chain identity, native lifecycle or cleanup differs".into());
+    }
+    let frequency = chain["clockFrequency"].as_i64().filter(|n| *n > 0).ok_or("camera clock absent")?;
+    if capture["clockFrequency"].as_i64() != Some(frequency) {
+        return Err("camera and capture clocks differ".into());
+    }
+    let begin = capture["captureStartClockTimestamp"].as_i64().ok_or("capture start absent")?;
+    let end = capture["captureEndClockTimestamp"].as_i64().ok_or("capture end absent")?;
+    if end <= begin { return Err("camera capture window reversed".into()); }
+    let cameras = chain["cameras"].as_array().filter(|r| !r.is_empty() && r.len() <= 64).ok_or("camera inventory bound")?;
+    let scene = chain["scene"].as_array().filter(|r| r.len() <= 50_000).ok_or("camera scene inventory bound")?;
+    let mut camera_ids = std::collections::BTreeSet::new();
+    for row in cameras {
+        let id = row["instanceId"].as_i64().filter(|id| *id != 0).ok_or("camera instance identity absent")?;
+        if !camera_ids.insert(id) { return Err("duplicate camera identity".into()); }
+    }
+    let mut rows = Vec::new();
+    let mut observed = 0;
+    for row in cameras {
+        let n = row["sampleCount"].as_u64().filter(|n| *n <= 8192).ok_or("camera sample bound")? as usize;
+        let names = ["frames", "startTicks", "preRenderTicks", "endTicks", "childTicks", "parentCameraIds", "depths", "stages"];
+        let mut arrays = Vec::new();
+        for name in names {
+            let values = row[name].as_array().filter(|a| a.len() == n).ok_or("camera sample arrays differ")?;
+            arrays.push(values.iter().map(|v| v.as_i64().ok_or_else(|| "camera witness is not an integer".to_string())).collect::<Result<Vec<_>>>()?);
+        }
+        let mut durations = Vec::new();
+        let mut child_ms = 0.0;
+        let mut cull_to_render_ms = 0.0;
+        let mut omitted = 0;
+        let mut previous_end = 0;
+        for i in 0..n {
+            let frame = arrays[0][i]; let start = arrays[1][i]; let pre = arrays[2][i]; let finish = arrays[3][i];
+            let child = arrays[4][i]; let parent = arrays[5][i]; let depth = arrays[6][i]; let stage = arrays[7][i];
+            if frame < 0 || start < previous_end || pre < start || finish < pre || child < 0 || child > finish - start
+                || !(0..64).contains(&depth) || stage != 2 || (depth == 0) != (parent == 0)
+                || (parent != 0 && (!camera_ids.contains(&parent) || parent == row["instanceId"].as_i64().unwrap())) {
+                return Err("camera interval ordering, native pairing or parent witness differs".into());
+            }
+            previous_end = finish;
+            if start < begin || finish > end { omitted += 1; continue; }
+            durations.push((finish-start) as f64 * 1000.0 / frequency as f64);
+            child_ms += child as f64 * 1000.0 / frequency as f64;
+            cull_to_render_ms += (pre-start) as f64 * 1000.0 / frequency as f64;
+        }
+        observed += durations.len();
+        let total = durations.iter().sum::<f64>();
+        rows.push(json!({"instanceId":row["instanceId"],"role":row["role"],"name":row["name"],"rawSamples":n,
+            "enclosedIntervals":durations.len(),"omittedOutsideWindowOrStraddlers":omitted,
+            "inclusiveCallbackMilliseconds":total,"observedNestedChildMilliseconds":child_ms,
+            "remainingCallbackEnvelopeMilliseconds":total-child_ms,"cullToPreRenderMilliseconds":cull_to_render_ms,
+            "perInvocationMilliseconds":if durations.is_empty() {Value::Null} else {distribution(durations)?}}));
+    }
+    if observed == 0 { return Err("no complete native camera intervals inside capture".into()); }
+    Ok(json!({"schema":"continuum-flight-camera-chain-summary/v1","runId":run_id,"processId":pid,
+        "vesselId":chain["vesselId"],"cameraCount":cameras.len(),"sceneRendererCount":scene.len(),"cameras":rows,
+        "scope":"Intrusive camera callback wall envelopes, with only observed nested child intervals removed; not exclusive native CPU, GPU duration, draw counts or proof of world ownership. Parent/child rows overlap. Scene inventory and layer membership describe potential coverage only.",
+        "captureStartTicks":begin,"captureEndTicks":end,"clockFrequency":frequency}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_chain_rejects_unpaired_or_foreign_native_evidence() {
+        let mut options = BTreeMap::from([
+            ("--flight-save".into(), "Lab".into()),
+            ("--flight-checkpoint".into(), "Station".into()),
+            ("--flight-camera-chain".into(), "true".into()),
+        ]);
+        let request = Request::parse(&options).unwrap().unwrap();
+        assert!(request.arguments().contains(&"--continuum-flight-camera-chain".into()));
+        assert!(crate::launch::ResolvedLaunch::parse(&options).unwrap().flight.unwrap().camera_chain);
+        let mut old_profile = serde_json::to_value(&request).unwrap();
+        old_profile.as_object_mut().unwrap().remove("cameraChain");
+        assert!(!serde_json::from_value::<Request>(old_profile).unwrap().camera_chain);
+        options.insert("--flight-camera-chain".into(), "maybe".into());
+        assert!(Request::parse(&options).is_err());
+        let capture = json!({"clockFrequency":1000,"captureStartClockTimestamp":100,"captureEndClockTimestamp":200,"frames":[{"vesselId":"v"}]});
+        let row = json!({"instanceId":-2,"name":"Main","role":"flight-main","sampleCount":2,
+            "frames":[1,2],"startTicks":[90,120],"preRenderTicks":[100,125],"endTicks":[110,140],
+            "childTicks":[0,5],"parentCameraIds":[0,0],"depths":[0,0],"stages":[2,2]});
+        let chain = json!({"schema":"continuum-flight-camera-chain/v1","runId":"r","processId":7,"vesselId":"v",
+            "status":"completed","hooksRemoved":true,"cleanupStatus":"removed-owned-hooks","clockFrequency":1000,"cameras":[row],"scene":[]});
+        let summary = camera_chain_summary(&chain, &capture, "r", 7).unwrap();
+        assert_eq!(summary["cameras"][0]["enclosedIntervals"], 1);
+        assert_eq!(summary["cameras"][0]["inclusiveCallbackMilliseconds"], 20.0);
+        assert_eq!(summary["cameras"][0]["remainingCallbackEnvelopeMilliseconds"], 15.0);
+        for key in ["runId", "processId", "vesselId", "status", "cleanupStatus", "hooksRemoved", "clockFrequency"] {
+            let mut bad = chain.clone(); bad[key] = Value::Null;
+            assert!(camera_chain_summary(&bad, &capture, "r", 7).is_err(), "reject {key}");
+        }
+        for (key, bad_value) in [("stages",json!([2,1])),("childTicks",json!([0,21])),("frames",json!([1])),("preRenderTicks",json!([100,141])),("parentCameraIds",json!([0,-9]))] {
+            let mut bad = chain.clone(); bad["cameras"][0][key] = bad_value;
+            assert!(camera_chain_summary(&bad, &capture, "r", 7).is_err(), "reject {key}");
+        }
+    }
 
     #[test]
     fn aero_field_rejects_incomplete_and_competing_ownership() {
@@ -999,6 +1109,7 @@ mod tests {
             perturbation: "quiet".into(),
             pulse_delta_v: 0.25,
             callback_attribution: false,
+            camera_chain: false,
             hide_vessel: false,
             no_aero_fx: false,
             aero_quality: None,
@@ -1090,6 +1201,7 @@ mod tests {
             perturbation: "quiet".into(),
             pulse_delta_v: 0.25,
             callback_attribution: false,
+            camera_chain: false,
             hide_vessel: false,
             no_aero_fx: false,
             aero_quality: None,
@@ -1386,6 +1498,11 @@ pub fn validate_controls(
     if request.aero_field {
         let field: Value = read(&output.join("aero-field.json"))?;
         validate_aero_field(request, &field, run_id, pid, &report["frames"][0]["vesselId"])?;
+    }
+    if request.camera_chain {
+        let chain: Value = read(&output.join("camera-chain.json"))?;
+        let summary = camera_chain_summary(&chain, report, run_id, pid)?;
+        write_new(&output.join("camera-chain-summary.json"), &summary)?;
     }
     let part_path = output.join("part-batch.json");
     if request.part_batch {
