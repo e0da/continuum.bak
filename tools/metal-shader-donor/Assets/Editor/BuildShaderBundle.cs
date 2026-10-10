@@ -12,7 +12,7 @@ public static class BuildShaderBundle
     [Serializable] sealed class Input { public string path, sha256; }
     [Serializable] sealed class Receipt
     {
-        public string schema = "continuum-shader-build/v1", unityVersion, revision, graphicsApi, bundleName, bundleSha256, editorFullVersion, editorBinarySha256;
+        public string schema = "continuum-shader-build/v1", unityVersion, revision, graphicsApi, bundleName, bundleSha256, editorFullVersion, editorBinarySha256, toolAssemblySha256;
         public bool instancingRequired, compilerFailureProbePassed;
         public string[] shaders;
         public string[] retainedVariants;
@@ -41,6 +41,8 @@ public static class BuildShaderBundle
         if (string.IsNullOrWhiteSpace(name) || !(name[0] >= 'a' && name[0] <= 'z' || name[0] >= '0' && name[0] <= '9') || name.Any(c => !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.')) || name.Contains(".."))
             throw new Exception("Bundle name must be one lowercase filename.");
         bool instancing = Environment.GetEnvironmentVariable("CONTINUUM_SHADER_REQUIRE_INSTANCING") == "1";
+        bool selectiveInstancing = Environment.GetEnvironmentVariable("CONTINUUM_SHADER_SELECTIVE_INSTANCING") == "1";
+        if (selectiveInstancing && !instancing) throw new Exception("Selective instancing requires retained instancing variants.");
         var output = Environment.GetEnvironmentVariable("CONTINUUM_SHADER_BUNDLE_OUTPUT");
         if (string.IsNullOrWhiteSpace(output) || !Path.IsPathRooted(output) || !Directory.Exists(output) || Directory.EnumerateFileSystemEntries(output).Any())
             throw new Exception("Set CONTINUUM_SHADER_BUNDLE_OUTPUT to an empty absolute directory.");
@@ -59,6 +61,9 @@ public static class BuildShaderBundle
         var retained = new List<string>();
         foreach (var path in paths)
         {
+            Shader previous = AssetDatabase.LoadAssetAtPath<Shader>(path);
+            if (previous != null) ShaderUtil.ClearShaderMessages(previous);
+            AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
             Shader shader = AssetDatabase.LoadAssetAtPath<Shader>(path);
             if (shader == null || ShaderUtil.ShaderHasError(shader))
                 throw new Exception("Unable to import shader " + path);
@@ -66,7 +71,10 @@ public static class BuildShaderBundle
             if (instancing)
             {
                 if (!File.ReadAllText(path).Contains("#pragma multi_compile_instancing"))
+                {
+                    if (selectiveInstancing) continue;
                     throw new Exception("Instancing pragma required for " + path);
+                }
                 bool surface = File.ReadAllText(path).Contains("#pragma surface");
                 PassType pass = surface ? PassType.ForwardBase : PassType.Normal;
                 string[] keywords = surface ? new[] { "DIRECTIONAL", "INSTANCING_ON" } : new[] { "INSTANCING_ON" };
@@ -81,6 +89,7 @@ public static class BuildShaderBundle
                 }
             }
         }
+        if (instancing && retained.Count == 0) throw new Exception("No instancing shader variants retained.");
         if (names.Distinct(StringComparer.Ordinal).Count() != names.Count) throw new Exception("Duplicate shader names.");
         const string variantPath = "Assets/ContinuumBuildVariants.shadervariants";
         if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(variantPath) != null)
@@ -105,7 +114,7 @@ public static class BuildShaderBundle
                 .Concat(new[] { "Packages/manifest.json", "ProjectSettings/ProjectVersion.txt" })
                 .Concat(File.Exists("Packages/packages-lock.json") ? new[] { "Packages/packages-lock.json" } : new string[0])
                 .OrderBy(p => p, StringComparer.Ordinal).Select(p => new Input { path = p, sha256 = Hash(p) }).ToArray();
-            var receipt = new Receipt { unityVersion = Application.unityVersion, editorFullVersion = editorVersion, editorBinarySha256 = Hash(Path.Combine(EditorApplication.applicationContentsPath, "MacOS/Unity")), revision = "3310a4d4f880", graphicsApi = apiText,
+            var receipt = new Receipt { unityVersion = Application.unityVersion, editorFullVersion = editorVersion, editorBinarySha256 = Hash(Path.Combine(EditorApplication.applicationContentsPath, "MacOS/Unity")), toolAssemblySha256 = Hash(typeof(BuildShaderBundle).Assembly.Location), revision = "3310a4d4f880", graphicsApi = apiText,
                 bundleName = name, bundleSha256 = Hash(Path.Combine(output, name)), instancingRequired = instancing, shaders = names.ToArray(), retainedVariants = retained.ToArray(), inputs = inputs };
             File.WriteAllText(Path.Combine(output, "build-receipt.json"), JsonUtility.ToJson(receipt, true));
             Debug.Log("Built " + apiText + " shader bundle with " + paths.Length + " shaders; instancing=" + instancing);

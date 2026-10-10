@@ -21,3 +21,32 @@ To verify compiler-error detection once, run the editor with `-executeMethod Bui
 A successful bundle build proves compilation and provenance. The KSP consumer must separately verify the bundle hash, shader support, material binding, actual instanced execution and rendered behavior. A retained variant is not proof that the player physically executes it.
 
 The official matching editor installer is [Unity 2019.4.18f1 for macOS](https://download.unity3d.com/download_unity/3310a4d4f880/MacEditorInstaller/Unity-2019.4.18f1.pkg). Existing activation must work in the batch editor; this tooling does not modify licensing or accept new terms. Ops/Actions use `/Applications/Unity/Hub/Editor/<version>/Unity.app` when an editor is installed there. An extracted private research editor may be invoked by its explicit path.
+
+## Persistent aero workbench and hot reload
+
+`BuildAeroFieldWorkbench.Build` builds a standalone development player with the original aero-field shaders supplied separately. Set `CONTINUUM_AERO_WORKBENCH_PLAYER` to a new absolute private `.app` path and `CONTINUUM_SHADER_GRAPHICS_API=OpenGLCore`, then invoke the matching editor with the build arguments above and this execute method. The player build retains the original `Continuum/FixtureOpaque` visible and depth passes and writes an adjacent `.build.json` receipt. It needs no KSP assemblies.
+
+Run the built player with `-force-glcore -screen-width 960 -screen-height 540 -screen-fullscreen 0` and these variables:
+
+| Variable | Contract |
+|---|---|
+| `CONTINUUM_AERO_WORKBENCH_OUTPUT` | New absolute private directory for status and images |
+| `CONTINUUM_AERO_WORKBENCH_BUNDLE` | Absolute built bundle with the five `Continuum/AeroField*` shaders |
+| `CONTINUUM_AERO_FIXTURE` | Optional absolute exported `manifest.json`; omitted selects labelled analytic geometry |
+| `CONTINUUM_AERO_PUBLICATION` | Optional absolute cook-service `current.json`; it must already exist at startup |
+| `CONTINUUM_AERO_DEBUG_PORT` | Optional loopback port; omitted or `0` selects an available port |
+| `CONTINUUM_AERO_SMOKE_FRAMES` | Optional `3..300`: render, wait for splash completion, capture the screen and native fields, then exit |
+
+`status.json` exposes process/host identity, chosen port, current generation, reload counts, camera pose, flow, intensity and effect clock. Send one newline-terminated text command per loopback TCP connection. Supported commands are `status`, `pause`, `resume`, `setflow x y z`, `setintensity value`, `cameraorbit yaw pitch distance`, `bundlehotreload ABSOLUTE_PATH`, `fixturehotreload ABSOLUTE_MANIFEST`, `captureframe`, and `quit`. Commands are bounded to 4096 bytes and queued onto the main thread; the queue is bounded to16. Rendering uses in-process textures/uniforms. JSON belongs to control and evidence, not per-frame geometry transfer.
+
+For automatic shader HMR, start one persistent matching editor with `CONTINUUM_AERO_COOK_ROOT` set to a new private directory. Use `-batchmode -nographics -projectPath <absolute-project> -buildTarget StandaloneOSX -logFile <private-log>`, with no `-quit` and no execute method. The editor watcher coalesces changes under `Assets/ContinuumAeroField`, cooks a uniquely named immutable bundle, and atomically publishes `current.json` only after successful compilation and stable source checks. The running workbench polls that publication once per second. Changes to shader files and their includes need no player or KSP restart. Parameters change immediately through the socket; frozen geometry reloads independently.
+
+Candidate shader/material sets are checked before replacing the current set. Compiler failures leave the last publication intact and write `last-error.json`; invalid runtime candidates leave the last working resources active. Camera, flow, intensity, pause and clock ownership stay in the host across reloads. A manual bundle with a colliding Unity bundle identity rejects without discarding the current set; use unique generation identities. C# host code changes still require rebuilding the workbench. Stateful executable-code reload is a separate capability.
+
+Each cook stages the original shader/include sources under a fresh generated asset path without copying Unity metadata. Fresh asset GUIDs isolate failed compiler state from a later repaired generation. Source hashes must remain stable through copying, building and generated-source cleanup before publication. Keep this editor dedicated to the cook service: it owns the OpenGL target and bundle/instancing environment settings. `last-error.json` records the most recent failure and may remain after recovery; `current.json` is the accepted generation.
+
+Cooker C# changes require editor-assembly recompilation too. The pinned batch editor was observed retaining an old `Library/ScriptAssemblies/Assembly-CSharp-Editor.dll` across source imports and restart. Stop the owned editor, preserve and invalidate that derived cache, and require a new compiled assembly before qualifying tool changes. Build receipts record the actual loaded tool assembly hash separately from source-input hashes. Before each forced shader reimport the cooker clears prior diagnostics, then keeps both import and strict bundle-build error checks; clearing messages after compilation would erase fresh failures.
+
+`AeroFieldFixtureCapture` exports bounded, origin-relative opaque meshes and provenance from a disposable KSP flight into `geometry.bin` plus `manifest.json`. It captures geometry and effect parameters, not live gameplay or original materials. Keep both files private. The Rust laboratory retains the pair with run/PID/vessel and hash checks, including rejected field experiments.
+
+The KSP treatment is selected by `--flight-aero-field true --flight-aero-field-bundle <absolute-bundle>` in the laboratory runner. It owns stock effect rendering exclusively; stock aero state, heating and physics remain active. Ordinary part batching can coexist. Stock aero batching, retained-part ownership, disabled effects, hidden craft and quality overrides reject this combination. Native camera execution, finite occupied fields, same-frame publication and restoration are required evidence; successful compilation alone cannot qualify appearance or speed. Stop the cook editor and workbench before timed flight comparisons.

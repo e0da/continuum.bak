@@ -86,6 +86,12 @@ namespace KspContinuum
             if (current == null) return null;
             FlightAeroBatcher owner = current; current = null; owner.Cleanup(); return owner.report;
         }
+        internal static void ConfigureForField(Camera suppressedDepthCamera)
+        {
+            if (current == null || current.faulted || current.finished || !current.cameras.Remove(suppressedDepthCamera) || current.cameras.Count != 2)
+                throw new InvalidOperationException("Field geometry camera ownership differs.");
+            current.report.fidelity = "Geometry publication for original experimental coverage and flow fields; stock depth camera intentionally retired. Not a three-camera stock shader qualification.";
+        }
         void Decline(string reason) { int count; fallback.TryGetValue(reason, out count); fallback[reason] = count + 1; report.fallbackRenderers++; }
         static bool Finite(float value) { return !float.IsNaN(value) && !float.IsInfinity(value); }
         static bool Finite(Vector3 value) { return Finite(value.x) && Finite(value.y) && Finite(value.z); }

@@ -68,6 +68,7 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.FlightRenderCensus+Group" ||
                  type.FullName == "KspContinuum.FlightRenderCensus+MaterialRow" ||
                  type.FullName == "KspContinuum.FlightAeroBatcher+Report" ||
+                 type.FullName == "KspContinuum.FlightAeroFieldRenderer+Report" ||
                  type.FullName == "KspContinuum.FlightPartBatcher+Report" ||
                  type.FullName == "KspContinuum.StartupSiteProof+Report" ||
                  type.FullName == "KspContinuum.StartupSiteProof+Row" ||

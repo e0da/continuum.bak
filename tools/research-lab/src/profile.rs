@@ -141,7 +141,7 @@ impl FrozenLaunch {
                     .join(format!("{}.sfs", flight.checkpoint)),
                 &mut inputs,
             )?;
-            for path in [&flight.part_shader_bundle, &flight.gpu_timing_library]
+            for path in [&flight.part_shader_bundle, &flight.aero_field_bundle, &flight.gpu_timing_library]
                 .into_iter()
                 .flatten()
             {

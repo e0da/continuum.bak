@@ -126,6 +126,8 @@ namespace KspContinuum
 
         public void Update()
         {
+            if (active && FlightAeroFieldRenderer.FailureReason != null)
+            { Fail(new InvalidOperationException("Aero field runtime rejected: " + FlightAeroFieldRenderer.FailureReason)); return; }
             if (active && FlightCameraFreeze.FailureReason != null)
             {
                 Fail(new InvalidOperationException("Camera freeze rejected: " + FlightCameraFreeze.FailureReason));
@@ -221,6 +223,8 @@ namespace KspContinuum
             FlightPartBatcher.Report parts = FlightPartBatcher.Start(FlightGlobals.ActiveVessel, directory, runId);
             if (parts != null && parts.status != "installed-experimental")
                 throw new InvalidOperationException("Part batch preparation rejected: " + parts.reason);
+            FlightAeroFieldRenderer.Report field = FlightAeroFieldRenderer.Start(FlightGlobals.ActiveVessel, directory, runId);
+            if (field != null && field.status != "installed-experimental") throw new InvalidOperationException("Aero field preparation rejected: " + field.reason);
             FlightGpuTiming.StartOwned(gameObject, directory, runId);
             return new Probe(null,false,simulationSeconds,wallTimeout,simulationSeconds > 0 ? directory : null);
         }
@@ -316,6 +320,7 @@ namespace KspContinuum
         {
             try
             {
+                FlightAeroFieldRenderer.ObservePixelsAfterWindow();
                 FlightDiagnosticControls.RecordEnd(directory);
                 report.requestedCatchupSeconds=requestedCatchup; report.settleSeconds=settleSeconds;
                 File.WriteAllText(Path.Combine(directory, "markers.json"), ReportJson.Encode(report));
@@ -485,6 +490,8 @@ namespace KspContinuum
             active = false;
             try { if (probe != null) probe.Dispose(); } catch (Exception error) { Debug.LogException(error); code = 2; }
             probe = null;
+            try { FlightAeroFieldRenderer.Finish(); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
             try { FlightAeroBatcher.Finish(); }
             catch (Exception error) { Debug.LogException(error); code = 2; }
             try { FlightPartBatcher.Finish(); }

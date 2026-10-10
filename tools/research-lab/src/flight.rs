@@ -29,6 +29,10 @@ pub struct Request {
     pub no_aero_fx: bool,
     pub aero_quality: Option<u32>,
     pub aero_batch: bool,
+    #[serde(default)]
+    pub aero_field: bool,
+    #[serde(default)]
+    pub aero_field_bundle: Option<PathBuf>,
     pub part_batch: bool,
     #[serde(default)]
     pub part_retained: bool,
@@ -136,6 +140,21 @@ impl Request {
             );
         }
         let part_batch = boolean("--flight-part-batch")?;
+        let aero_field = boolean("--flight-aero-field")?;
+        let aero_field_bundle = options.get("--flight-aero-field-bundle").map(PathBuf::from);
+        if aero_field != aero_field_bundle.is_some() {
+            return Err("aero field requires exactly one declared shader bundle".into());
+        }
+        if aero_field && (boolean("--flight-aero-batch")? || boolean("--flight-no-aero-fx")?
+            || boolean("--flight-hide-vessel")? || aero_quality.is_some() || boolean("--flight-part-retained")?) {
+            return Err("aero field owns an exclusive visible effects pipeline with stock visual-state production".into());
+        }
+        if let Some(bundle) = &aero_field_bundle {
+            if !bundle.is_absolute() || !bundle.is_file()
+                || bundle.canonicalize().map_err(|error| error.to_string())? != *bundle {
+                return Err("aero field bundle requires a canonical absolute file".into());
+            }
+        }
         let part_retained = boolean("--flight-part-retained")?;
         if part_retained && (!part_batch || !boolean("--flight-aero-batch")?) {
             return Err("retained part renderer requires both owned part and aero providers".into());
@@ -183,6 +202,8 @@ impl Request {
             no_aero_fx: boolean("--flight-no-aero-fx")?,
             aero_quality,
             aero_batch: boolean("--flight-aero-batch")?,
+            aero_field,
+            aero_field_bundle,
             part_batch,
             part_retained,
             part_shader_bundle,
@@ -239,6 +260,12 @@ impl Request {
         }
         if self.aero_batch {
             args.push("--continuum-flight-aero-batch".into());
+        }
+        if self.aero_field {
+            args.push("--continuum-flight-aero-field".into());
+        }
+        if let Some(bundle) = &self.aero_field_bundle {
+            args.push(format!("--continuum-flight-aero-field-bundle={}", bundle.display()));
         }
         if self.part_batch {
             args.push("--continuum-flight-part-batch".into());
@@ -309,12 +336,15 @@ impl Request {
         if let Some(bundle) = &self.part_shader_bundle {
             files.insert(bundle.to_string_lossy().into_owned(), hash(bundle)?);
         }
+        if let Some(bundle) = &self.aero_field_bundle {
+            files.insert(bundle.to_string_lossy().into_owned(), hash(bundle)?);
+        }
         if let Some(library) = &self.gpu_timing_library {
             files.insert(library.to_string_lossy().into_owned(), hash(library)?);
         }
         Ok(
             json!({"schema":"continuum-flight-inputs/v1","request":self,"files":files,
-            "scope":"selected-checkpoint-settings-GameData-DLLs-requested-part-shader-bundle-and-GPU-diagnostic-library; native-assets-and-stock-bundles-guarded-by-process-receipt"}),
+            "scope":"selected-checkpoint-settings-GameData-DLLs-requested-shader-bundles-and-GPU-diagnostic-library; native-assets-and-stock-bundles-guarded-by-process-receipt"}),
         )
     }
 }
@@ -628,8 +658,9 @@ pub fn analyze(
         json!({"schema":"continuum-flight-profile-summary/v1","status":"capture-validated","runId":run_id,"request":request,
         "intrusiveDiagnosticsRequested":request.native_sample || request.callback_attribution || request.gpu_timing_library.is_some(),
         "vesselRenderingTreatmentRequested":request.hide_vessel,
-        "aeroEffectsTreatmentRequested":request.no_aero_fx || request.aero_quality.is_some() || request.aero_batch,
+        "aeroEffectsTreatmentRequested":request.no_aero_fx || request.aero_quality.is_some() || request.aero_batch || request.aero_field,
         "aeroBatchRequested":request.aero_batch,
+        "aeroFieldRequested":request.aero_field,
         "partBatchRequested":request.part_batch,
         "partRetainedRequested":request.part_retained,
         "aeroEffectsQualityRequested":request.aero_quality,
@@ -665,6 +696,7 @@ pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> 
         "diagnostic-controls.json",
         "diagnostic-controls-end.json",
         "aero-batch.json",
+        "aero-field.json",
         "part-batch.json",
         "flight-view.json",
         "perturbation.json",
@@ -682,6 +714,7 @@ pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> 
             write_new(&output.join(name), &value)?;
         }
     }
+    retain_aero_fixture(directory, output)?;
     let view = directory.join("flight-view.png");
     if view.exists() {
         let before = hash(&view)?;
@@ -704,9 +737,68 @@ pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> 
     Ok((values.remove(0), values.remove(0), values.remove(0)))
 }
 
+fn retain_aero_fixture(directory: &Path, output: &Path) -> Result<()> {
+    let receipt = directory.join("aero-field.json");
+    if !receipt.exists() { return Ok(()); }
+    let field: Value = read(&receipt)?;
+    let Some(declared) = field["fixturePath"].as_str().filter(|p| !p.is_empty()) else { return Ok(()); };
+    let source = directory.join("aero-field-fixture");
+    let manifest = source.join("manifest.json");
+    if Path::new(declared).canonicalize().map_err(|e| e.to_string())?
+        != manifest.canonicalize().map_err(|e| e.to_string())? {
+        return Err("field fixture escaped owned capture directory".into());
+    }
+    let metadata = fs::symlink_metadata(&manifest).map_err(|e| e.to_string())?;
+    if !metadata.is_file() || metadata.len() > 1_048_576 { return Err("field fixture manifest type/bound".into()); }
+    let manifest_hash = hash(&manifest)?;
+    let fixture: Value = read(&manifest)?;
+    if fixture["schema"] != "continuum-aero-field-fixture/v1" || fixture["geometry"] != "geometry.bin"
+        || fixture["runId"] != field["runId"] || fixture["processId"] != field["processId"]
+        || fixture["vesselId"] != field["vesselId"] { return Err("field fixture identity differs".into()); }
+    let geometry = source.join("geometry.bin");
+    let metadata = fs::symlink_metadata(&geometry).map_err(|e| e.to_string())?;
+    if !metadata.is_file() || metadata.len() > 300_000_000 { return Err("field fixture geometry type/bound".into()); }
+    let geometry_hash = hash(&geometry)?;
+    if fixture["geometrySha256"] != geometry_hash { return Err("field fixture geometry bytes differ".into()); }
+    let destination = output.join("aero-field-fixture");
+    if destination.exists() { return Err("field fixture destination already exists".into()); }
+    fs::create_dir(&destination).map_err(|e| e.to_string())?;
+    fs::copy(&geometry, destination.join("geometry.bin")).map_err(|e| e.to_string())?;
+    fs::copy(&manifest, destination.join("manifest.json")).map_err(|e| e.to_string())?;
+    if hash(&manifest)? != manifest_hash || hash(&destination.join("manifest.json"))? != manifest_hash
+        || hash(&geometry)? != geometry_hash || hash(&destination.join("geometry.bin"))? != geometry_hash {
+        return Err("field fixture changed while retaining".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aero_field_rejects_incomplete_and_competing_ownership() {
+        let mut options = BTreeMap::from([
+            ("--flight-save".into(), "Lab".into()),
+            ("--flight-checkpoint".into(), "entry".into()),
+            ("--flight-aero-field".into(), "true".into()),
+        ]);
+        assert!(Request::parse(&options).is_err(), "field without a cooked bundle must reject");
+        let bundle = std::env::temp_dir().join(format!("continuum-field-{}-{}.bundle", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::write(&bundle, b"test artifact").unwrap();
+        options.insert("--flight-aero-field-bundle".into(), bundle.canonicalize().unwrap().to_string_lossy().into_owned());
+        assert!(Request::parse(&options).unwrap().unwrap().arguments().contains(&"--continuum-flight-aero-field".into()));
+        for (key, value) in [("--flight-aero-batch", "true"), ("--flight-no-aero-fx", "true"),
+            ("--flight-hide-vessel", "true"), ("--flight-aero-quality", "1"), ("--flight-part-retained", "true")] {
+            options.insert(key.into(), value.into());
+            assert!(Request::parse(&options).is_err(), "competing field treatment {key}");
+            options.remove(key);
+        }
+        options.insert("--flight-aero-field".into(), "false".into());
+        assert!(Request::parse(&options).is_err(), "unused field bundle must reject");
+        fs::remove_file(bundle).unwrap();
+    }
 
     #[test]
     fn retained_ownership_requires_explicit_counter_evidence() {
@@ -722,6 +814,34 @@ mod tests {
         let mut unpublished_dynamic = complete;
         unpublished_dynamic["dynamicPoseSnapshots"] = json!(0);
         assert!(validate_retained_part_batch(&unpublished_dynamic).is_err());
+    }
+    #[test]
+    fn aero_field_requires_current_pixels_exclusive_ownership_and_restoration() {
+        let bundle = std::env::temp_dir().join(format!("continuum-field-proof-{}-{}.bundle", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        fs::write(&bundle, b"shader witness").unwrap();
+        let bundle = bundle.canonicalize().unwrap();
+        let options = BTreeMap::from([
+            ("--flight-save".into(), "Lab".into()), ("--flight-checkpoint".into(), "entry".into()),
+            ("--flight-aero-field".into(), "true".into()), ("--flight-aero-field-bundle".into(), bundle.to_string_lossy().into_owned()),
+        ]);
+        let request = Request::parse(&options).unwrap().unwrap();
+        let mut field = json!({"schema":"continuum-flight-aero-field/v1","runId":"owned","processId":42,"vesselId":"vessel",
+            "bundlePath":bundle,"bundleSha256":hash(&bundle).unwrap(),"status":"complete-experimental","faults":0,
+            "stockRestored":true,"hooksRemoved":true,"geometryRestored":true,"pixelProofComplete":true,
+            "stockDepthPre":0,"stockDepthPost":0,"nonFiniteSamples":0,"invalidNormalSamples":0,"invalidFlowSamples":0,"invalidSceneDepthSamples":0});
+        for key in ["viewPositiveSamples", "flowPositiveSamples", "scenePositiveSamples", "geometryPackets", "eligibleRenderers", "producerSnapshots",
+            "sceneDepthCallbacks", "suppressedDepth", "geometryRestoredOriginals", "coveragePre", "coveragePost", "flowPre", "flowPost",
+            "compositorPre", "compositorPost", "createdTextures", "releasedTextures", "createdMaterials", "destroyedMaterials",
+            "proofTemporaryCreated", "proofTemporaryReleased", "geometryDestroyedProxies"] { field[key] = json!(2); }
+        for key in ["lastCoverageFrame", "lastFlowFrame", "lastSceneDepthFrame", "lastProducerFrame", "lastCompositeFrame"] { field[key] = json!(9); }
+        assert!(validate_aero_field(&request, &field, "owned", 42, &json!("vessel")).is_ok());
+        for (key, counterexample) in [("viewPositiveSamples",json!(0)), ("scenePositiveSamples",json!(0)), ("invalidSceneDepthSamples",json!(1)), ("lastFlowFrame",json!(8)), ("stockDepthPre",json!(1)),
+            ("releasedTextures",json!(1)), ("pixelProofComplete",json!(false)), ("bundleSha256",json!("wrong"))] {
+            let mut rejected = field.clone(); rejected[key] = counterexample;
+            assert!(validate_aero_field(&request, &rejected, "owned", 42, &json!("vessel")).is_err(), "must reject {key}");
+        }
+        fs::remove_file(bundle).unwrap();
     }
     #[test]
     fn part_replacement_requires_observed_draws_and_declared_shader() {
@@ -883,6 +1003,8 @@ mod tests {
             no_aero_fx: false,
             aero_quality: None,
             aero_batch: false,
+            aero_field: false,
+            aero_field_bundle: None,
             part_batch: false,
             part_retained: false,
             part_shader_bundle: None,
@@ -972,6 +1094,8 @@ mod tests {
             no_aero_fx: false,
             aero_quality: None,
             aero_batch: false,
+            aero_field: false,
+            aero_field_bundle: None,
             part_batch: false,
             part_retained: false,
             part_shader_bundle: None,
@@ -1259,6 +1383,10 @@ pub fn validate_controls(
     } else if request.aero_batch {
         return Err("requested aero batch lifecycle evidence absent".into());
     }
+    if request.aero_field {
+        let field: Value = read(&output.join("aero-field.json"))?;
+        validate_aero_field(request, &field, run_id, pid, &report["frames"][0]["vesselId"])?;
+    }
     let part_path = output.join("part-batch.json");
     if request.part_batch {
         let part: Value = read(&part_path)?;
@@ -1447,6 +1575,39 @@ fn validate_batch(batch: &Value, run_id: &str, pid: u32, vessel: &Value) -> Resu
     }
     Ok(())
 }
+fn validate_aero_field(request: &Request, field: &Value, run_id: &str, pid: u32, vessel: &Value) -> Result<()> {
+    let bundle = request.aero_field_bundle.as_ref().ok_or("field bundle declaration absent")?;
+    if field["schema"] != "continuum-flight-aero-field/v1" || field["runId"] != run_id
+        || field["processId"].as_u64() != Some(pid as u64) || &field["vesselId"] != vessel
+        || field["bundlePath"].as_str() != bundle.to_str() || field["bundleSha256"] != hash(bundle)? {
+        return Err("field renderer identity or shader bytes differ".into());
+    }
+    if field["status"] != "complete-experimental" || field["faults"] != 0
+        || field["stockRestored"] != true || field["hooksRemoved"] != true || field["geometryRestored"] != true
+        || field["pixelProofComplete"] != true || field["stockDepthPre"] != 0 || field["stockDepthPost"] != 0 {
+        return Err("field renderer ownership, stock suppression or cleanup incomplete".into());
+    }
+    for key in ["viewPositiveSamples", "flowPositiveSamples", "scenePositiveSamples", "geometryPackets", "eligibleRenderers",
+        "producerSnapshots", "sceneDepthCallbacks", "suppressedDepth", "geometryRestoredOriginals"] {
+        if field[key].as_u64().unwrap_or(0) == 0 { return Err(format!("field renderer witness absent: {key}")); }
+    }
+    for key in ["nonFiniteSamples", "invalidNormalSamples", "invalidFlowSamples", "invalidSceneDepthSamples"] {
+        if field[key] != 0 { return Err(format!("field renderer pixel proof rejected: {key}")); }
+    }
+    for (a, b) in [("coveragePre", "coveragePost"), ("flowPre", "flowPost"), ("compositorPre", "compositorPost"),
+        ("createdTextures", "releasedTextures"), ("createdMaterials", "destroyedMaterials"),
+        ("proofTemporaryCreated", "proofTemporaryReleased"), ("geometryPackets", "geometryDestroyedProxies")] {
+        let actual = field[a].as_u64().ok_or(format!("field counter absent: {a}"))?;
+        if actual == 0 || field[b].as_u64() != Some(actual) { return Err(format!("field counter mismatch: {a}/{b}")); }
+    }
+    for key in ["lastCoverageFrame", "lastFlowFrame", "lastSceneDepthFrame", "lastProducerFrame"] {
+        if field[key].as_u64().is_none() || field[key] != field["lastCompositeFrame"] {
+            return Err(format!("field final view is stale: {key}"));
+        }
+    }
+    Ok(())
+}
+
 fn validate_part_batch(request: &Request, batch: &Value, run_id: &str, pid: u32, vessel: &Value) -> Result<()> {
     if batch["schema"] != "continuum-flight-part-batch/v1"
         || batch["runId"] != run_id
@@ -1544,6 +1705,15 @@ pub fn recover_failed_aero_batch(
     output: &Path,
 ) -> Result<()> {
     recover_failed_render_batch(directory, run_id, pid, output, "aero-batch.json", "continuum-flight-aero-batch/v1")
+}
+pub fn recover_failed_aero_field(directory: &Path, run_id: &str, pid: u32, output: &Path) -> Result<()> {
+    recover_failed_render_batch(directory, run_id, pid, output, "aero-field.json", "continuum-flight-aero-field/v1")?;
+    if !output.join("aero-field-fixture").exists() {
+        if let Some(owned) = owned_sidecar_directory(directory, "scale-profile-", "aero-field.json", run_id, pid)? {
+            retain_aero_fixture(&owned, output)?;
+        }
+    }
+    Ok(())
 }
 pub fn recover_failed_part_batch(directory: &Path, run_id: &str, pid: u32, output: &Path) -> Result<()> {
     recover_failed_render_batch(directory, run_id, pid, output, "part-batch.json", "continuum-flight-part-batch/v1")

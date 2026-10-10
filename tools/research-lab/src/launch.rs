@@ -315,6 +315,8 @@ const FLIGHT_KEYS: &[(&str, &str)] = &[
     ("noAeroFx", "no-aero-fx"),
     ("aeroQuality", "aero-quality"),
     ("aeroBatch", "aero-batch"),
+    ("aeroField", "aero-field"),
+    ("aeroFieldBundle", "aero-field-bundle"),
     ("partBatch", "part-batch"),
     ("partRetained", "part-retained"),
     ("partShaderBundle", "part-shader-bundle"),

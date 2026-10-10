@@ -1,0 +1,46 @@
+using System;
+using System.IO;
+using System.Security.Cryptography;
+using UnityEditor;
+using UnityEditor.Build.Reporting;
+using UnityEditor.SceneManagement;
+using UnityEngine;
+using UnityEngine.Rendering;
+
+public static class BuildAeroFieldWorkbench
+{
+    [Serializable] sealed class Receipt
+    {
+        public string schema = "continuum-aero-workbench-build/v1", unity, editorRevision, graphicsApi, output, workbenchSourceSha256, buildSourceSha256, fixtureShaderSourceSha256, status;
+        public string qualification = "Player built; actual rendering, fixture loading and persistent reload require native consumer proof.";
+    }
+    static string Hash(string path) { using(var stream=File.OpenRead(path)) using(var sha=SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-","").ToLowerInvariant(); }
+    public static void Build()
+    {
+        if(Application.unityVersion!="2019.4.18f1"||!UnityEditorInternal.InternalEditorUtility.GetFullUnityVersion().Contains("3310a4d4f880")) throw new InvalidOperationException("Pinned2019.4.18f1 revision3310a4d4f880 required.");
+        string output=Environment.GetEnvironmentVariable("CONTINUUM_AERO_WORKBENCH_PLAYER");
+        if(string.IsNullOrEmpty(output)||!Path.IsPathRooted(output)||!output.EndsWith(".app",StringComparison.Ordinal)||Directory.Exists(output)||File.Exists(output)) throw new InvalidOperationException("New absolute private .app output required.");
+        string apiText=Environment.GetEnvironmentVariable("CONTINUUM_SHADER_GRAPHICS_API")??"OpenGLCore";
+        GraphicsDeviceType api; if(apiText=="OpenGLCore") api=GraphicsDeviceType.OpenGLCore; else if(apiText=="Metal") api=GraphicsDeviceType.Metal; else throw new InvalidOperationException("Explicit supported graphics API required.");
+        PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.StandaloneOSX,false); PlayerSettings.SetGraphicsAPIs(BuildTarget.StandaloneOSX,new[] {api});
+        PlayerSettings.defaultScreenWidth=960; PlayerSettings.defaultScreenHeight=540; PlayerSettings.fullScreenMode=FullScreenMode.Windowed; PlayerSettings.runInBackground=true;
+        string scenePath="Assets/ContinuumWorkbenchScene-"+Guid.NewGuid().ToString("N")+".unity";
+        string materialPath=scenePath+".mat";
+        var scene=EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);
+        try
+        {
+            // Serialized reference retains the fixture's visible and depth passes.
+            var placeholder=GameObject.CreatePrimitive(PrimitiveType.Cube); placeholder.name="Builtin shader retention reference";
+            Shader fixtureShader=AssetDatabase.LoadAssetAtPath<Shader>("Assets/FixtureOpaque.shader");
+            if(fixtureShader==null||ShaderUtil.ShaderHasError(fixtureShader)) throw new InvalidOperationException("Fixture shader failed to import.");
+            var material=new Material(fixtureShader); AssetDatabase.CreateAsset(material,materialPath); placeholder.GetComponent<Renderer>().sharedMaterial=material;
+            EditorSceneManager.SaveScene(scene,scenePath);
+            BuildReport report=BuildPipeline.BuildPlayer(new BuildPlayerOptions { scenes=new[] {scenePath},locationPathName=output,target=BuildTarget.StandaloneOSX,options=BuildOptions.Development });
+            if(report.summary.result!=BuildResult.Succeeded) throw new InvalidOperationException("Workbench build failed: "+report.summary.result);
+            var receipt=new Receipt { unity=Application.unityVersion,editorRevision="3310a4d4f880",graphicsApi=apiText,output=output,status="built",
+                workbenchSourceSha256=Hash("Assets/AeroFieldWorkbench.cs"),buildSourceSha256=Hash("Assets/Editor/BuildAeroFieldWorkbench.cs"),fixtureShaderSourceSha256=Hash("Assets/FixtureOpaque.shader") };
+            using(var writer=new StreamWriter(new FileStream(output+".build.json",FileMode.CreateNew,FileAccess.Write))) writer.Write(JsonUtility.ToJson(receipt,true));
+        }
+        finally { AssetDatabase.DeleteAsset(scenePath); AssetDatabase.DeleteAsset(materialPath); }
+    }
+}

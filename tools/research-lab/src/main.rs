@@ -101,6 +101,8 @@ fn run() -> Result<()> {
             "--flight-no-aero-fx",
             "--flight-aero-quality",
             "--flight-aero-batch",
+            "--flight-aero-field",
+            "--flight-aero-field-bundle",
             "--flight-part-batch",
             "--flight-part-retained",
             "--flight-part-shader-bundle",
@@ -1008,6 +1010,7 @@ fn smoke(
                 ("diagnostic-controls.json", "diagnosticControls"),
                 ("diagnostic-controls-end.json", "diagnosticControlsEnd"),
                 ("aero-batch.json", "aeroBatchEvidence"),
+                ("aero-field.json", "aeroFieldEvidence"),
                 ("part-batch.json", "partBatchEvidence"),
                 ("flight-view.json", "flightViewEvidence"),
                 ("perturbation.json", "perturbationEvidence"),
@@ -1052,7 +1055,7 @@ fn smoke(
     if flight_error.is_some() {
         let mut retained = json!({});
         type Recover = fn(&Path, &str, u32, &Path) -> Result<()>;
-        let recoveries: [(&str, &str, Recover); 2] = [
+        let recoveries: [(&str, &str, Recover); 3] = [
             (
                 "aero-batch.json",
                 "aeroBatch",
@@ -1062,6 +1065,11 @@ fn smoke(
                 "part-batch.json",
                 "partBatch",
                 continuum_research_lab::flight::recover_failed_part_batch,
+            ),
+            (
+                "aero-field.json",
+                "aeroField",
+                continuum_research_lab::flight::recover_failed_aero_field,
             ),
         ];
         for (name, key, recover) in recoveries {
