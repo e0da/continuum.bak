@@ -145,8 +145,9 @@ namespace KspContinuum
                         finalizer: new HarmonyMethod(typeof(StartupResourceImage), nameof(ApplyFinalizer)));
                 }
                 Debug.Log("[Continuum resource image] run=" + runId + " mode=" + mode + " status=installed");
+                if (mode == "reuse") StartupAssetGeneration.Admit("texture-image", entries.Count);
             }
-            catch (Exception error) { failed = true; Cleanup(); Debug.LogException(error); Application.Quit(2); }
+            catch (Exception error) { StartupAssetGeneration.Fallback("texture-image", error.GetType().Name); failed = true; Cleanup(); Debug.LogException(error); Application.Quit(2); }
         }
         [Serializable] sealed class LabMarker { public string scope = null; }
         static string OneArgument(string[] arguments, string prefix, bool required)
@@ -166,12 +167,14 @@ namespace KspContinuum
             {
                 active.setObject.Invoke(__instance, new object[] { result });
                 active.setSuccessful.Invoke(__instance, new object[] { true });
+                StartupAssetGeneration.Published("texture-image");
             }
             catch (Exception error)
             {
                 active.setObject.Invoke(__instance, new object[] { previousObject });
                 active.setSuccessful.Invoke(__instance, new object[] { previousSuccess });
                 UnityEngine.Object.Destroy(result.texture); active.errors++;
+                StartupAssetGeneration.Fallback("texture-image", "publication-failed");
                 Debug.LogWarning("[Continuum resource image] publication fallback: " + error.Message); return true;
             }
             __result = Empty(); return false;
@@ -324,7 +327,7 @@ namespace KspContinuum
             double started = Time.realtimeSinceStartup;
             try
             {
-                if (!entries.TryGetValue(Key(Relative(source.FullName), file.url, loader.GetType().FullName), out entry)) { misses++; return false; }
+                if (!entries.TryGetValue(Key(Relative(source.FullName), file.url, loader.GetType().FullName), out entry)) { misses++; StartupAssetGeneration.Fallback("texture-image", "source-not-prepared"); return false; }
                 RequireProfile(); RequireSource(source.FullName); source.Refresh();
                 if (entry.width <= 0 || entry.height <= 0 || entry.width > 32768 || entry.height > 32768 || entry.mipCount < 1 || entry.mipCount > 16 ||
                     entry.payloadLength <= 0 || entry.payloadLength > MaximumPayload || !IsDigest(entry.sourceSha256) || !IsDigest(entry.payloadSha256) ||
@@ -352,7 +355,7 @@ namespace KspContinuum
             catch (Exception error)
             {
                 if (texture != null) UnityEngine.Object.Destroy(texture);
-                errors++; misses++; Debug.LogWarning("[Continuum resource image] fallback " + file.url + ": " + error.Message); return false;
+                errors++; misses++; StartupAssetGeneration.Fallback("texture-image", error.GetType().Name); Debug.LogWarning("[Continuum resource image] fallback " + file.url + ": " + error.Message); return false;
             }
         }
         string Relative(string path)
@@ -419,13 +422,14 @@ namespace KspContinuum
                     { new XmlSerializer(typeof(ResourceImageManifest)).Serialize(stream, manifest); WriteNew(Path.Combine(directory, "manifest.xml"), stream.ToArray()); }
                 }
                 Cleanup();
+                if (mode == "reuse") StartupAssetGeneration.Complete("texture-image");
                 Debug.Log("[Continuum resource image] run=" + runId + " mode=" + mode + " status=menu-complete captures=" + captures + " capturedBytes=" + capturedBytes +
                     " hits=" + hits + " restoredBytes=" + restoredBytes + " fallback=" + misses + " unrepresented=" + unrepresented + " errors=" + errors +
                     " retainedNormalApplies=" + retainedNormalApplies + " restoredNormalReadability=" + restoredNormalReadability +
                     " verificationSeconds=" + verificationSeconds.ToString("F6", System.Globalization.CultureInfo.InvariantCulture) +
                     " publicationSeconds=" + publicationSeconds.ToString("F6", System.Globalization.CultureInfo.InvariantCulture) + " profile=immutable-private-length-mtime-guards qualification=raw-texture-reconstruction-metadata-and-pixel-proof-required");
             }
-            catch (Exception error) { failed = true; Cleanup(); Debug.LogException(error); Application.Quit(2); }
+            catch (Exception error) { StartupAssetGeneration.Fallback("texture-image", error.GetType().Name); failed = true; Cleanup(); Debug.LogException(error); Application.Quit(2); }
         }
         public void Update() { if (active == this) ObserveMenu(); }
         void Cleanup() { if (harmony != null) { harmony.UnpatchAll(Owner); harmony = null; } }

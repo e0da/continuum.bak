@@ -253,6 +253,7 @@ namespace KspContinuum
                     expected = expected.Where(file => file.path != consumer).ToArray();
                 }
                 if(actual.Length!=expected.Length || actual.Where((f,i)=>f.path!=expected[i].path || f.sha256!=expected[i].sha256 || f.length!=expected[i].length).Any()) throw new InvalidOperationException("Catalog source inventory differs.");
+                StartupAssetGeneration.Admit("catalog-metadata", 1);
                 IList definitions=(IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(bundleType));
                 foreach(var b in document.bundles)
                 {
@@ -275,11 +276,14 @@ namespace KspContinuum
                 compile.Invoke(loader,null); flatten.Invoke(loader,null);
                 if(((IList)Get(loader,"assetDefinitions")).Count!=document.assetCount || CompiledDigest(loader)!=document.compiledSha256) throw new InvalidOperationException("Compiled asset count differs.");
                 Set(loader,"ready",true);
+                StartupAssetGeneration.Published("catalog-metadata");
+                StartupAssetGeneration.Complete("catalog-metadata");
                 UnityEngine.Debug.Log(Marker+"status=applied bundles="+definitions.Count+" assets="+document.assetCount+" files="+document.orderedFiles.Length+" admissionSeconds="+timer.Elapsed.TotalSeconds.ToString("R",System.Globalization.CultureInfo.InvariantCulture)+" qualification=metadata-only");
                 return true;
             }
             catch(Exception error)
             {
+                StartupAssetGeneration.Fallback("catalog-metadata", error.GetType().Name);
                 if(previous!=null) for(int i=0;i<StateNames.Length;i++) Set(loader,StateNames[i],previous[i]);
                 UnityEngine.Debug.LogWarning(Marker+"status=abstained fallback=original admissionSeconds="+timer.Elapsed.TotalSeconds.ToString("R",System.Globalization.CultureInfo.InvariantCulture)+" reason="+error.Message);
                 return false;
@@ -340,7 +344,7 @@ namespace KspContinuum
         static object Get(object value,string name) { return Field(value.GetType(),name).GetValue(value); }
         static void Set(object value,string name,object fieldValue) { Field(value.GetType(),name).SetValue(value,fieldValue); }
         static string Digest(string path) { using(var stream=File.OpenRead(path)) using(var sha=SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-","").ToLowerInvariant(); }
-        void Fail(Exception error) { UnityEngine.Debug.LogError(Marker+"status=rejected reason="+error.Message); Stop(); }
+        void Fail(Exception error) { StartupAssetGeneration.Fallback("catalog-metadata", error.GetType().Name); UnityEngine.Debug.LogError(Marker+"status=rejected reason="+error.Message); Stop(); }
         void Stop() { Application.logMessageReceived-=ObserveError; harmony?.UnpatchAll(Owner); if(active==this) active=null; }
         public void OnDestroy() { Stop(); }
     }

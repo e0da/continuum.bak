@@ -135,10 +135,12 @@ namespace KspContinuum
                     installedPatches.Finalizers.Count != 1 || installedPatches.Owners.Any(owner => owner != Owner))
                     throw new InvalidOperationException("Bundle attribution ownership verification failed.");
                 installed = true; status = "installed";
+                if (preparedBundles) StartupAssetGeneration.Admit("dlc-bundles", 3);
             }
             catch (Exception error)
             {
                 status = "abstained:" + error.GetType().Name + ":" + error.Message;
+                if (preparedBundles) StartupAssetGeneration.Fallback("dlc-bundles", error.GetType().Name);
                 Cleanup(); Export();
                 Application.Quit(2);
             }
@@ -353,7 +355,7 @@ namespace KspContinuum
                 for (int i = 0; i < originalMd5.Length; i++) originalMd5[i] = byte.Parse(entry.sourceMd5.Substring(i * 2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
                 fieldsTouched = true;
                 hashField.SetValue(iterator, originalMd5); bundleField.SetValue(iterator, loaded); stateField.SetValue(iterator, -3);
-                published = true; fileSuccesses++; return true;
+                published = true; fileSuccesses++; StartupAssetGeneration.Published("dlc-bundles"); return true;
             }
             catch (Exception error)
             {
@@ -363,6 +365,7 @@ namespace KspContinuum
                 }
                 if (loaded != null && !published) loaded.Unload(true);
                 fileFallbacks++; lastFallback = error.GetType().Name + ":" + error.Message;
+                StartupAssetGeneration.Fallback("dlc-bundles", error.GetType().Name);
                 return false;
             }
         }
@@ -376,10 +379,14 @@ namespace KspContinuum
         }
 
         public void Update()
+        { ObserveForMenu(); }
+        public static void ObserveForMenu() { if (instance != null) instance.ObserveMenu(); }
+        void ObserveMenu()
         {
             if (!requested || exported || HighLogic.LoadedScene != GameScenes.MAINMENU) return;
             status = installed ? "observed-synchronous-scopes-only" : status;
             if ((fileBundles || cachedBundles) && (fileAttempts != 3 || fileSuccesses != 3 || fileFallbacks != 0)) status += ":file-candidate-incomplete";
+            if (preparedBundles) StartupAssetGeneration.Complete("dlc-bundles");
             Cleanup(); Export();
         }
         void Cleanup()
@@ -390,9 +397,10 @@ namespace KspContinuum
                 {
                     harmony.UnpatchAll(Owner);
                     Patches remaining = target == null ? null : Harmony.GetPatchInfo(target);
-                    if (remaining != null && remaining.Owners.Contains(Owner)) status += ":cleanup-error";
+                    if (remaining != null && remaining.Owners.Contains(Owner))
+                    { status += ":cleanup-error"; if (preparedBundles) StartupAssetGeneration.Fallback("dlc-bundles", "cleanup-error"); }
                 }
-                catch (Exception error) { status += ":cleanup-error:" + error.GetType().Name; }
+                catch (Exception error) { status += ":cleanup-error:" + error.GetType().Name; if (preparedBundles) StartupAssetGeneration.Fallback("dlc-bundles", "cleanup-error"); }
             }
             if (ReferenceEquals(instance, this)) instance = null;
         }

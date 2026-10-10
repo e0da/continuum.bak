@@ -22,12 +22,7 @@ namespace KspContinuum
             if (!benchmark && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-scale-profile") < 0) return;
             try
             {
-                StartupTexturePrefetch.ObserveForMenu();
-                StartupAudioPrefetch.ObserveForMenu();
-                StartupResourceImage.ObserveForMenu();
-                StartupReadiness.ObserveForMenu();
-                StartupWorkScheduler.ObserveForMenu();
-                StartupWorldTiming.ObserveForMenu();
+                StartupAssetGeneration.ObserveMenu();
                 if (!benchmark) return;
                 NativeBoundaryMonoReport report = Run();
                 string directory = Path.Combine(KSPUtil.ApplicationRootPath, "GameData", "KspContinuum", "PluginData");
