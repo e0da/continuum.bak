@@ -221,6 +221,7 @@ namespace KspContinuum
             FlightPartBatcher.Report parts = FlightPartBatcher.Start(FlightGlobals.ActiveVessel, directory, runId);
             if (parts != null && parts.status != "installed-experimental")
                 throw new InvalidOperationException("Part batch preparation rejected: " + parts.reason);
+            FlightGpuTiming.StartOwned(gameObject, directory, runId);
             return new Probe(null,false,simulationSeconds,wallTimeout,simulationSeconds > 0 ? directory : null);
         }
         static double OptionalNumber(string[] arguments,string prefix,double fallback,double minimum,double maximum)
@@ -473,6 +474,12 @@ namespace KspContinuum
         }
         void Finish(string status, int code)
         {
+            if (FlightGpuTiming.StopOwned(ok => Finish(status, ok ? code : 2)))
+            {
+                active = false;
+                if (probe != null) { probe.Dispose(); probe = null; }
+                return;
+            }
             if (finished) return;
             if (quitAfterQualification) finished = true;
             active = false;

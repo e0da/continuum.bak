@@ -92,6 +92,7 @@ fn run() -> Result<()> {
             "--flight-no-shadows",
             "--flight-no-aa",
             "--flight-native-sample",
+            "--flight-gpu-timing-library",
             "--flight-perturbation",
             "--flight-pulse-delta-v",
             "--flight-callback-attribution",
@@ -1106,6 +1107,10 @@ fn smoke(
                 output,
                 &report,
             )?;
+            if let Some(library) = &request.gpu_timing_library {
+                summary["gpuTiming"] = continuum_research_lab::gpu_timing::retain_summary(output, &run_id, child.id(), library,
+                    flight_inputs.as_ref().ok_or("GPU flight inputs absent")?, &report)?;
+            }
             for (name, key) in [
                 ("diagnostic-controls.json", "diagnosticControls"),
                 ("diagnostic-controls-end.json", "diagnosticControlsEnd"),
@@ -1113,6 +1118,7 @@ fn smoke(
                 ("part-batch.json", "partBatchEvidence"),
                 ("flight-view.json", "flightViewEvidence"),
                 ("perturbation.json", "perturbationEvidence"),
+                ("gpu-timing.json", "gpuTimingEvidence"),
             ] {
                 let path = output.join(name);
                 if path.exists() {

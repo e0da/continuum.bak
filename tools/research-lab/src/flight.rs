@@ -21,6 +21,7 @@ pub struct Request {
     pub no_shadows: bool,
     pub no_aa: bool,
     pub native_sample: bool,
+    pub gpu_timing_library: Option<PathBuf>,
     pub perturbation: String,
     pub pulse_delta_v: f64,
     pub callback_attribution: bool,
@@ -135,6 +136,14 @@ impl Request {
         let part_batch = boolean("--flight-part-batch")?;
         let part_standard_fallback = boolean("--flight-part-standard-fallback")?;
         let part_shader_bundle = options.get("--flight-part-shader-bundle").map(PathBuf::from);
+        let gpu_timing_library = options.get("--flight-gpu-timing-library").map(PathBuf::from);
+        if let Some(library) = &gpu_timing_library {
+            if !library.is_absolute() || !library.is_file()
+                || library.canonicalize().map_err(|error| error.to_string())? != *library
+                || library.extension().and_then(|value| value.to_str()) != Some("dylib") {
+                return Err("GPU timing requires a canonical absolute dylib".into());
+            }
+        }
         if part_batch && boolean("--flight-hide-vessel")? {
             return Err("part batch requires visible vessel renderers".into());
         }
@@ -160,6 +169,7 @@ impl Request {
             no_shadows: boolean("--flight-no-shadows")?,
             no_aa: boolean("--flight-no-aa")?,
             native_sample: boolean("--flight-native-sample")?,
+            gpu_timing_library,
             perturbation: perturbation.to_string(),
             pulse_delta_v: number("--flight-pulse-delta-v", 0.25, 0.001, 100.0)?,
             callback_attribution: boolean("--flight-callback-attribution")?,
@@ -235,6 +245,9 @@ impl Request {
         if self.screenshot {
             args.push("--continuum-flight-screenshot".into());
         }
+        if let Some(library) = &self.gpu_timing_library {
+            args.push(format!("--continuum-flight-gpu-timing-library={}", library.display()));
+        }
         args
     }
     pub fn snapshot(&self, instance: &Path) -> Result<Value> {
@@ -286,9 +299,12 @@ impl Request {
         if let Some(bundle) = &self.part_shader_bundle {
             files.insert(bundle.to_string_lossy().into_owned(), hash(bundle)?);
         }
+        if let Some(library) = &self.gpu_timing_library {
+            files.insert(library.to_string_lossy().into_owned(), hash(library)?);
+        }
         Ok(
             json!({"schema":"continuum-flight-inputs/v1","request":self,"files":files,
-            "scope":"selected-checkpoint-settings-GameData-DLLs-and-requested-part-shader-bundle; native-assets-and-stock-bundles-guarded-by-process-receipt"}),
+            "scope":"selected-checkpoint-settings-GameData-DLLs-requested-part-shader-bundle-and-GPU-diagnostic-library; native-assets-and-stock-bundles-guarded-by-process-receipt"}),
         )
     }
 }
@@ -600,7 +616,7 @@ pub fn analyze(
 
     Ok(
         json!({"schema":"continuum-flight-profile-summary/v1","status":"capture-validated","runId":run_id,"request":request,
-        "intrusiveDiagnosticsRequested":request.native_sample || request.callback_attribution,
+        "intrusiveDiagnosticsRequested":request.native_sample || request.callback_attribution || request.gpu_timing_library.is_some(),
         "vesselRenderingTreatmentRequested":request.hide_vessel,
         "aeroEffectsTreatmentRequested":request.no_aero_fx || request.aero_quality.is_some() || request.aero_batch,
         "aeroBatchRequested":request.aero_batch,
@@ -610,7 +626,7 @@ pub fn analyze(
         "optionalPhaseAccounting":{"earlyUpdateMilliseconds":costs.get(early_name),"preUpdateMilliseconds":costs.get(pre_name),
             "preLateUpdateParentMilliseconds":costs.get(prelate_name),"preLatePhaseAccountedMilliseconds":prelate,
             "preLatePhaseUsesParent":costs.contains_key(prelate_name)},
-        "comparisonEligibility":if request.native_sample || request.callback_attribution {"intrusive-diagnostic-perturbation; prohibited-clean-comparison-to-uninstrumented"} else {"unprofiled-flight-only-with-matched-perturbation-checkpoint-controls-and-declared-rendering-treatment"},
+        "comparisonEligibility":if request.native_sample || request.callback_attribution || request.gpu_timing_library.is_some() {"intrusive-diagnostic-perturbation; prohibited-clean-comparison-to-uninstrumented"} else {"unprofiled-flight-only-with-matched-perturbation-checkpoint-controls-and-declared-rendering-treatment"},
         "scope":"diagnostic-flight-capture-only-not-gameplay-qualification","frames":frames.len(),"wallSeconds":wall,"simulatedSeconds":simulation,
         "achievedSimulationRate":simulation/wall,"requestedRate":request.warp,"normalizedSimulationRate":simulation/wall/request.warp as f64,
         "meanFps":frames.len() as f64/sampled_wall,"frameMilliseconds":distribution(intervals)?,"fixedCallbacksPerRenderedFrame":distribution(steps)?,
@@ -643,6 +659,7 @@ pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> 
         "perturbation.json",
         "render-census.json",
         "material-census.json",
+        "gpu-timing.json",
     ] {
         let path = directory.join(name);
         if path.exists() {
@@ -831,6 +848,7 @@ mod tests {
             no_shadows: false,
             no_aa: false,
             native_sample: false,
+            gpu_timing_library: None,
             perturbation: "quiet".into(),
             pulse_delta_v: 0.25,
             callback_attribution: false,
@@ -918,6 +936,7 @@ mod tests {
             no_shadows: false,
             no_aa: false,
             native_sample: false,
+            gpu_timing_library: None,
             perturbation: "quiet".into(),
             pulse_delta_v: 0.25,
             callback_attribution: false,
