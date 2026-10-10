@@ -24,6 +24,7 @@ namespace KspContinuum
         public string schema = "continuum-startup-resource-image/v1", status, engine, platform, instanceRoot, assemblySha256;
         public string qualification = "private-cooked-raw-textures-no-sample-or-flight-equivalence";
         public string renderer, colorSpace, producerFingerprint;
+        public string captureRecipe;
         public int quality, masterTextureLimit;
         public ResourceImageEntry[] entries;
     }
@@ -36,10 +37,13 @@ namespace KspContinuum
     public sealed class StartupResourceImage : MonoBehaviour
     {
         const string Owner = "continuum.startup-resource-image";
+        const string CaptureRecipe = "stock-raw-mips-png-normal-readability-restored/v2";
         const string AssemblySha = "8a20892953fc14c02f352b393eb6712c665156d94a7d846d16c20a7de3e22f27";
         const long MaximumPayload = 512L * 1024 * 1024;
         static StartupResourceImage active;
         [ThreadStatic] static CookFrame currentCook;
+        [ThreadStatic] static CookFrame normalCook;
+        [ThreadStatic] static bool discardingRetainedPixels;
         readonly List<ResourceImageEntry> cooked = new List<ResourceImageEntry>();
         readonly Dictionary<string, ResourceImageEntry> entries = new Dictionary<string, ResourceImageEntry>(StringComparer.Ordinal);
         Harmony harmony;
@@ -48,6 +52,7 @@ namespace KspContinuum
         ResourceImageManifest frozenProfile;
         bool finished, failed;
         int captures, hits, misses, errors, unrepresented;
+        int retainedNormalApplies, restoredNormalReadability;
         long capturedBytes, restoredBytes;
         double verificationSeconds, publicationSeconds;
 
@@ -65,6 +70,11 @@ namespace KspContinuum
             public long Length, Modified;
             public string SourceHash;
             public readonly Dictionary<Texture2D, Captured> Textures = new Dictionary<Texture2D, Captured>();
+        }
+        sealed class ApplyState
+        {
+            public CookFrame Frame;
+            public bool Retained;
         }
 
         public void Awake()
@@ -127,8 +137,13 @@ namespace KspContinuum
                 if (mode == "prepare")
                 {
                     MethodInfo apply = AccessTools.DeclaredMethod(typeof(Texture2D), "Apply", new[] { typeof(bool), typeof(bool) });
+                    MethodInfo normal = AccessTools.DeclaredMethod(typeof(GameDatabase), "BitmapToUnityNormalMap", new[] { typeof(Texture2D) });
                     if (apply == null || Harmony.GetPatchInfo(apply)?.Owners.Count > 0) throw new InvalidOperationException("Texture Apply capture boundary has another owner.");
-                    harmony.Patch(apply, prefix: new HarmonyMethod(typeof(StartupResourceImage), nameof(ApplyPrefix)), postfix: new HarmonyMethod(typeof(StartupResourceImage), nameof(ApplyPostfix)));
+                    if (normal == null || normal.ReturnType != typeof(Texture2D) || Harmony.GetPatchInfo(normal)?.Owners.Count > 0)
+                        throw new InvalidOperationException("Stock normal conversion boundary differs or has another owner.");
+                    harmony.Patch(normal, prefix: new HarmonyMethod(typeof(StartupResourceImage), nameof(NormalPrefix)), finalizer: new HarmonyMethod(typeof(StartupResourceImage), nameof(NormalFinalizer)));
+                    harmony.Patch(apply, prefix: new HarmonyMethod(typeof(StartupResourceImage), nameof(ApplyPrefix)), postfix: new HarmonyMethod(typeof(StartupResourceImage), nameof(ApplyPostfix)),
+                        finalizer: new HarmonyMethod(typeof(StartupResourceImage), nameof(ApplyFinalizer)));
                 }
                 Debug.Log("[Continuum resource image] run=" + runId + " mode=" + mode + " status=installed");
             }
@@ -190,13 +205,56 @@ namespace KspContinuum
             }
             finally { frame.Textures.Clear(); (original as IDisposable)?.Dispose(); }
         }
-        static void ApplyPrefix(Texture2D __instance, bool updateMipmaps, bool makeNoLongerReadable)
+        static void NormalPrefix(out CookFrame __state)
         {
-            if (active != null && currentCook != null && !updateMipmaps) active.Capture(__instance, currentCook);
-            if (active != null && currentCook != null && updateMipmaps && makeNoLongerReadable) currentCook.Textures.Remove(__instance);
+            __state = normalCook;
+            normalCook = active != null && active.mode == "prepare" && currentCook?.Loader.GetType().FullName == "DatabaseLoaderTexture_PNG" ? currentCook : null;
         }
-        static void ApplyPostfix(Texture2D __instance)
-        { if (active != null && currentCook != null && __instance.isReadable) active.Capture(__instance, currentCook); }
+        static Exception NormalFinalizer(CookFrame __state, Exception __exception) { normalCook = __state; return __exception; }
+        static void ApplyPrefix(Texture2D __instance, bool updateMipmaps, ref bool makeNoLongerReadable, out ApplyState __state)
+        {
+            __state = null;
+            if (discardingRetainedPixels || active == null || currentCook == null) return;
+            if (!updateMipmaps) active.Capture(__instance, currentCook);
+            if (!updateMipmaps || !makeNoLongerReadable) return;
+            currentCook.Textures.Remove(__instance);
+            if (normalCook != currentCook || __instance.format != TextureFormat.RGBA32 || !__instance.isReadable) return;
+            int expectedMips = 1;
+            for (int dimension = Math.Max(__instance.width, __instance.height); dimension > 1; dimension >>= 1) expectedMips++;
+            if (__instance.mipmapCount != expectedMips) return;
+            __state = new ApplyState { Frame = currentCook, Retained = true };
+            makeNoLongerReadable = false;
+            active.retainedNormalApplies++;
+        }
+        static void ApplyPostfix(Texture2D __instance, ApplyState __state)
+        {
+            if (discardingRetainedPixels || active == null) return;
+            CookFrame frame = __state?.Frame ?? currentCook;
+            if (frame != null && __instance.isReadable) active.Capture(__instance, frame);
+        }
+        static Exception ApplyFinalizer(Texture2D __instance, ApplyState __state, Exception __exception)
+        {
+            if (__state == null || !__state.Retained) return __exception;
+            if (__exception != null) __state.Frame.Textures.Remove(__instance);
+            bool previous = discardingRetainedPixels;
+            try
+            {
+                discardingRetainedPixels = true;
+                __instance.Apply(false, true);
+                if (__instance.isReadable) throw new InvalidOperationException("Stock normal-map unreadable state was not restored.");
+                active.restoredNormalReadability++;
+            }
+            catch (Exception cleanupError)
+            {
+                __state.Frame.Textures.Remove(__instance);
+                active.errors++; active.failed = true;
+                Debug.LogError("[Continuum resource image] normal capture cleanup failed: " + cleanupError);
+                Application.Quit(2);
+                return __exception ?? cleanupError;
+            }
+            finally { discardingRetainedPixels = previous; }
+            return __exception;
+        }
         void Capture(Texture2D texture, CookFrame frame)
         {
             try
@@ -246,7 +304,8 @@ namespace KspContinuum
             ResourceImageManifest manifest;
             using (var stream = File.OpenRead(manifestPath)) manifest = (ResourceImageManifest)new XmlSerializer(typeof(ResourceImageManifest)).Deserialize(stream);
             if (manifest == null || manifest.schema != "continuum-startup-resource-image/v1" || manifest.status != "complete" || manifest.engine != Application.unityVersion ||
-                manifest.platform != Application.platform.ToString() || manifest.instanceRoot != root || manifest.assemblySha256 != AssemblySha || manifest.entries == null || manifest.producerFingerprint != producerFingerprint)
+                manifest.platform != Application.platform.ToString() || manifest.instanceRoot != root || manifest.assemblySha256 != AssemblySha || manifest.entries == null || manifest.producerFingerprint != producerFingerprint ||
+                manifest.captureRecipe != CaptureRecipe)
                 throw new InvalidDataException("Image build profile differs.");
             frozenProfile = manifest;
             var duplicates = new HashSet<string>(StringComparer.Ordinal);
@@ -354,7 +413,7 @@ namespace KspContinuum
                 if (mode == "prepare")
                 {
                     RequireProfile();
-                    var manifest = new ResourceImageManifest { status = "complete", engine = Application.unityVersion, platform = Application.platform.ToString(),
+                    var manifest = new ResourceImageManifest { status = "complete", captureRecipe = CaptureRecipe, engine = Application.unityVersion, platform = Application.platform.ToString(),
                         instanceRoot = root, assemblySha256 = AssemblySha, renderer = frozenProfile.renderer, colorSpace = frozenProfile.colorSpace,
                         quality = frozenProfile.quality, masterTextureLimit = frozenProfile.masterTextureLimit, producerFingerprint = producerFingerprint, entries = cooked.ToArray() };
                     using (var stream = new MemoryStream())
@@ -363,6 +422,7 @@ namespace KspContinuum
                 Cleanup();
                 Debug.Log("[Continuum resource image] run=" + runId + " mode=" + mode + " status=menu-complete captures=" + captures + " capturedBytes=" + capturedBytes +
                     " hits=" + hits + " restoredBytes=" + restoredBytes + " fallback=" + misses + " unrepresented=" + unrepresented + " errors=" + errors +
+                    " retainedNormalApplies=" + retainedNormalApplies + " restoredNormalReadability=" + restoredNormalReadability +
                     " verificationSeconds=" + verificationSeconds.ToString("F6", System.Globalization.CultureInfo.InvariantCulture) +
                     " publicationSeconds=" + publicationSeconds.ToString("F6", System.Globalization.CultureInfo.InvariantCulture) + " profile=immutable-private-length-mtime-guards qualification=raw-texture-reconstruction-metadata-and-pixel-proof-required");
             }
