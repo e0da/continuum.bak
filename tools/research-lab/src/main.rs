@@ -74,6 +74,7 @@ fn run() -> Result<()> {
             "--startup-dds-mapped",
             "--startup-audio-prefetch",
             "--startup-readiness",
+            "--startup-deferred-terrain",
             "--startup-resource-image-mode",
             "--startup-resource-image",
             "--startup-work-scheduler",
@@ -97,6 +98,9 @@ fn run() -> Result<()> {
             "--flight-no-aero-fx",
             "--flight-aero-quality",
             "--flight-aero-batch",
+            "--flight-part-batch",
+            "--flight-part-shader-bundle",
+            "--flight-part-standard-fallback",
             "--flight-screenshot",
             "--flight-entry-target-altitude",
         ],
@@ -410,6 +414,11 @@ fn run() -> Result<()> {
                 Some("true") => true,
                 _ => return Err("startup-readiness must be true or false".into()),
             },
+            match options.get("--startup-deferred-terrain").map(String::as_str) {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err("startup-deferred-terrain must be true or false".into()),
+            },
             match options
                 .get("--startup-resource-image-mode")
                 .map(String::as_str)
@@ -647,6 +656,7 @@ fn smoke(
     startup_dds_mapped: bool,
     startup_audio_prefetch: bool,
     startup_readiness: bool,
+    startup_deferred_terrain: bool,
     startup_resource_image_mode: &str,
     startup_resource_image: Option<&str>,
     startup_work_scheduler: bool,
@@ -655,6 +665,9 @@ fn smoke(
     startup_world_timing: bool,
 ) -> Result<()> {
     let admission_started = Instant::now();
+    if startup_deferred_terrain && !startup_readiness {
+        return Err("deferred terrain requires startup-readiness".into());
+    }
     if (startup_resource_image_mode != "none") != startup_resource_image.is_some() {
         return Err("resource image mode requires one private image path".into());
     }
@@ -873,6 +886,11 @@ fn smoke(
         } else {
             vec![]
         })
+        .args(if startup_deferred_terrain {
+            vec!["--continuum-startup-deferred-terrain"]
+        } else {
+            vec![]
+        })
         .args(if startup_resource_image_mode != "none" {
             vec![
                 format!("--continuum-startup-resource-image-mode={startup_resource_image_mode}"),
@@ -1084,6 +1102,7 @@ fn smoke(
                 ("diagnostic-controls.json", "diagnosticControls"),
                 ("diagnostic-controls-end.json", "diagnosticControlsEnd"),
                 ("aero-batch.json", "aeroBatchEvidence"),
+                ("part-batch.json", "partBatchEvidence"),
                 ("flight-view.json", "flightViewEvidence"),
                 ("perturbation.json", "perturbationEvidence"),
             ] {
@@ -1097,10 +1116,10 @@ fn smoke(
             }
             summary["entryEvidence"] = json!(flight_entry);
             summary["cameraReadbacks"] = json!({
-                "requestedSeed":{"mode":"FREE","pitch":0.2,"heading":0.3,"distanceMeters":150.0,"inputLocked":true},
+                "requestedCapture":{"contract":"continuum-root-relative-camera/v1","pitch":0.2,"heading":0.3,"distanceMeters":50.0,"fieldOfViewDegrees":60.0,"inputLocked":true},
                 "captureStart":summary["diagnosticControls"]["report"],
                 "captureEnd":summary["diagnosticControlsEnd"]["report"],
-                "scope":"Boundary readbacks only; terrain/vessel motion may adjust camera distance. Renderer absence is witnessed at admission/end, not every frame."});
+                "scope":"Root-relative camera pose is checked at camera pre-cull throughout capture; renderer suppression is witnessed separately by each replacement lifecycle."});
             write_new(&output.join("flight-summary.json"), &summary)?;
 
             Ok(summary)
@@ -1124,34 +1143,47 @@ fn smoke(
     let mut flight_failure_evidence = None;
     let mut flight_recovery_error = None;
     if flight_error.is_some() {
-        let path = output.join("aero-batch.json");
-        if !path.exists() {
-            if let Err(error) = continuum_research_lab::flight::recover_failed_aero_batch(
-                &observer_directory,
-                &run_id,
-                child.id(),
-                output,
-            ) {
-                flight_recovery_error = Some(error);
+        let mut retained = json!({});
+        type Recover = fn(&Path, &str, u32, &Path) -> Result<()>;
+        let recoveries: [(&str, &str, Recover); 2] = [
+            ("aero-batch.json", "aeroBatch", continuum_research_lab::flight::recover_failed_aero_batch),
+            ("part-batch.json", "partBatch", continuum_research_lab::flight::recover_failed_part_batch),
+        ];
+        for (name, key, recover) in recoveries {
+            let path = output.join(name);
+            if !path.exists() {
+                if let Err(error) = recover(&observer_directory, &run_id, child.id(), output) {
+                    flight_recovery_error = Some(error);
+                }
+            }
+            if path.exists() {
+                match (hash(&path), read::<Value>(&path)) {
+                    (Ok(digest), Ok(report)) => retained[key] = json!({"sha256":digest,"report":report}),
+                    _ => flight_recovery_error = Some(format!("retained failed {name} evidence unreadable")),
+                }
             }
         }
-        if path.exists() {
-            match (hash(&path), read::<Value>(&path)) {
-                (Ok(digest), Ok(report)) => {
-                    flight_failure_evidence =
-                        Some(json!({"aeroBatch":{"sha256":digest,"report":report}}))
-                }
-                _ => {
-                    flight_recovery_error =
-                        Some("retained failed aero batch evidence unreadable".to_string())
-                }
-            }
+        if retained.as_object().map(|value| !value.is_empty()).unwrap_or(false) {
+            flight_failure_evidence = Some(retained);
         }
     }
     let flight_sources_unchanged = flight_inputs
         .as_ref()
         .map(continuum_research_lab::flight::unchanged)
         .unwrap_or(true);
+    let mut deferred_terrain_evidence = None;
+    let mut deferred_terrain_error = None;
+    if startup_deferred_terrain {
+        let result = fs::read_to_string(output.join("Player.log")).map_err(|error| error.to_string())
+            .and_then(|log| continuum_research_lab::startup::deferred_terrain(&log));
+        match result {
+            Ok(evidence) => {
+                write_new(&output.join("startup-deferred-terrain.json"), &evidence)?;
+                deferred_terrain_evidence = Some(evidence);
+            },
+            Err(error) => deferred_terrain_error = Some(error),
+        }
+    }
     if let Some(value) = &observation {
         write_new(&output.join("runtime-observation.json"), value)?;
     }
@@ -1173,6 +1205,8 @@ fn smoke(
         "startupDdsMappedRequested":startup_dds_mapped,
         "startupAudioPrefetchRequested":startup_audio_prefetch,
         "startupReadinessRequested":startup_readiness,
+        "startupDeferredTerrainRequested":startup_deferred_terrain,
+        "startupDeferredTerrainEvidence":deferred_terrain_evidence,"startupDeferredTerrainError":deferred_terrain_error,
         "startupResourceImageModeRequested":startup_resource_image_mode,"startupResourceImage":startup_resource_image,
         "startupWorkSchedulerRequested":startup_work_scheduler,
         "nativeAssetInstallation":native_assets.as_ref().map(|assets| assets.receipt()),
@@ -1184,7 +1218,7 @@ fn smoke(
         "startupBuildCacheRequested":startup_build_cache,"startupCache":startup_cache,"bundleSha256":bundle_hashes,
         "startupCachedBundlesRequested":startup_cached_bundles,
         "startupNativeAdmissionRequested":startup_native_admission,"cacheAdmissionSha256":proof_hash,"cacheAdmissionFiles":admission.as_ref().map(|value|&value.files),
-        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none() {"passed"} else {"failed"},
+        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none()&&deferred_terrain_error.is_none() {"passed"} else {"failed"},
         "qualification":if flight.is_some() {"diagnostic-window-only; behavior-and-gameplay-not-qualified"} else if catalog_preparation {"catalog-content-and-fresh-process-reuse-proof-required"} else {"process-exit-only-native-receipt-review-and-flight-proof-required"}}),
     )?;
     if timed_out
@@ -1192,6 +1226,7 @@ fn smoke(
         || !source_unchanged
         || !flight_sources_unchanged
         || flight_error.is_some()
+        || deferred_terrain_error.is_some()
     {
         return Err("owned process smoke failed; retained logs and receipt".into());
     }

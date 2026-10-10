@@ -28,6 +28,9 @@ pub struct Request {
     pub no_aero_fx: bool,
     pub aero_quality: Option<u32>,
     pub aero_batch: bool,
+    pub part_batch: bool,
+    pub part_shader_bundle: Option<PathBuf>,
+    pub part_standard_fallback: bool,
     pub screenshot: bool,
     pub entry_target_altitude: Option<f64>,
 }
@@ -129,6 +132,21 @@ impl Request {
                 "aero batch requires active aero effects and visible vessel renderers".into(),
             );
         }
+        let part_batch = boolean("--flight-part-batch")?;
+        let part_standard_fallback = boolean("--flight-part-standard-fallback")?;
+        let part_shader_bundle = options.get("--flight-part-shader-bundle").map(PathBuf::from);
+        if part_batch && boolean("--flight-hide-vessel")? {
+            return Err("part batch requires visible vessel renderers".into());
+        }
+        if part_standard_fallback && !part_batch {
+            return Err("part standard fallback requires part batch".into());
+        }
+        if let Some(bundle) = &part_shader_bundle {
+            if !part_batch || !bundle.is_absolute() || !bundle.is_file()
+                || bundle.canonicalize().map_err(|error| error.to_string())? != *bundle {
+                return Err("part shader bundle requires part batch and a canonical absolute file".into());
+            }
+        }
         Ok(Some(Self {
             save: name("--flight-save")?,
             checkpoint: name("--flight-checkpoint")?,
@@ -149,6 +167,9 @@ impl Request {
             no_aero_fx: boolean("--flight-no-aero-fx")?,
             aero_quality,
             aero_batch: boolean("--flight-aero-batch")?,
+            part_batch,
+            part_shader_bundle,
+            part_standard_fallback,
             screenshot: boolean("--flight-screenshot")?,
         }))
     }
@@ -202,6 +223,15 @@ impl Request {
         if self.aero_batch {
             args.push("--continuum-flight-aero-batch".into());
         }
+        if self.part_batch {
+            args.push("--continuum-flight-part-batch".into());
+        }
+        if let Some(bundle) = &self.part_shader_bundle {
+            args.push(format!("--continuum-flight-part-shader-bundle={}", bundle.display()));
+        }
+        if self.part_standard_fallback {
+            args.push("--continuum-flight-part-standard-fallback".into());
+        }
         if self.screenshot {
             args.push("--continuum-flight-screenshot".into());
         }
@@ -253,9 +283,12 @@ impl Request {
             Ok(())
         }
         plugins(&instance.join("GameData"), &mut files)?;
+        if let Some(bundle) = &self.part_shader_bundle {
+            files.insert(bundle.to_string_lossy().into_owned(), hash(bundle)?);
+        }
         Ok(
             json!({"schema":"continuum-flight-inputs/v1","request":self,"files":files,
-            "scope":"selected-checkpoint-settings-and-GameData-DLLs; native-assets-and-bundles-guarded-by-process-receipt"}),
+            "scope":"selected-checkpoint-settings-GameData-DLLs-and-requested-part-shader-bundle; native-assets-and-stock-bundles-guarded-by-process-receipt"}),
         )
     }
 }
@@ -571,6 +604,7 @@ pub fn analyze(
         "vesselRenderingTreatmentRequested":request.hide_vessel,
         "aeroEffectsTreatmentRequested":request.no_aero_fx || request.aero_quality.is_some() || request.aero_batch,
         "aeroBatchRequested":request.aero_batch,
+        "partBatchRequested":request.part_batch,
         "aeroEffectsQualityRequested":request.aero_quality,
         "nonOverlappingEnclosedMilliseconds":scoped,
         "optionalPhaseAccounting":{"earlyUpdateMilliseconds":costs.get(early_name),"preUpdateMilliseconds":costs.get(pre_name),
@@ -604,6 +638,7 @@ pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> 
         "diagnostic-controls.json",
         "diagnostic-controls-end.json",
         "aero-batch.json",
+        "part-batch.json",
         "flight-view.json",
         "perturbation.json",
         "render-census.json",
@@ -644,6 +679,29 @@ pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn part_replacement_requires_observed_draws_and_declared_shader() {
+        let options = BTreeMap::from([
+            ("--flight-save".into(), "Lab".into()),
+            ("--flight-checkpoint".into(), "vacuum".into()),
+            ("--flight-part-batch".into(), "true".into()),
+        ]);
+        let mut request = Request::parse(&options).unwrap().unwrap();
+        assert!(request.arguments().contains(&"--continuum-flight-part-batch".into()));
+        let valid = json!({"schema":"continuum-flight-part-batch/v1","runId":"run","processId":123,"vesselId":"vessel",
+            "status":"complete-experimental","faults":0,"eligibleRenderers":36,"packets":1,"cameraInvocations":10,"drawSubmissions":10,
+            "restoredOriginals":36,"cleanupStatus":"restored-owned-renderers-removed-owned-hooks-destruction-requested",
+            "shaderSource":"shipped-standard-diagnostic"});
+        assert!(validate_part_batch(&request, &valid, "run", 123, &json!("vessel")).is_err());
+        request.part_standard_fallback = true;
+        assert!(validate_part_batch(&request, &valid, "run", 123, &json!("vessel")).is_ok());
+        for key in ["drawSubmissions", "eligibleRenderers", "restoredOriginals"] {
+            let mut invalid = valid.clone(); invalid[key] = json!(0);
+            assert!(validate_part_batch(&request, &invalid, "run", 123, &json!("vessel")).is_err());
+        }
+        let mut fallback = valid.clone(); fallback["status"] = json!("stock-fallback");
+        assert!(validate_part_batch(&request, &fallback, "run", 123, &json!("vessel")).is_err());
+    }
     #[test]
     fn camera_contract_rejects_unobserved_or_drifting_views() {
         let valid = json!({"cameraFrozen":true,"cameraContract":"continuum-root-relative-camera/v1: fixture",
@@ -780,6 +838,9 @@ mod tests {
             no_aero_fx: false,
             aero_quality: None,
             aero_batch: false,
+            part_batch: false,
+            part_shader_bundle: None,
+            part_standard_fallback: false,
             screenshot: false,
             entry_target_altitude: None,
         };
@@ -864,6 +925,9 @@ mod tests {
             no_aero_fx: false,
             aero_quality: None,
             aero_batch: false,
+            part_batch: false,
+            part_shader_bundle: None,
+            part_standard_fallback: false,
             screenshot: false,
             entry_target_altitude: None,
         };
@@ -1147,6 +1211,11 @@ pub fn validate_controls(
     } else if request.aero_batch {
         return Err("requested aero batch lifecycle evidence absent".into());
     }
+    let part_path = output.join("part-batch.json");
+    if request.part_batch {
+        let part: Value = read(&part_path)?;
+        validate_part_batch(request, &part, run_id, pid, &report["frames"][0]["vesselId"])?;
+    }
     if request.screenshot {
         validate_view(output, run_id, pid)?;
     }
@@ -1330,6 +1399,35 @@ fn validate_batch(batch: &Value, run_id: &str, pid: u32, vessel: &Value) -> Resu
     }
     Ok(())
 }
+fn validate_part_batch(request: &Request, batch: &Value, run_id: &str, pid: u32, vessel: &Value) -> Result<()> {
+    if batch["schema"] != "continuum-flight-part-batch/v1"
+        || batch["runId"] != run_id
+        || batch["processId"].as_u64() != Some(pid as u64)
+        || batch["vesselId"] != *vessel
+        || vessel.as_str().map(str::is_empty).unwrap_or(true)
+        || batch["status"] != "complete-experimental"
+        || batch["faults"].as_u64() != Some(0)
+        || batch["eligibleRenderers"].as_u64().unwrap_or(0) == 0
+        || batch["packets"].as_u64().unwrap_or(0) == 0
+        || batch["cameraInvocations"].as_u64().unwrap_or(0) == 0
+        || batch["drawSubmissions"].as_u64().unwrap_or(0) == 0
+        || batch["restoredOriginals"] != batch["eligibleRenderers"]
+        || batch["cleanupStatus"] != "restored-owned-renderers-removed-owned-hooks-destruction-requested"
+    {
+        return Err("requested part batch inactive, invalid, or cleanup incomplete".into());
+    }
+    match batch["shaderSource"].as_str() {
+        Some("custom-bundle") => {
+            let bundle = request.part_shader_bundle.as_ref().ok_or("undeclared custom part shader bundle")?;
+            if batch["bundleSha256"].as_str() != Some(hash(bundle)?.as_str()) {
+                return Err("part shader bundle identity differs".into());
+            }
+        },
+        Some("shipped-standard-diagnostic") if request.part_standard_fallback => {},
+        _ => return Err("part shader source absent or fallback undeclared".into()),
+    }
+    Ok(())
+}
 fn validate_view(output: &Path, run_id: &str, pid: u32) -> Result<()> {
     let metadata: Value = read(&output.join("flight-view.json"))?;
     if metadata["schema"] != "continuum-flight-view/v1"
@@ -1372,26 +1470,32 @@ pub fn recover_failed_aero_batch(
     pid: u32,
     output: &Path,
 ) -> Result<()> {
-    let destination = output.join("aero-batch.json");
+    recover_failed_render_batch(directory, run_id, pid, output, "aero-batch.json", "continuum-flight-aero-batch/v1")
+}
+pub fn recover_failed_part_batch(directory: &Path, run_id: &str, pid: u32, output: &Path) -> Result<()> {
+    recover_failed_render_batch(directory, run_id, pid, output, "part-batch.json", "continuum-flight-part-batch/v1")
+}
+fn recover_failed_render_batch(directory: &Path, run_id: &str, pid: u32, output: &Path, name: &str, schema: &str) -> Result<()> {
+    let destination = output.join(name);
     if destination.exists() {
         return Ok(());
     }
     let Some(directory) =
-        owned_sidecar_directory(directory, "scale-profile-", "aero-batch.json", run_id, pid)?
+        owned_sidecar_directory(directory, "scale-profile-", name, run_id, pid)?
     else {
         return Ok(());
     };
-    let source = directory.join("aero-batch.json");
+    let source = directory.join(name);
     let before = hash(&source)?;
     let report: Value = read(&source)?;
-    if report["schema"] != "continuum-flight-aero-batch/v1"
+    if report["schema"] != schema
         || report["runId"] != run_id
         || report["processId"].as_u64() != Some(pid as u64)
     {
-        return Err("failed aero batch sidecar identity or schema differs".into());
+        return Err("failed render batch sidecar identity or schema differs".into());
     }
     if hash(&source)? != before {
-        return Err("failed aero batch evidence changed while retaining".into());
+        return Err("failed render batch evidence changed while retaining".into());
     }
     write_new(&destination, &report)
 }

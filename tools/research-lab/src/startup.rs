@@ -1,6 +1,54 @@
 use crate::Result;
 use serde_json::{json, Value};
 
+pub fn deferred_terrain(log: &str) -> Result<Value> {
+    let marker = "[Continuum deferred terrain] ";
+    let lines: Vec<_> = log.lines().filter_map(|line| line.split_once(marker).map(|(_, value)| value)).collect();
+    if !lines.iter().any(|line| line.starts_with("status=installed ")) {
+        return Err("requested deferred terrain installation was not observed".into());
+    }
+    let mut journals = Vec::new();
+    for line in &lines {
+        if !line.starts_with("status=journal ") { continue; }
+        let fields: std::collections::BTreeMap<_,_> = line.split_whitespace().filter_map(|field| field.split_once('=')).collect();
+        let mut row = json!({});
+        for key in ["deferred", "materialized", "pending", "failures", "unsupported"] {
+            let number = fields.get(key).ok_or(format!("deferred terrain {key} absent"))?
+                .parse::<u64>().map_err(|error| error.to_string())?;
+            row[key] = json!(number);
+        }
+        for key in ["captureSeconds", "fulfillmentSeconds"] {
+            let number = fields.get(key).ok_or(format!("deferred terrain {key} absent"))?
+                .parse::<f64>().map_err(|error| error.to_string())?;
+            if !number.is_finite() || number < 0.0 { return Err("deferred terrain cost invalid".into()); }
+            row[key] = json!(number);
+        }
+        row["phase"] = json!(fields.get("phase").ok_or("deferred terrain phase absent")?);
+        if row["failures"] != 0 || row["deferred"].as_u64() != row["materialized"].as_u64().and_then(|value| value.checked_add(row["pending"].as_u64()?)) {
+            return Err("deferred terrain failure or obligation conservation violation".into());
+        }
+        journals.push(row);
+    }
+    let menu = journals.iter().find(|row| row["phase"] == "menu").ok_or("deferred terrain menu obligations absent")?.clone();
+    Ok(json!({"schema":"continuum-startup-deferred-terrain/v1","status":"observed","menu":menu,"journals":journals,"nativeLines":lines,
+        "scope":"owned-log-obligations-only; pending-debt-is-not-completed-placement-or-gameplay-proof"}))
+}
+
+#[cfg(test)]
+mod deferred_tests {
+    use super::*;
+    #[test]
+    fn pending_debt_requires_menu_witness_and_conserved_ownership() {
+        let installed = "[Continuum deferred terrain] status=installed supported=analytic\n";
+        let menu = "[Continuum deferred terrain] status=journal phase=menu deferred=2 materialized=0 pending=2 failures=0 unsupported=0 captureSeconds=0.01 fulfillmentSeconds=0 menuPending=explicit-deferred-debt\n";
+        let value = deferred_terrain(&format!("{installed}{menu}")).unwrap();
+        assert_eq!(value["menu"]["pending"], 2);
+        assert!(deferred_terrain(installed).is_err());
+        assert!(deferred_terrain(&format!("{installed}{}", menu.replace("pending=2", "pending=0"))).is_err());
+        assert!(deferred_terrain(&format!("{installed}{}", menu.replace("phase=menu", "phase=shutdown"))).is_err());
+    }
+}
+
 fn clock(text: &str) -> Option<f64> {
     let mut fields = text.split(':');
     let hour = fields.next()?.parse::<u32>().ok()?;
