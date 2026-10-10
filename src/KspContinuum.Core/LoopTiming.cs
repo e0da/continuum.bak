@@ -19,7 +19,7 @@ namespace KspContinuum
     {
         public int frame;
         public double fixedTimeSeconds, fixedDeltaSeconds;
-        public long elapsedTicks;
+        public long elapsedTicks, startedTicks, endedTicks;
     }
     public sealed class LoopTimingBuffer
     {
@@ -41,7 +41,7 @@ namespace KspContinuum
             if (finished) return;
             if (pending) errors++;
             pending = true; start = ticks;
-            current = new LoopTimingSample { frame = frame, fixedTimeSeconds = time, fixedDeltaSeconds = delta };
+            current = new LoopTimingSample { frame = frame, fixedTimeSeconds = time, fixedDeltaSeconds = delta, startedTicks = ticks };
             if (double.IsNaN(time) || double.IsInfinity(time) || double.IsNaN(delta) || double.IsInfinity(delta) || delta <= 0)
             { errors++; pending = false; }
         }
@@ -52,6 +52,7 @@ namespace KspContinuum
             pending = false;
             if (ticks < start || frame != current.frame) { errors++; return; }
             current.elapsedTicks = ticks - start;
+            current.endedTicks = ticks;
             if (count < samples.Length) samples[count++] = current; else dropped++;
         }
         public void Fault() { if (!finished) errors++; }

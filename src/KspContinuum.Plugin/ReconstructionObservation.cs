@@ -9,7 +9,9 @@ namespace KspContinuum
     {
         public void Start()
         {
-            if (Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-native-boundary-bench") < 0) return;
+            string[] arguments = Environment.GetCommandLineArgs();
+            if (Array.IndexOf(arguments, "--continuum-native-boundary-bench") < 0 &&
+                Array.IndexOf(arguments, "--continuum-scale-profile") < 0) return;
             try
             {
                 StartupPresentationExperiment.RestoreForMenu();

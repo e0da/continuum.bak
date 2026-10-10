@@ -19,6 +19,13 @@ namespace KspContinuum
         public int contextFrame, markerFrame, observedFrame, parts;
         public int rigidbodies, joints, colliders, loadedVessels;
         public int renderedFrame, screenWidth, screenHeight;
+        public int physicslessParts = -1, moduleCount = -1, fixedCallbacksPerFrame;
+        public int awakeRigidbodies = -1;
+        public double? motionSampleSimulatedSeconds, angularRmsRadiansPerSecond, angularMaxRadiansPerSecond;
+        public double? attachmentPositionDeltaMaxMeters, attachmentRotationDeltaMaxDegrees;
+        public string warpMode;
+        public double maximumDeltaSeconds, physicsFrameLimitSeconds;
+        public double? altitudeMeters, atmosphereDepthMeters, atmosphericDensity;
         public long managedBytes;
         public int gcGeneration0, gcGeneration1, gcGeneration2;
         public double boundaryWallSeconds, fixedDeltaSeconds, timeScale;

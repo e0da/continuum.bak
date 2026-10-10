@@ -18,6 +18,10 @@ namespace KspContinuum
         float eligibleSince;
         int expectedParts = -1;
         bool physicsWarp, atmosphericStress, setDragStressCandidate, warpRequested;
+        bool normalAtmosphere, catchupApplied;
+        double simulationSeconds, wallTimeout = 60, settleSeconds = 10;
+        double? requestedCatchup;
+        float originalPhysicsLimit, originalMaximumDelta, qualificationStarted;
         Guid? atmosphericVesselId;
         float warpRequestedAt;
         int stableWarpFrames;
@@ -87,6 +91,20 @@ namespace KspContinuum
                 strategySweep = Array.IndexOf(arguments, "--continuum-dry-buoyancy-sweep") >= 0;
                 physicsWarp = Array.IndexOf(arguments, "--continuum-physics-warp-pressure") >= 0;
                 atmosphericStress = Array.IndexOf(arguments, "--continuum-atmospheric-stress") >= 0;
+                normalAtmosphere = Array.IndexOf(arguments, "--continuum-normal-atmosphere") >= 0;
+                simulationSeconds = OptionalNumber(arguments, "--continuum-flight-seconds=", 0, 0, 300);
+                wallTimeout = OptionalNumber(arguments, "--continuum-flight-timeout=", 60, .1, 600);
+                settleSeconds = OptionalNumber(arguments, "--continuum-flight-settle=", 10, 0, 60);
+                double catchup = OptionalNumber(arguments, "--continuum-flight-catchup=", -1, .001, 1);
+                if (catchup > 0) requestedCatchup = catchup;
+                if (normalAtmosphere && (atmosphericStress || physicsWarp || strategySweep)) throw new ArgumentException("Normal atmosphere diagnostic excludes stress, warp and strategy sweep.");
+                if (simulationSeconds > 0 && strategySweep) throw new ArgumentException("Simulation-duration capture excludes strategy sweep.");
+                if (AtmosphericEntryPreparation.Requested && (!normalAtmosphere || physicsWarp || atmosphericStress || strategySweep))
+                    throw new ArgumentException("Entry recipe requires normal atmosphere diagnostic.");
+                qualificationStarted = Time.realtimeSinceStartup;
+                AtmosphericEntryPreparation.Begin(directory);
+                FlightDiagnosticControls.Apply();
+                ApplyCatchup();
                 setDragStressCandidate = Array.IndexOf(arguments, "--continuum-setdrag-stress-candidate") >= 0;
                 if (setDragStressCandidate && !atmosphericStress)
                 { Finish("setdrag-stress-requires-atmospheric-stress", 2); return; }
@@ -109,14 +127,27 @@ namespace KspContinuum
         public void Update()
         {
             if (!active || capturing) return;
+            if (AtmosphericEntryPreparation.Requested && !AtmosphericEntryPreparation.Admitted)
+            {
+                if (!ScaleCheckpointLoadState.Ready) return;
+                try
+                {
+                    if (!AtmosphericEntryPreparation.Tick(FlightGlobals.ready ? FlightGlobals.ActiveVessel : null, settleSeconds)) return;
+                    qualificationStarted = Time.realtimeSinceStartup;
+                }
+                catch (Exception error) { Fail(error); return; }
+            }
+            if (simulationSeconds > 0 && Time.realtimeSinceStartup - qualificationStarted > wallTimeout)
+            { File.WriteAllText(Path.Combine(directory,"status.txt"), "invalid\nreason=admission-wall-timeout\n"); Finish("invalid",2); return; }
             if (ScaleCheckpointLoadState.Requested && !ScaleCheckpointLoadState.Ready) return;
             Vessel vessel = FlightGlobals.ready ? FlightGlobals.ActiveVessel : null;
             bool eligible = vessel != null && vessel.loaded && !vessel.packed && !FlightDriver.Pause &&
-                (atmosphericStress ? AtmosphericFlight(vessel) :
+                (atmosphericStress || normalAtmosphere ? AtmosphericFlight(vessel) && (atmosphericStress || vessel.ctrlState != null && vessel.ctrlState.mainThrottle < .01) :
                 vessel.situation == Vessel.Situations.ORBITING && vessel.ctrlState != null && vessel.ctrlState.mainThrottle < 0.01) &&
                 (!ScaleCheckpointLoadState.Requested || vessel.id == ScaleCheckpointLoadState.VesselId) &&
                 (expectedParts < 1 || vessel.parts.Count == expectedParts);
             if (!eligible) { eligibleSince = 0; stableWarpFrames = 0; return; }
+            FlightDiagnosticControls.SeedCamera();
             if (physicsWarp && warpRequested)
             {
                 bool entered = TimeWarp.fetch != null && TimeWarp.WarpMode == TimeWarp.Modes.LOW &&
@@ -136,11 +167,11 @@ namespace KspContinuum
                 }
                 if (setDragStressCandidate && !AeroSetDragProviderQualification.BeginStressWindow())
                 { Finish("setdrag-stress-admission-failed", 2); return; }
-                capturing = true; probe = new Probe(); StartCoroutine(Capture()); return;
+                StartCapture(false); return;
             }
             if (TimeWarp.CurrentRate != 1 || TimeWarp.CurrentRateIndex != 0) { eligibleSince = 0; return; }
             if (eligibleSince == 0) { eligibleSince = Time.realtimeSinceStartup; return; }
-            if (Time.realtimeSinceStartup - eligibleSince < (atmosphericStress ? .5f : 10f)) return;
+            if (Time.realtimeSinceStartup - eligibleSince < (atmosphericStress ? .5 : settleSeconds)) return;
             if (physicsWarp)
             {
                 if (atmosphericStress) atmosphericVesselId = vessel.id;
@@ -149,15 +180,52 @@ namespace KspContinuum
                 TimeWarp.SetRate(3, true); warpRequested = true; warpRequestedAt = Time.realtimeSinceStartup;
                 return;
             }
-            capturing = true;
-            if (strategySweep) { sweepState = "running"; StartCoroutine(CaptureSweep()); }
-            else { probe = new Probe(); StartCoroutine(Capture()); }
+            StartCapture(strategySweep);
+        }
+        void StartCapture(bool sweep)
+        {
+            try
+            {
+                capturing = true;
+                if (sweep) { sweepState = "running"; StartCoroutine(CaptureSweep()); }
+                else { ApplyCatchup(); probe = NewProbe(); StartCoroutine(Capture()); }
+            }
+            catch (Exception error) { capturing = false; Fail(error); }
+        }
+        public void FixedUpdate() { Probe.ObserveFixedCallback(); }
+        Probe NewProbe() { FlightDiagnosticControls.Record(directory); return new Probe(null,false,simulationSeconds,wallTimeout,simulationSeconds > 0 ? directory : null); }
+        static double OptionalNumber(string[] arguments,string prefix,double fallback,double minimum,double maximum)
+        {
+            double result = fallback; bool found=false;
+            foreach(string argument in arguments) if(argument.StartsWith(prefix,StringComparison.Ordinal))
+            {
+                if(found || !double.TryParse(argument.Substring(prefix.Length),NumberStyles.Float,CultureInfo.InvariantCulture,out result) ||
+                    double.IsNaN(result) || double.IsInfinity(result) || result<minimum || result>maximum) throw new ArgumentException("Invalid or duplicate option: "+prefix);
+                found=true;
+            }
+            return result;
+        }
+        void ApplyCatchup()
+        {
+            if(!requestedCatchup.HasValue) return;
+            if(!catchupApplied) { originalPhysicsLimit=GameSettings.PHYSICS_FRAME_DT_LIMIT; originalMaximumDelta=Time.maximumDeltaTime; catchupApplied=true; }
+            GameSettings.PHYSICS_FRAME_DT_LIMIT=(float)requestedCatchup.Value; Time.maximumDeltaTime=(float)requestedCatchup.Value;
         }
 
         IEnumerator Capture()
         {
             IEnumerator work = probe.Run(Complete);
-            try { while (active && work.MoveNext()) yield return work.Current; }
+            try
+            {
+                while (active)
+                {
+                    bool moved;
+                    try { moved = work.MoveNext(); }
+                    catch (Exception error) { Fail(error); yield break; }
+                    if (!moved) break;
+                    yield return work.Current;
+                }
+            }
             finally { var disposable = work as IDisposable; if (disposable != null) disposable.Dispose(); capturing = false; }
         }
 
@@ -218,9 +286,11 @@ namespace KspContinuum
         {
             try
             {
+                FlightDiagnosticControls.RecordEnd(directory);
+                report.requestedCatchupSeconds=requestedCatchup; report.settleSeconds=settleSeconds;
                 File.WriteAllText(Path.Combine(directory, "markers.json"), ReportJson.Encode(report));
                 string reason; bool valid = atmosphericStress ? AtmosphericStressComplete(report, out reason) :
-                    Stable(report, physicsWarp ? RequestedPhysicsWarp : 1, out reason);
+                    Stable(report, physicsWarp ? RequestedPhysicsWarp : 1, out reason, normalAtmosphere);
                 if (setDragStressCandidate && !AeroSetDragProviderQualification.EndStressWindow())
                 { valid = false; reason = "setdrag-stress-provider-invalid"; }
                 bool sourceUnchanged = !ScaleCheckpointLoadState.Requested || ScaleCheckpointLoadState.SourceUnchanged();
@@ -238,10 +308,11 @@ namespace KspContinuum
         static bool Stable(ProbeReport report, out string reason)
         { return Stable(report, 1, out reason); }
 
-        static bool Stable(ProbeReport report, float expectedWarp, out string reason)
+        static bool Stable(ProbeReport report, float expectedWarp, out string reason, bool atmosphere = false)
         {
-            reason = "verified-fixed-orbital-context";
-            if (report == null || report.status != "complete" || report.completedFrames != report.requestedFrames || report.frames == null || report.frames.Length == 0)
+            reason = atmosphere ? "verified-normal-atmospheric-context" : "verified-fixed-orbital-context";
+            if (report == null || report.status != "complete" || !CompletedWindow(report) || report.frames == null || report.frames.Length == 0 ||
+                report.requestedSimulatedSeconds > 0 && !report.topologyStable)
             { reason = "incomplete-capture"; return false; }
             ProfileFrame first = report.frames[0];
             foreach (ProfileFrame frame in report.frames)
@@ -251,7 +322,10 @@ namespace KspContinuum
                     frame.warpRate != expectedWarp || !FinitePositive(frame.fixedDeltaSeconds) || !FinitePositive(frame.timeScale) ||
                     frame.fixedDeltaSeconds != first.fixedDeltaSeconds || frame.timeScale != first.timeScale ||
                     !frame.throttleCommand.HasValue || frame.throttleCommand.Value >= 0.01 ||
-                    frame.situation != Vessel.Situations.ORBITING.ToString())
+                    frame.maximumDeltaSeconds != first.maximumDeltaSeconds || frame.physicsFrameLimitSeconds != first.physicsFrameLimitSeconds ||
+                    frame.warpMode != first.warpMode || frame.fixedCallbacksPerFrame < 0 ||
+                    (atmosphere ? frame.body != "Kerbin" || !frame.altitudeMeters.HasValue || !frame.atmosphereDepthMeters.HasValue ||
+                        frame.altitudeMeters.Value < 0 || frame.altitudeMeters.Value >= frame.atmosphereDepthMeters.Value : frame.situation != Vessel.Situations.ORBITING.ToString()))
                 { reason = "context-or-topology-changed"; return false; }
             if (report.playerLoop == null || report.playerLoop.schema != "ksp-continuum-playerloop/v2" ||
                 report.playerLoop.status != "observed" || report.playerLoop.integrityStatus != "verified-at-boundaries" ||
@@ -274,6 +348,8 @@ namespace KspContinuum
             { reason = "dry-buoyancy-strategy-invalid"; return false; }
             return true;
         }
+        static bool CompletedWindow(ProbeReport report)
+        { return report.requestedSimulatedSeconds > 0 ? report.actualSimulatedSeconds >= report.requestedSimulatedSeconds && report.completedFrames <= report.requestedFrames : report.completedFrames == report.requestedFrames; }
 
         static bool AtmosphericFlight(Vessel vessel)
         {
@@ -285,9 +361,11 @@ namespace KspContinuum
         bool AtmosphericStressComplete(ProbeReport report, out string reason)
         {
             reason = "verified-atmospheric-stress-capture";
-            if (report == null || report.status != "complete" || report.completedFrames != report.requestedFrames ||
+            if (report == null || report.status != "complete" || !CompletedWindow(report) ||
                 report.frames == null || report.frames.Length == 0)
             { reason = "incomplete-capture"; return false; }
+            if (report.requestedSimulatedSeconds > 0 && !report.topologyStable)
+            { reason = "atmospheric-stress-topology-changed"; return false; }
             string vesselId = atmosphericVesselId.HasValue ? atmosphericVesselId.Value.ToString("D") : null;
             foreach (ProfileFrame frame in report.frames)
                 if (frame == null || frame.vesselId != vesselId || frame.body != "Kerbin" ||
@@ -327,6 +405,10 @@ namespace KspContinuum
             active = false;
             try { if (probe != null) probe.Dispose(); } catch (Exception error) { Debug.LogException(error); code = 2; }
             probe = null;
+            try { FlightDiagnosticControls.Restore(); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
+            try { AtmosphericEntryPreparation.ResetWarp(); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
             bool resetFailed = false;
             if (physicsWarp)
                 try
@@ -341,6 +423,7 @@ namespace KspContinuum
                     else { code = 2; resetFailed = true; }
                 }
                 catch (Exception error) { Debug.LogException(error); code = 2; resetFailed = true; }
+            if(catchupApplied) { GameSettings.PHYSICS_FRAME_DT_LIMIT=originalPhysicsLimit; Time.maximumDeltaTime=originalMaximumDelta; catchupApplied=false; }
             if (resetFailed && directory != null)
                 try { File.WriteAllText(Path.Combine(directory, "status.txt"), "invalid\nreason=physics-warp-reset-failed\n"); }
                 catch { code = 2; }

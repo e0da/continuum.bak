@@ -14,6 +14,7 @@ namespace KspContinuum
     {
         const string Owner = "continuum.fixed-callback-attribution";
         const int MaximumTargets = 4096;
+        static readonly Guid StockMvid = new Guid("10657063-2fc3-43a7-84fa-d39e75e877bf");
         static readonly string[] StockProviderMethods = { "ThermoPrecalculate", "Integrate", "UpdateThermodynamics",
             "UpdateOcclusion", "UpdateOcclusionConvection", "UpdateOcclusionSolar", "UpdateOcclusionBody",
             "UpdateAerodynamics", "UpdateConvection" };
@@ -64,6 +65,7 @@ namespace KspContinuum
         IEnumerable<MethodInfo> Discover()
         {
             var result = new List<MethodInfo>();
+            HashSet<MethodInfo> boundedProviders = PinnedProviders();
             foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies().OrderBy(item => item.FullName, StringComparer.Ordinal))
             {
                 if (assembly.IsDynamic || !ReferencesUnity(assembly)) continue;
@@ -83,7 +85,8 @@ namespace KspContinuum
                         bool fixedCallback = typeof(MonoBehaviour).IsAssignableFrom(type) && method.Name == "FixedUpdate" &&
                             method.ReturnType == typeof(void) && method.GetParameters().Length == 0;
                         bool stockProvider = (type.FullName == "FlightIntegrator" && Array.IndexOf(StockProviderMethods, method.Name) >= 0) ||
-                            (type.FullName == "VesselPrecalculate" && method.Name == "CalculatePhysicsStats");
+                            (type.FullName == "VesselPrecalculate" && method.Name == "CalculatePhysicsStats") ||
+                            boundedProviders.Contains(method);
                         if ((!fixedCallback && !stockProvider) || method.IsAbstract || method.IsGenericMethodDefinition ||
                             method.ContainsGenericParameters || method.GetMethodBody() == null) continue;
                         result.Add(method);
@@ -91,9 +94,32 @@ namespace KspContinuum
                     }
                 }
             }
+            foreach (MethodInfo provider in boundedProviders)
+                if (!result.Contains(provider)) throw new InvalidOperationException("Pinned stock attribution seam was not discovered: " + provider.DeclaringType.FullName + "." + provider.Name);
             result.Sort((left, right) => string.CompareOrdinal(Identity(left), Identity(right)));
             Report.discoveredMethods = result.Count;
             return result;
+        }
+
+        static HashSet<MethodInfo> PinnedProviders()
+        {
+            var result = new HashSet<MethodInfo>();
+            AddPinnedProvider(result, typeof(Vessel), "FeedInputFeed", 100677715, typeof(void), Type.EmptyTypes);
+            AddPinnedProvider(result, typeof(VesselAutopilot.VesselSAS), "GetTotalVesselTorque", 100704548, typeof(Vector3), new[] { typeof(Vessel) });
+            AddPinnedProvider(result, typeof(Part), "propagateControlUpdate", 100670966, typeof(void), new[] { typeof(FlightCtrlState) });
+            AddPinnedProvider(result, typeof(FlightIntegrator), "UpdateMassStats", 100677455, typeof(void), Type.EmptyTypes);
+            AddPinnedProvider(result, typeof(FlightIntegrator), "DragCubeSetupAndPartAeroStats", 100677504, typeof(void), new[] { typeof(Vessel) });
+            return result;
+        }
+
+        static void AddPinnedProvider(HashSet<MethodInfo> result, Type type, string name, int token, Type returnType, Type[] parameters)
+        {
+            MethodInfo method = AccessTools.DeclaredMethod(type, name, parameters);
+            if (type.Assembly.GetName().Name != "Assembly-CSharp" || type.Module.ModuleVersionId != StockMvid ||
+                method == null || method.MetadataToken != token || method.ReturnType != returnType ||
+                method.IsStatic || method.IsAbstract || method.ContainsGenericParameters || method.GetMethodBody() == null)
+                throw new InvalidOperationException("Pinned stock attribution seam differs: " + type.FullName + "." + name);
+            result.Add(method);
         }
 
         static bool ReferencesUnity(Assembly assembly)

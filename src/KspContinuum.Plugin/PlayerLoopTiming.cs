@@ -5,6 +5,7 @@ using UnityEngine.LowLevel;
 using FixedLoop = UnityEngine.PlayerLoop.FixedUpdate;
 using UpdateLoop = UnityEngine.PlayerLoop.Update;
 using LateLoop = UnityEngine.PlayerLoop.PreLateUpdate;
+using RenderLoop = UnityEngine.PlayerLoop.PostLateUpdate;
 
 namespace KspContinuum
 {
@@ -28,13 +29,23 @@ namespace KspContinuum
             this.observer = observer;
             Report = new LoopTimingReport { status = "unavailable", integrityStatus = "not-installed", cleanupStatus = "not-installed",
                 clockFrequency = Stopwatch.Frequency, timerReadFloorTicks = long.MaxValue };
+            Report.measurementScope = "Elapsed wall time around unchanged PlayerLoop subtrees. FixedUpdate, PreLateUpdate and PostLateUpdate parents overlap their children and must not be summed with them. Rendering/presentation brackets include main-thread work and any blocking waits; they do not measure GPU execution duration.";
             for (int i = 0; i < 128; i++) { long before = Stopwatch.GetTimestamp(); Report.timerReadFloorTicks = Math.Min(Report.timerReadFloorTicks, Stopwatch.GetTimestamp() - before); }
             scopes = new[] {
+                MakeScope(null, typeof(UnityEngine.PlayerLoop.EarlyUpdate), "frame", "separate-frame-phase"),
+                MakeScope(null, typeof(UnityEngine.PlayerLoop.PreUpdate), "frame", "separate-frame-phase"),
                 MakeScope(null, typeof(FixedLoop), "fixed", "contains-fixed-children"),
                 MakeScope(typeof(FixedLoop), typeof(FixedLoop.PhysicsFixedUpdate), "fixed", "contained-by-fixed"),
                 MakeScope(typeof(FixedLoop), typeof(FixedLoop.ScriptRunBehaviourFixedUpdate), "fixed", "contained-by-fixed"),
                 MakeScope(typeof(UpdateLoop), typeof(UpdateLoop.ScriptRunBehaviourUpdate), "frame", "separate-frame-phase"),
-                MakeScope(typeof(LateLoop), typeof(LateLoop.ScriptRunBehaviourLateUpdate), "frame", "separate-frame-phase")
+                MakeScope(null, typeof(LateLoop), "frame", "contains-pre-late-children-do-not-sum-with-children"),
+                MakeScope(typeof(LateLoop), typeof(LateLoop.ScriptRunBehaviourLateUpdate), "frame", "contained-by-pre-late"),
+                MakeScope(null, typeof(RenderLoop), "frame", "contains-post-late-children-do-not-sum-with-children"),
+                MakeScope(typeof(RenderLoop), typeof(RenderLoop.UpdateAllRenderers), "frame", "contained-by-post-late"),
+                MakeScope(typeof(RenderLoop), typeof(RenderLoop.UpdateAllSkinnedMeshes), "frame", "contained-by-post-late"),
+                MakeScope(typeof(RenderLoop), typeof(RenderLoop.PlayerUpdateCanvases), "frame", "contained-by-post-late"),
+                MakeScope(typeof(RenderLoop), typeof(RenderLoop.FinishFrameRendering), "frame", "contained-by-post-late"),
+                MakeScope(typeof(RenderLoop), typeof(RenderLoop.PresentAfterDraw), "frame", "contained-by-post-late")
             };
         }
 

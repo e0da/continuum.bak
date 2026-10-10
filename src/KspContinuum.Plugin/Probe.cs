@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using UnityEngine;
 using UnityEngine.Profiling;
 
@@ -35,9 +36,36 @@ namespace KspContinuum
         const int FrameCount = 300;
         readonly string dryBuoyancyStrategy;
         readonly bool forcePlayerLoop;
+        readonly double simulationSeconds, wallTimeoutSeconds;
+        readonly string signalDirectory;
+        double captureStartWall, captureStartUt;
+        int fixedCallbacks, capturedFixedCallbacks, physicslessParts = -1, moduleCount = -1;
+        bool topologyHooks, captureActive;
+        FlightPerturbation perturbation;
+        Exception perturbationError;
 
-        public Probe(string dryBuoyancyStrategy = null, bool forcePlayerLoop = false)
-        { this.dryBuoyancyStrategy = dryBuoyancyStrategy; this.forcePlayerLoop = forcePlayerLoop; }
+        [Serializable] sealed class CaptureSignal
+        {
+            public string schema = "continuum-flight-capture-signal/v1", runId, status, utc, reason;
+            public double universalTime;
+            public double requestedSimulatedSeconds, actualSimulatedSeconds, captureWallSeconds;
+            public long clockTimestamp, clockFrequency;
+            public int processId;
+        }
+
+        public Probe(string dryBuoyancyStrategy = null, bool forcePlayerLoop = false, double simulationSeconds = 0,
+            double wallTimeoutSeconds = 60, string signalDirectory = null)
+        { this.dryBuoyancyStrategy = dryBuoyancyStrategy; this.forcePlayerLoop = forcePlayerLoop;
+            this.simulationSeconds = simulationSeconds; this.wallTimeoutSeconds = wallTimeoutSeconds; this.signalDirectory = signalDirectory; }
+
+        public static void ObserveFixedCallback()
+        {
+            if (owner == null) return;
+            owner.fixedCallbacks++;
+            if (!owner.captureActive || owner.perturbation == null || owner.perturbationError != null) return;
+            try { owner.perturbation.FixedStep(); }
+            catch (Exception error) { owner.perturbationError = error; }
+        }
 
         public IEnumerator Run(Action<ProbeReport> complete)
         {
@@ -48,16 +76,26 @@ namespace KspContinuum
             try
             {
                 report = new ProbeReport {
-                    requestedFrames = FrameCount, frames = new ProfileFrame[FrameCount], markers = new MarkerReport[Names.Length],
+                    requestedFrames = simulationSeconds > 0 ? 20000 : FrameCount, frames = new ProfileFrame[simulationSeconds > 0 ? 20000 : FrameCount], markers = new MarkerReport[Names.Length],
                     unity = Application.unityVersion, ksp = Versioning.GetVersionString(),
                     plugin = typeof(Probe).Assembly.GetName().Version.ToString(), platform = Application.platform.ToString(),
                     processor = SystemInfo.processorType, processorCount = SystemInfo.processorCount,
                     graphicsDevice = SystemInfo.graphicsDeviceName, targetFrameRate = Application.targetFrameRate, vSyncCount = QualitySettings.vSyncCount
                 };
+                report.captureMode = simulationSeconds > 0 ? "simulation-duration" : "rendered-frame-count";
+                report.requestedSimulatedSeconds = simulationSeconds; report.wallTimeoutSeconds = wallTimeoutSeconds;
+                report.effectivePhysicsFrameLimit = GameSettings.PHYSICS_FRAME_DT_LIMIT; report.effectiveMaximumDeltaTime = Time.maximumDeltaTime;
+                report.screenWidth=Screen.width; report.screenHeight=Screen.height; report.qualityLevel=QualitySettings.GetQualityLevel();
+                report.antiAliasing=QualitySettings.antiAliasing; report.shadowDistance=QualitySettings.shadowDistance; report.shadowCascades=QualitySettings.shadowCascades;
+                report.graphicsDeviceType=SystemInfo.graphicsDeviceType.ToString(); report.graphicsDeviceVersion=SystemInfo.graphicsDeviceVersion;
+                if (Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-flight-diagnostic") >= 0)
+                    report.cameraContract="diagnostic-controls.json records requested and effective seeded FREE camera; engine camera adjustments remain possible";
+                foreach (string argument in Environment.GetCommandLineArgs()) if (argument.StartsWith("--continuum-research-run=", StringComparison.Ordinal))
+                    report.runId = argument.Substring("--continuum-research-run=".Length);
                 for (int i = 0; i < Names.Length; i++)
                 {
                     var row = new MarkerReport { name = Names[i], status = "unavailable", availabilityDetail = "Recorder unavailable in this player or marker has not been created.",
-                        nanoseconds = new long[FrameCount], blocks = new int[FrameCount], available = new bool[FrameCount] };
+                        nanoseconds = new long[report.requestedFrames], blocks = new int[report.requestedFrames], available = new bool[report.requestedFrames] };
                     report.markers[i] = row;
                     Acquire(row);
                 }
@@ -108,14 +146,32 @@ namespace KspContinuum
                     report.partForces = partForces.Report;
                 }
                 clock.Start();
+                if(simulationSeconds > 0) { GameEvents.onVesselWasModified.Add(VesselModified); GameEvents.onPartDie.Add(PartDied); topologyHooks=true; }
                 // Recorder counters describe the previous frame; discard the partly enabled initial frame.
                 yield return null;
                 if (finished) yield break;
+                perturbation = FlightPerturbation.Create(arguments, FlightGlobals.ActiveVessel, report.runId);
+                if (perturbation != null)
+                {
+                    report.perturbation = perturbation.Report;
+                    if (simulationSeconds <= 0 || perturbation.Report.requestedStartSeconds + perturbation.Report.requestedDurationSeconds >= simulationSeconds)
+                        throw new ArgumentException("Perturbation requires a simulation-duration capture extending beyond the pulse.");
+                }
+                report.captureStartUtc = DateTime.UtcNow.ToString("o"); captureStartUt = Planetarium.GetUniversalTime();
                 ProfileFrame previous = Context();
-                for (int frame = 0; frame < FrameCount; frame++)
+                report.clockFrequency=Stopwatch.Frequency; report.captureStartClockTimestamp=Stopwatch.GetTimestamp();
+                captureStartWall=clock.Elapsed.TotalSeconds; previous.boundaryWallSeconds=captureStartWall; capturedFixedCallbacks=fixedCallbacks;
+                Signal("capture-start", null);
+                captureActive=true;
+                for (int frame = 0; frame < report.requestedFrames; frame++)
                 {
                     yield return null;
                     if (finished) yield break;
+                    if (perturbationError != null)
+                    {
+                        report.status = "invalid"; report.completionReason = "perturbation-error";
+                        throw new InvalidOperationException("Flight perturbation failed.", perturbationError);
+                    }
                     if (playerLoop != null)
                     {
                         playerLoop.Audit();
@@ -131,12 +187,27 @@ namespace KspContinuum
                     previous.markerFrame = Time.frameCount - 1;
                     previous.contextAligned = previous.contextFrame == previous.markerFrame;
                     previous.wallMilliseconds = (now - previous.boundaryWallSeconds) * 1000;
+                    previous.fixedCallbacksPerFrame = fixedCallbacks - capturedFixedCallbacks; capturedFixedCallbacks = fixedCallbacks;
                     foreach (Slot slot in slots) Read(slot, frame);
                     report.frames[frame] = previous;
                     completed++;
-                    if (completed < FrameCount) previous = Context();
+                    report.actualSimulatedSeconds = Planetarium.GetUniversalTime() - captureStartUt;
+                    report.captureWallSeconds = now - captureStartWall;
+                    if (simulationSeconds > 0 && report.actualSimulatedSeconds >= simulationSeconds) { report.status = "complete"; report.completionReason = "simulation-duration-reached"; break; }
+                    if (simulationSeconds > 0 && report.captureWallSeconds >= wallTimeoutSeconds) { report.status = "invalid"; report.completionReason = "capture-wall-timeout"; break; }
+                    if (completed < report.requestedFrames) previous = Context();
                 }
-                report.status = "complete";
+                captureActive=false; report.captureEndClockTimestamp=Stopwatch.GetTimestamp();
+                if(simulationSeconds > 0 && completed > 0)
+                {
+                    ProfileFrame last = Context(true), first=report.frames[0];
+                    report.topologyStable=report.topologyEvents==0 && last.vesselId==first.vesselId && last.parts==first.parts && last.rigidbodies==first.rigidbodies &&
+                        last.joints==first.joints && last.colliders==first.colliders && last.moduleCount==first.moduleCount &&
+                        last.physicslessParts==first.physicslessParts && last.loadedVessels==first.loadedVessels;
+                    if(!report.topologyStable) { report.status="invalid"; report.completionReason="final-topology-changed"; }
+                }
+                if (simulationSeconds <= 0) { report.status = "complete"; report.completionReason = "frame-count-reached"; }
+                else if (report.status == "interrupted") { report.status = "invalid"; report.completionReason = "frame-cap-before-duration"; }
                 Finish(false);
             }
             finally { Dispose(); }
@@ -176,11 +247,13 @@ namespace KspContinuum
             catch (Exception error) { slot.Report.availabilityDetail = "Recorder read failed: " + error.GetType().Name; }
         }
 
-        ProfileFrame Context()
+        ProfileFrame Context(bool boundary = false)
         {
             var frame = new ProfileFrame {
                 contextFrame = Time.frameCount, renderedFrame = Time.renderedFrameCount, boundaryWallSeconds = clock.Elapsed.TotalSeconds,
                 fixedDeltaSeconds = Time.fixedDeltaTime, timeScale = Time.timeScale, scene = HighLogic.LoadedScene.ToString(),
+                maximumDeltaSeconds = Time.maximumDeltaTime, physicsFrameLimitSeconds = GameSettings.PHYSICS_FRAME_DT_LIMIT,
+                warpMode = TimeWarp.fetch == null ? "unavailable" : TimeWarp.WarpMode.ToString(),
                 screenWidth = Screen.width, screenHeight = Screen.height, parts = -1,
                 rigidbodies = -1, joints = -1, colliders = -1, loadedVessels = -1,
                 managedBytes = GC.GetTotalMemory(false), gcGeneration0 = GC.CollectionCount(0), gcGeneration1 = GC.CollectionCount(1), gcGeneration2 = GC.CollectionCount(2),
@@ -200,15 +273,20 @@ namespace KspContinuum
             if (FlightGlobals.VesselsLoaded != null) frame.loadedVessels = FlightGlobals.VesselsLoaded.Count;
             // Census the whole vessel only at capture boundaries. Per-frame hierarchy walks would
             // perturb the same part-count scaling this probe is intended to measure.
-            if (structuralRigidbodies < 0 || completed == 0 || completed == FrameCount - 1)
+            if (structuralRigidbodies < 0 || boundary || completed == 0 || completed == report.requestedFrames - 1)
             {
                 StructuralCensusResult census = StructuralCensusCapture.Capture(vessel);
                 structuralRigidbodies = census.rigidbodies;
                 structuralJoints = census.joints;
                 structuralColliders = census.colliders;
+                physicslessParts = 0; moduleCount = 0;
+                foreach (Part part in vessel.parts) if (part != null) { if (part.physicalSignificance == Part.PhysicalSignificance.NONE) physicslessParts++; if (part.Modules != null) moduleCount += part.Modules.Count; }
             }
             frame.rigidbodies = structuralRigidbodies; frame.joints = structuralJoints; frame.colliders = structuralColliders;
+            frame.physicslessParts = physicslessParts; frame.moduleCount = moduleCount;
             frame.body = vessel.mainBody == null ? null : vessel.mainBody.bodyName;
+            frame.altitudeMeters=vessel.altitude; frame.atmosphericDensity=vessel.atmDensity;
+            if(vessel.mainBody!=null) frame.atmosphereDepthMeters=vessel.mainBody.atmosphereDepth;
             frame.situation = vessel.situation.ToString();
             if (vessel.mainBody != null)
             {
@@ -227,6 +305,7 @@ namespace KspContinuum
                     frame.radialSpeedMetersPerSecond = Vector3d.Dot(position, velocity) / radius;
                 }
             }
+            if (perturbation != null) perturbation.Observe(frame);
             return frame;
         }
 
@@ -282,6 +361,18 @@ namespace KspContinuum
                 catch (Exception error) { errors.Add(slot.Report.name + ": " + error.GetType().Name); }
             }
             slots.Clear();
+            captureActive=false;
+            if (perturbation != null)
+            {
+                if (perturbationError != null) perturbation.Report.status = "invalid-perturbation-error";
+                if (!perturbation.Finish())
+                { report.status = "invalid"; report.completionReason = "incomplete-or-failed-perturbation"; }
+                if (signalDirectory != null)
+                    try { File.WriteAllText(Path.Combine(signalDirectory, "perturbation.json"), ReportJson.Encode(perturbation.Report)); }
+                    catch (Exception error) { errors.Add("PerturbationExport: " + error.GetType().Name); }
+                perturbation = null;
+            }
+            if(topologyHooks) { GameEvents.onVesselWasModified.Remove(VesselModified); GameEvents.onPartDie.Remove(PartDied); topologyHooks=false; }
             if (ReferenceEquals(owner, this)) owner = null;
             clock.Stop();
             Action<ProbeReport> callback = completion;
@@ -292,7 +383,17 @@ namespace KspContinuum
                 report.cleanupErrors = errors.ToArray();
                 report.recorderCleanupStatus = errors.Count == 0 ? "restored-owned-enables" : "restoration-errors";
                 if (errors.Count != 0) report.status = "cleanup-error";
+                if(simulationSeconds > 0 && report.playerLoop!=null && report.playerLoop.scopes!=null)
+                    foreach(LoopTimingScope scope in report.playerLoop.scopes) if(scope.droppedSamples>0 || scope.sequenceErrors>0)
+                    { report.status="invalid"; report.completionReason="truncated-or-invalid-playerloop"; }
                 ProfilingSummary.Finish(report, completed);
+                report.captureEndUtc = DateTime.UtcNow.ToString("o");
+                if (report.completionReason == null) report.completionReason = "capture-interrupted";
+                if(report.captureStartClockTimestamp>0)
+                {
+                    if(report.captureEndClockTimestamp==0) report.captureEndClockTimestamp=Stopwatch.GetTimestamp();
+                    Signal("capture-end", report.completionReason);
+                }
                 callback(report);
             }
             catch (Exception error)
@@ -305,5 +406,19 @@ namespace KspContinuum
         }
 
         public void Dispose() { Finish(true); }
+        void VesselModified(Vessel vessel) { if(captureActive && ReferenceEquals(vessel,lastVessel)) report.topologyEvents++; }
+        void PartDied(Part part) { if(captureActive && part!=null && ReferenceEquals(part.vessel,lastVessel)) report.topologyEvents++; }
+        void Signal(string name, string reason)
+        {
+            if (signalDirectory == null) return;
+            var signal = new CaptureSignal { runId = report.runId, status = name == "capture-start" ? "capturing" : report.status,
+                utc = DateTime.UtcNow.ToString("o"), reason = reason, universalTime = name == "capture-start" ? captureStartUt : captureStartUt + report.actualSimulatedSeconds,
+                requestedSimulatedSeconds=report.requestedSimulatedSeconds, actualSimulatedSeconds=report.actualSimulatedSeconds,
+                captureWallSeconds=report.captureWallSeconds,
+                clockTimestamp = name=="capture-start" ? report.captureStartClockTimestamp : report.captureEndClockTimestamp,
+                clockFrequency = Stopwatch.Frequency, processId = Process.GetCurrentProcess().Id };
+            string path = Path.Combine(signalDirectory, name + ".json"), temporary = path + ".pending";
+            File.WriteAllText(temporary, JsonUtility.ToJson(signal)); File.Move(temporary, path);
+        }
     }
 }

@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, io::Read, path::Path};
 pub mod admission;
+pub mod flight;
 pub mod recovery;
 pub mod startup;
 

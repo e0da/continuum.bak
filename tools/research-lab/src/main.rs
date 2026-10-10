@@ -78,6 +78,25 @@ fn run() -> Result<()> {
             "--startup-resource-image",
             "--startup-work-scheduler",
             "--native-asset-installation",
+            "--startup-world-timing",
+            "--flight-save",
+            "--flight-checkpoint",
+            "--flight-max-delta",
+            "--flight-seconds",
+            "--flight-settle-seconds",
+            "--flight-warp",
+            "--flight-atmosphere",
+            "--flight-resolution",
+            "--flight-no-shadows",
+            "--flight-no-aa",
+            "--flight-native-sample",
+            "--flight-perturbation",
+            "--flight-pulse-delta-v",
+            "--flight-callback-attribution",
+            "--flight-hide-vessel",
+            "--flight-no-aero-fx",
+            "--flight-aero-quality",
+            "--flight-entry-target-altitude",
         ],
         "compare" => &[
             "--baseline",
@@ -262,16 +281,26 @@ fn run() -> Result<()> {
         }
         "admit-cache" => {
             let started = Instant::now();
-            let instance = Path::new(get("--instance")?).canonicalize().map_err(|e| e.to_string())?;
-            if read::<Value>(&instance.join("continuum-lab.local.json"))?["scope"] != "disposable-lab" {
+            let instance = Path::new(get("--instance")?)
+                .canonicalize()
+                .map_err(|e| e.to_string())?;
+            if read::<Value>(&instance.join("continuum-lab.local.json"))?["scope"]
+                != "disposable-lab"
+            {
                 return Err("disposable laboratory ownership required".into());
             }
             let source_hashes = expected_bundle_hashes(Path::new(get("--startup-cache")?))?;
             let admission = continuum_research_lab::admission::admit(
-                &instance, Path::new(get("--startup-cache")?), "offline-admission-proof", &source_hashes,
+                &instance,
+                Path::new(get("--startup-cache")?),
+                "offline-admission-proof",
+                &source_hashes,
             )?;
-            write_new(output, &json!({"schema":"continuum-offline-cache-admission/v1", "wallSeconds":started.elapsed().as_secs_f64(),
-                "proof":admission.proof,"files":admission.files,"sourceSha256":source_hashes,"scope":"no-game-launch-content-admission"}))?;
+            write_new(
+                output,
+                &json!({"schema":"continuum-offline-cache-admission/v1", "wallSeconds":started.elapsed().as_secs_f64(),
+                "proof":admission.proof,"files":admission.files,"sourceSha256":source_hashes,"scope":"no-game-launch-content-admission"}),
+            )?;
         }
         "run" => smoke(
             Path::new(get("--instance")?),
@@ -351,7 +380,10 @@ fn run() -> Result<()> {
                 }
             },
             options.get("--startup-catalog").map(String::as_str),
-            match options.get("--startup-texture-prefetch").map(String::as_str) {
+            match options
+                .get("--startup-texture-prefetch")
+                .map(String::as_str)
+            {
                 None | Some("false") => false,
                 Some("true") => true,
                 _ => return Err("startup-texture-prefetch must be true or false".into()),
@@ -376,11 +408,18 @@ fn run() -> Result<()> {
                 Some("true") => true,
                 _ => return Err("startup-readiness must be true or false".into()),
             },
-            match options.get("--startup-resource-image-mode").map(String::as_str) {
+            match options
+                .get("--startup-resource-image-mode")
+                .map(String::as_str)
+            {
                 None | Some("none") => "none",
                 Some("prepare") => "prepare",
                 Some("reuse") => "reuse",
-                _ => return Err("startup-resource-image-mode must be none, prepare, or reuse".into()),
+                _ => {
+                    return Err(
+                        "startup-resource-image-mode must be none, prepare, or reuse".into(),
+                    )
+                }
             },
             options.get("--startup-resource-image").map(String::as_str),
             match options.get("--startup-work-scheduler").map(String::as_str) {
@@ -389,6 +428,12 @@ fn run() -> Result<()> {
                 _ => return Err("startup-work-scheduler must be true or false".into()),
             },
             options.get("--native-asset-installation").map(Path::new),
+            continuum_research_lab::flight::Request::parse(&options)?,
+            match options.get("--startup-world-timing").map(String::as_str) {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err("startup-world-timing must be true or false".into()),
+            },
         )?,
         "compare" => {
             if let Some(path) = options.get("--startup-screen") {
@@ -441,8 +486,16 @@ fn run() -> Result<()> {
                 .collect::<Vec<_>>();
             write_new(output, &compare(&left, &right, &treatments)?)?;
         }
-        "install-native-assets" => native_assets::install(Path::new(get("--instance")?), Path::new(get("--manifest")?), output)?,
-        "restore-native-assets" => native_assets::restore(Path::new(get("--instance")?), Path::new(get("--installation")?), output)?,
+        "install-native-assets" => native_assets::install(
+            Path::new(get("--instance")?),
+            Path::new(get("--manifest")?),
+            output,
+        )?,
+        "restore-native-assets" => native_assets::restore(
+            Path::new(get("--instance")?),
+            Path::new(get("--installation")?),
+            output,
+        )?,
         "qualify" => write_new(
             output,
             &metrics(&read::<FlightReceipt>(Path::new(get("--receipt")?))?)?,
@@ -596,18 +649,27 @@ fn smoke(
     startup_resource_image: Option<&str>,
     startup_work_scheduler: bool,
     native_asset_installation: Option<&Path>,
+    flight: Option<continuum_research_lab::flight::Request>,
+    startup_world_timing: bool,
 ) -> Result<()> {
     let admission_started = Instant::now();
     if (startup_resource_image_mode != "none") != startup_resource_image.is_some() {
         return Err("resource image mode requires one private image path".into());
     }
     if let Some(path) = startup_resource_image {
-        if !Path::new(path).is_absolute() { return Err("resource image path must be absolute".into()); }
+        if !Path::new(path).is_absolute() {
+            return Err("resource image path must be absolute".into());
+        }
     }
     if startup_resource_image_mode != "none" && (startup_texture_prefetch || startup_dds_mapped) {
         return Err("resource image replaces the texture loader; select it independently of texture seam probes".into());
     }
     let catalog_preparation = startup_catalog_mode.starts_with("prepare");
+    if flight.is_some()
+        && (startup_build_cache || catalog_preparation || startup_resource_image_mode == "prepare")
+    {
+        return Err("flight capture cannot share a resource preparation run".into());
+    }
     if (startup_catalog_mode != "none") != startup_catalog.is_some() {
         return Err("catalog prepare/reuse requires one private catalog path".into());
     }
@@ -650,22 +712,35 @@ fn smoke(
         return Err("run output already exists".into());
     }
     let instance = instance.canonicalize().map_err(|e| e.to_string())?;
-    if instance.join("continuum-native-asset-transaction.local.json").exists() {
-        return Err("native asset transaction is unfinished; restore or complete it before launch".into());
+    if instance
+        .join("continuum-native-asset-transaction.local.json")
+        .exists()
+    {
+        return Err(
+            "native asset transaction is unfinished; restore or complete it before launch".into(),
+        );
     }
     let native_pointer = instance.join("continuum-native-asset-installation.local.json");
     if native_pointer.exists() {
         let pointer: Value = read(&native_pointer)?;
-        let installed = native_asset_installation.ok_or("this instance requires its native asset treatment receipt")?;
+        let installed = native_asset_installation
+            .ok_or("this instance requires its native asset treatment receipt")?;
         if pointer["installationReceipt"].as_str() != installed.to_str()
-            || pointer["installationSha256"].as_str() != Some(hash(installed)?.as_str()) {
-            return Err("native asset treatment receipt differs from the installed checkpoint".into());
+            || pointer["installationSha256"].as_str() != Some(hash(installed)?.as_str())
+        {
+            return Err(
+                "native asset treatment receipt differs from the installed checkpoint".into(),
+            );
         }
     }
     let ownership: Value = read(&instance.join("continuum-lab.local.json"))?;
     if ownership["scope"] != "disposable-lab" {
         return Err("instance is not marked as a disposable laboratory copy".into());
     }
+    let flight_inputs = flight
+        .as_ref()
+        .map(|request| request.snapshot(&instance))
+        .transpose()?;
     let session: Value = read(reservation)?;
     if session["schema"] != "continuum-lab-reservation/v1"
         || session["host"] != "forge"
@@ -703,6 +778,9 @@ fn smoke(
         startup_bundle_hashes(&instance)?
     };
     fs::create_dir(output).map_err(|e| e.to_string())?;
+    if let Some(inputs) = &flight_inputs {
+        write_new(&output.join("flight-inputs.json"), inputs)?;
+    }
     let stdout = fs::File::create(output.join("player-stdout.log")).map_err(|e| e.to_string())?;
     let stderr = fs::File::create(output.join("player-stderr.log")).map_err(|e| e.to_string())?;
     let stamp = SystemTime::now()
@@ -739,8 +817,12 @@ fn smoke(
     let admission_seconds = admission_started.elapsed().as_secs_f64();
     let mut child = Command::new(&executable)
         .current_dir(&instance)
+        .args(if flight.is_none() {
+            vec!["--continuum-native-boundary-bench".to_string()]
+        } else {
+            flight.as_ref().unwrap().arguments()
+        })
         .args([
-            "--continuum-native-boundary-bench",
             "-screen-width",
             "1920",
             "-screen-height",
@@ -749,6 +831,11 @@ fn smoke(
         ])
         .arg(&log_path)
         .arg(format!("--continuum-research-run={run_id}"))
+        .args(if startup_world_timing {
+            vec!["--continuum-startup-world-timing"]
+        } else {
+            vec![]
+        })
         .args(match startup_catalog_mode {
             "prepare" => vec!["--continuum-startup-prepare-catalog"],
             "prepare-minimal" => vec![
@@ -785,8 +872,13 @@ fn smoke(
             vec![]
         })
         .args(if startup_resource_image_mode != "none" {
-            vec![format!("--continuum-startup-resource-image-mode={startup_resource_image_mode}"),
-                format!("--continuum-startup-resource-image={}", startup_resource_image.unwrap())]
+            vec![
+                format!("--continuum-startup-resource-image-mode={startup_resource_image_mode}"),
+                format!(
+                    "--continuum-startup-resource-image={}",
+                    startup_resource_image.unwrap()
+                ),
+            ]
         } else {
             vec![]
         })
@@ -851,6 +943,12 @@ fn smoke(
         .map_err(|e| e.to_string())?;
     let mut observation = None;
     let mut menu_elapsed = None;
+    let mut native_sample = continuum_research_lab::flight::NativeSample::new(
+        flight
+            .as_ref()
+            .map(|request| request.native_sample)
+            .unwrap_or(false),
+    );
     let (status, timed_out) = loop {
         if observation.is_none() {
             if let Ok(entries) = fs::read_dir(&observer_directory) {
@@ -875,6 +973,7 @@ fn smoke(
                 }
             }
         }
+        native_sample.poll(&observer_directory, &run_id, child.id(), output);
         match child.try_wait() {
             Ok(Some(status)) => break (status, false),
             Ok(None) => {}
@@ -893,13 +992,17 @@ fn smoke(
         }
         thread::sleep(Duration::from_millis(100));
     };
+    let native_sample_receipt = native_sample.finish(child.id(), output);
     let generated_catalog_hash = if catalog_preparation {
         startup_catalog.and_then(|path| hash(Path::new(path)).ok())
     } else {
         None
     };
     let source_unchanged = hash(&assembly)? == assembly_hash
-        && native_assets.as_ref().map(|assets| assets.unchanged()).unwrap_or(true)
+        && native_assets
+            .as_ref()
+            .map(|assets| assets.unchanged())
+            .unwrap_or(true)
         && (!catalog_preparation || generated_catalog_hash.is_some())
         && catalog_before
             .as_ref()
@@ -926,14 +1029,106 @@ fn smoke(
                     .unwrap_or(false)
             })
             .unwrap_or(true);
+    let mut flight_error = None;
+    let mut flight_summary = None;
+    let mut flight_entry = None;
+    if let Some(request) = &flight {
+        let result = (|| -> Result<Value> {
+            flight_entry = continuum_research_lab::flight::retain_entry(
+                &observer_directory,
+                &run_id,
+                child.id(),
+                output,
+            )?;
+            let directory = continuum_research_lab::flight::capture_directory(
+                &observer_directory,
+                &run_id,
+                child.id(),
+            )?
+            .ok_or_else(|| match &flight_entry {
+                Some(entry) => format!(
+                    "owned flight capture not found; entry status={} reason={}",
+                    entry["report"]["status"], entry["report"]["reason"]
+                ),
+                None => "owned flight capture not found; no owned entry sidecar".to_string(),
+            })?;
+            let (start, end, report) = continuum_research_lab::flight::retain(&directory, output)?;
+            let mut summary = continuum_research_lab::flight::analyze(
+                request,
+                &run_id,
+                child.id(),
+                &report,
+                &start,
+                &end,
+            )?;
+            continuum_research_lab::flight::validate_entry(
+                request,
+                &run_id,
+                child.id(),
+                flight_entry.as_ref(),
+                &report,
+                flight_inputs
+                    .as_ref()
+                    .ok_or("flight input snapshot absent")?,
+            )?;
+            continuum_research_lab::flight::validate_controls(
+                request,
+                &run_id,
+                child.id(),
+                output,
+                &report,
+            )?;
+            for (name, key) in [
+                ("diagnostic-controls.json", "diagnosticControls"),
+                ("diagnostic-controls-end.json", "diagnosticControlsEnd"),
+                ("perturbation.json", "perturbationEvidence"),
+            ] {
+                let path = output.join(name);
+                if path.exists() {
+                    summary[key] = json!({"sha256":hash(&path)?,"report":read::<Value>(&path)?});
+                }
+            }
+            summary["entryEvidence"] = json!(flight_entry);
+            summary["cameraReadbacks"] = json!({
+                "requestedSeed":{"mode":"FREE","pitch":0.2,"heading":0.3,"distanceMeters":150.0,"inputLocked":true},
+                "captureStart":summary["diagnosticControls"]["report"],
+                "captureEnd":summary["diagnosticControlsEnd"]["report"],
+                "scope":"Boundary readbacks only; terrain/vessel motion may adjust camera distance. Renderer absence is witnessed at admission/end, not every frame."});
+            write_new(&output.join("flight-summary.json"), &summary)?;
+
+            Ok(summary)
+        })();
+        match result {
+            Ok(summary) => flight_summary = Some(summary),
+            Err(error) => flight_error = Some(error),
+        }
+    }
+    if flight
+        .as_ref()
+        .map(|request| request.native_sample)
+        .unwrap_or(false)
+        && (native_sample_receipt["status"] != "completed"
+            || native_sample_receipt["outputSha256"].is_null())
+    {
+        flight_error.get_or_insert_with(|| {
+            "requested owned native sample incomplete; retained diagnostic receipt".to_string()
+        });
+    }
+    let flight_sources_unchanged = flight_inputs
+        .as_ref()
+        .map(continuum_research_lab::flight::unchanged)
+        .unwrap_or(true);
     if let Some(value) = &observation {
         write_new(&output.join("runtime-observation.json"), value)?;
     }
     write_new(
         &output.join("receipt.json"),
-        &json!({"schema":"continuum-lab-process-smoke/v1","scope":if catalog_preparation {"asset-catalog-preparation-process"} else {"menu-native-boundary-process-smoke"},
+        &json!({"schema":"continuum-lab-process-smoke/v1","scope":if flight.is_some() {"timed-diagnostic-flight"} else if catalog_preparation {"asset-catalog-preparation-process"} else {"menu-native-boundary-process-smoke"},
         "startedUnixSeconds":stamp,"ownedPid":child.id(),"reservationSha256":hash(reservation)?,"assemblySha256":assembly_hash,"playerSha256":executable_hash,
-        "sourceUnchanged":source_unchanged,"wallSeconds":started.elapsed().as_secs_f64(),"exitCode":status.code(),
+        "sourceUnchanged":source_unchanged,"flightSourcesUnchanged":flight_sources_unchanged,
+        "flightRequest":flight,"flightCapture":flight_summary,"flightCaptureError":flight_error,"flightEntry":flight_entry,
+        "flightNativeSample":native_sample_receipt,
+        "captureCpuRss":"not-collected-by-runner; external-owned-process-sampling-required","wallSeconds":started.elapsed().as_secs_f64(),"exitCode":status.code(),
         "runId":run_id,"mainMenuStartObservedWallSeconds":menu_elapsed,"startupBoundary":"first-owned-addon-Start-in-main-menu","startupPollingResolutionSeconds":0.1,
         "admissionWallSeconds":admission_seconds,"admissionPlusMenuSeconds":menu_elapsed.map(|seconds| seconds+admission_seconds),
         "startupUnlimitedRequested":startup_unlimited,
@@ -955,10 +1150,15 @@ fn smoke(
         "startupBuildCacheRequested":startup_build_cache,"startupCache":startup_cache,"bundleSha256":bundle_hashes,
         "startupCachedBundlesRequested":startup_cached_bundles,
         "startupNativeAdmissionRequested":startup_native_admission,"cacheAdmissionSha256":proof_hash,"cacheAdmissionFiles":admission.as_ref().map(|value|&value.files),
-        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged {"passed"} else {"failed"},
-        "qualification":if catalog_preparation {"catalog-content-and-fresh-process-reuse-proof-required"} else {"process-exit-only-native-receipt-review-and-flight-proof-required"}}),
+        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none() {"passed"} else {"failed"},
+        "qualification":if flight.is_some() {"diagnostic-window-only; behavior-and-gameplay-not-qualified"} else if catalog_preparation {"catalog-content-and-fresh-process-reuse-proof-required"} else {"process-exit-only-native-receipt-review-and-flight-proof-required"}}),
     )?;
-    if timed_out || !status.success() || !source_unchanged {
+    if timed_out
+        || !status.success()
+        || !source_unchanged
+        || !flight_sources_unchanged
+        || flight_error.is_some()
+    {
         return Err("owned process smoke failed; retained logs and receipt".into());
     }
     Ok(())
@@ -966,21 +1166,41 @@ fn smoke(
 
 fn expected_bundle_hashes(cache: &Path) -> Result<BTreeMap<String, String>> {
     let manifest_path = cache.join("manifest.json");
-    if fs::metadata(&manifest_path).map_err(|e| e.to_string())?.len() > 65536 {
+    if fs::metadata(&manifest_path)
+        .map_err(|e| e.to_string())?
+        .len()
+        > 65536
+    {
         return Err("cache manifest too large".into());
     }
     let manifest: Value = read(&manifest_path)?;
     let rows = manifest["bundles"].as_array().ok_or("cache rows absent")?;
-    if rows.len() != 3 { return Err("three source rows required".into()); }
+    if rows.len() != 3 {
+        return Err("three source rows required".into());
+    }
     let mut hashes = BTreeMap::new();
-    for relative in ["MakingHistory/AssetBundles/makinghistory_assets", "MakingHistory/AssetBundles/makinghistory_scene", "Serenity/AssetBundles/serenity_assets"] {
-        let matching: Vec<_> = rows.iter().filter(|row| row["relativePath"] == relative).collect();
-        if matching.len() != 1 { return Err("source row missing or duplicate".into()); }
-        let digest = matching[0]["sourceSha256"].as_str().ok_or("source hash absent")?;
+    for relative in [
+        "MakingHistory/AssetBundles/makinghistory_assets",
+        "MakingHistory/AssetBundles/makinghistory_scene",
+        "Serenity/AssetBundles/serenity_assets",
+    ] {
+        let matching: Vec<_> = rows
+            .iter()
+            .filter(|row| row["relativePath"] == relative)
+            .collect();
+        if matching.len() != 1 {
+            return Err("source row missing or duplicate".into());
+        }
+        let digest = matching[0]["sourceSha256"]
+            .as_str()
+            .ok_or("source hash absent")?;
         if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err("source hash malformed".into());
         }
-        hashes.insert(format!("GameData/SquadExpansion/{relative}"), digest.to_string());
+        hashes.insert(
+            format!("GameData/SquadExpansion/{relative}"),
+            digest.to_string(),
+        );
     }
     Ok(hashes)
 }

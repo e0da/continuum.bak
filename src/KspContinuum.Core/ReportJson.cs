@@ -57,10 +57,24 @@ namespace KspContinuum
                 output.Append(']'); return;
             }
             var type = value.GetType();
+            bool pluginDiagnostic = type.Assembly == typeof(ReportJson).Assembly &&
+                (type.FullName == "KspContinuum.FlightDiagnosticControlReport" ||
+                 type.FullName == "KspContinuum.FlightRenderCensus+Report" ||
+                 type.FullName == "KspContinuum.FlightRenderCensus+CameraRow" ||
+                 type.FullName == "KspContinuum.FlightRenderCensus+ShaderRow" ||
+                 type.FullName == "KspContinuum.FlightRenderCensus+Row" ||
+                 type.FullName == "KspContinuum.FlightRenderCensus+Group" ||
+                 type.FullName == "KspContinuum.FlightRenderCensus+MaterialRow" ||
+                 type.FullName == "KspContinuum.AtmosphericEntryPreparation+Report" ||
+                 type.FullName == "KspContinuum.AtmosphericEntryPreparation+Sample" ||
+                 type.FullName == "KspContinuum.StartupWorldTiming+Report" ||
+                 type.FullName == "KspContinuum.StartupWorldTiming+Metric" ||
+                 type.FullName == "KspContinuum.StartupWorldTiming+Point" ||
+                 type.FullName == "KspContinuum.StartupWorldTiming+Wake");
             if (type != typeof(BenchReport) && type != typeof(Sample) && type != typeof(QueuedForceIsolationSample) && type != typeof(VesselReport) &&
                 type != typeof(PartReport) && type != typeof(ProbeReport) && type != typeof(MarkerReport) &&
                 type != typeof(CallbackAttributionReport) && type != typeof(CallbackAttributionRow) &&
-                type != typeof(DryBuoyancyReport) &&
+                type != typeof(DryBuoyancyReport) && type != typeof(FlightPerturbationReport) &&
                 type != typeof(CoastingAdapterReport) &&
                 type != typeof(ProfileFrame) && type != typeof(ProfileDistribution) && type != typeof(ProfileMarkerSummary) &&
                 type != typeof(LoopTimingReport) && type != typeof(LoopTimingScope) && type != typeof(LoopTimingSample) &&
@@ -93,7 +107,7 @@ namespace KspContinuum
                 type != typeof(LiveSweepStatus) &&
                 type != typeof(LiveControlReply) &&
                 type != typeof(NativeBoundaryMonoReport) && type != typeof(NativeBoundaryMonoRow) &&
-                type != typeof(NativeBoundaryMonoTiming) && type != typeof(ManagedReconstructionObservation))
+                type != typeof(NativeBoundaryMonoTiming) && type != typeof(ManagedReconstructionObservation) && !pluginDiagnostic)
                 throw new ArgumentException("Unsupported report type: " + type.FullName);
             output.Append('{'); bool firstField = true;
             foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Instance))
