@@ -83,6 +83,7 @@ namespace KspContinuum
             if (!admitted || stopping) return;
             try
             {
+                if (Input.GetKeyDown(KeyCode.F8)) Toggle("keyboard-toggle");
                 Vessel vessel = FlightGlobals.ready ? FlightGlobals.ActiveVessel : null;
                 int count = vessel == null || vessel.parts == null ? 0 : vessel.parts.Count;
                 if (vessel != tracked || count != trackedParts)
@@ -142,14 +143,22 @@ namespace KspContinuum
         public void OnGUI()
         {
             if (!admitted || stopping) return;
-            GUILayout.BeginArea(new Rect(Math.Max(0, Screen.width - 295), 85, 280, 112), "Continuum aero experiment", GUI.skin.window);
-            GUILayout.Label(state);
-            if (GUILayout.Button(operatorEnabled ? "Use stock effects" : "Enable experimental effects"))
+            bool previous = GUI.enabled;
+            GUI.enabled = true;
+            try
             {
-                operatorEnabled = !operatorEnabled; Invalidate(operatorEnabled ? "operator-enabled" : "operator-disabled");
-                Record(operatorEnabled ? "stabilizing" : "stock-disabled", "operator-toggle", 0);
+                GUILayout.BeginArea(new Rect(Math.Max(0, Screen.width - 295), 85, 280, 112), "Continuum aero experiment", GUI.skin.window);
+                GUILayout.Label(state);
+                if (GUILayout.Button(operatorEnabled ? "Use stock effects" : "Enable experimental effects")) Toggle("operator-toggle");
+                GUILayout.Label("F8: switch stock / experimental");
+                GUILayout.EndArea();
             }
-            GUILayout.EndArea();
+            finally { GUI.enabled = previous; }
+        }
+        void Toggle(string cause)
+        {
+            operatorEnabled = !operatorEnabled; Invalidate(operatorEnabled ? "operator-enabled" : "operator-disabled");
+            Record(operatorEnabled ? "stabilizing" : "stock-disabled", cause, 0);
         }
         void Stop(string cause)
         {
