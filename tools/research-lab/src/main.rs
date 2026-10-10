@@ -101,6 +101,7 @@ fn run() -> Result<()> {
             "--flight-aero-quality",
             "--flight-aero-batch",
             "--flight-part-batch",
+            "--flight-part-retained",
             "--flight-part-shader-bundle",
             "--flight-part-standard-fallback",
             "--flight-screenshot",
