@@ -1453,7 +1453,8 @@ fn validate_part_batch(request: &Request, batch: &Value, run_id: &str, pid: u32,
     }
     if request.part_retained && (batch["retiredRenderers"] != batch["eligibleRenderers"]
         || batch["restoredRetiredRenderers"] != batch["retiredRenderers"]
-        || batch["sharedPartPoseSnapshots"].as_u64().unwrap_or(0) == 0) {
+        || batch["sharedPartPoseSnapshots"].as_u64().unwrap_or(0) == 0
+        || !batch["maxInitialRecoveredPositionErrorMeters"].as_f64().is_some_and(|v| v.is_finite() && (0.0..=0.005).contains(&v))) {
         return Err("retained renderer ownership or shared pose publication incomplete".into());
     }
     match batch["shaderSource"].as_str() {
