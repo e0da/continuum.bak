@@ -227,6 +227,8 @@ namespace KspContinuum
             if (field != null && field.status != "installed-experimental") throw new InvalidOperationException("Aero field preparation rejected: " + field.reason);
             FlightGpuTiming.StartOwned(gameObject, directory, runId);
             FlightCameraChain.Start(FlightGlobals.ActiveVessel, directory, runId);
+            FlightWorldDraw.Start(FlightGlobals.ActiveVessel, directory, runId);
+            if (FlightWorldDraw.FailureReason != null) throw new InvalidOperationException("World draw admission rejected: " + FlightWorldDraw.FailureReason);
             return new Probe(null,false,simulationSeconds,wallTimeout,simulationSeconds > 0 ? directory : null);
         }
         static double OptionalNumber(string[] arguments,string prefix,double fallback,double minimum,double maximum)
@@ -322,6 +324,7 @@ namespace KspContinuum
             try
             {
                 FlightCameraChain.Finish("completed");
+                FlightWorldDraw.EndWindow();
                 FlightAeroFieldRenderer.ObservePixelsAfterWindow();
                 FlightDiagnosticControls.RecordEnd(directory);
                 report.requestedCatchupSeconds=requestedCatchup; report.settleSeconds=settleSeconds;
@@ -329,6 +332,7 @@ namespace KspContinuum
                 string reason; bool valid = atmosphericStress ? AtmosphericStressComplete(report, out reason) :
                     Stable(report, physicsWarp ? RequestedPhysicsWarp : 1, out reason, normalAtmosphere);
                 if (FlightCameraChain.FailureReason != null) { valid = false; reason = "camera-chain-invalid: " + FlightCameraChain.FailureReason; }
+                if (FlightWorldDraw.FailureReason != null) { valid = false; reason = "world-draw-invalid: " + FlightWorldDraw.FailureReason; }
                 if (setDragStressCandidate && !AeroSetDragProviderQualification.EndStressWindow())
                 { valid = false; reason = "setdrag-stress-provider-invalid"; }
                 bool sourceUnchanged = !ScaleCheckpointLoadState.Requested || ScaleCheckpointLoadState.SourceUnchanged();
@@ -500,6 +504,8 @@ namespace KspContinuum
             try { FlightAeroBatcher.Finish(); }
             catch (Exception error) { Debug.LogException(error); code = 2; }
             try { FlightPartBatcher.Finish(); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
+            try { FlightWorldDraw.Stop(status); }
             catch (Exception error) { Debug.LogException(error); code = 2; }
             try { FlightDiagnosticControls.Restore(); }
             catch (Exception error) { Debug.LogException(error); code = 2; }

@@ -302,6 +302,7 @@ const FLIGHT_KEYS: &[(&str, &str)] = &[
     ("seconds", "seconds"),
     ("settleSeconds", "settle-seconds"),
     ("cameraChain", "camera-chain"),
+    ("worldDraw", "world-draw"),
     ("warp", "warp"),
     ("atmosphere", "atmosphere"),
     ("resolution", "resolution"),

@@ -27,6 +27,8 @@ pub struct Request {
     pub callback_attribution: bool,
     #[serde(default)]
     pub camera_chain: bool,
+    #[serde(default)]
+    pub world_draw: Option<String>,
     pub hide_vessel: bool,
     pub no_aero_fx: bool,
     pub aero_quality: Option<u32>,
@@ -122,6 +124,10 @@ impl Request {
         if !matches!(perturbation, "quiet" | "off-center-pulse") {
             return Err("flight-perturbation supports quiet or off-center-pulse".into());
         }
+        let world_draw = options.get("--flight-world-draw").cloned();
+        if world_draw.as_deref().is_some_and(|mode| !matches!(mode, "stock" | "suppressed")) {
+            return Err("flight-world-draw supports stock or suppressed".into());
+        }
         let aero_quality = options
             .get("--flight-aero-quality")
             .map(|value| value.parse::<u32>().map_err(|error| error.to_string()))
@@ -201,6 +207,7 @@ impl Request {
             pulse_delta_v: number("--flight-pulse-delta-v", 0.25, 0.001, 100.0)?,
             callback_attribution: boolean("--flight-callback-attribution")?,
             camera_chain: boolean("--flight-camera-chain")?,
+            world_draw,
             hide_vessel: boolean("--flight-hide-vessel")?,
             no_aero_fx: boolean("--flight-no-aero-fx")?,
             aero_quality,
@@ -231,6 +238,9 @@ impl Request {
             format!("--continuum-flight-settle={}", self.settle_seconds),
             format!("--continuum-flight-catchup={}", self.maximum_delta),
         ];
+        if let Some(mode) = &self.world_draw {
+            args.push(format!("--continuum-flight-world-draw={mode}"));
+        }
         if self.camera_chain {
             args.push("--continuum-flight-camera-chain".into());
         }
@@ -664,6 +674,10 @@ pub fn analyze(
         json!({"schema":"continuum-flight-profile-summary/v1","status":"capture-validated","runId":run_id,"request":request,
         "intrusiveDiagnosticsRequested":request.native_sample || request.callback_attribution || request.camera_chain || request.gpu_timing_library.is_some(),
         "cameraChainRequested":request.camera_chain,
+        "worldDrawModeRequested":request.world_draw,
+        "worldDrawObserverRequested":request.world_draw.is_some(),
+        "worldDrawingTreatmentRequested":request.world_draw.as_deref() == Some("suppressed"),
+        "worldDrawComparisonEligibility":if request.world_draw.is_some() {Value::String("matched-world-owner-observer-only-with-declared-visual-treatment; not-playable-improvement".into())} else {Value::Null},
         "vesselRenderingTreatmentRequested":request.hide_vessel,
         "aeroEffectsTreatmentRequested":request.no_aero_fx || request.aero_quality.is_some() || request.aero_batch || request.aero_field,
         "aeroBatchRequested":request.aero_batch,
@@ -675,7 +689,7 @@ pub fn analyze(
         "optionalPhaseAccounting":{"earlyUpdateMilliseconds":costs.get(early_name),"preUpdateMilliseconds":costs.get(pre_name),
             "preLateUpdateParentMilliseconds":costs.get(prelate_name),"preLatePhaseAccountedMilliseconds":prelate,
             "preLatePhaseUsesParent":costs.contains_key(prelate_name)},
-        "comparisonEligibility":if request.native_sample || request.callback_attribution || request.camera_chain || request.gpu_timing_library.is_some() {"intrusive-diagnostic-perturbation; prohibited-clean-comparison-to-uninstrumented"} else {"unprofiled-flight-only-with-matched-perturbation-checkpoint-controls-and-declared-rendering-treatment"},
+        "comparisonEligibility":if request.native_sample || request.callback_attribution || request.camera_chain || request.gpu_timing_library.is_some() {"intrusive-diagnostic-perturbation; prohibited-clean-comparison-to-uninstrumented"} else if request.world_draw.is_some() {"world-draw-diagnostic-only-with-matched-world-owner-observer-and-declared-visual-treatment; not-playable-improvement"} else {"unprofiled-flight-only-with-matched-perturbation-checkpoint-controls-and-declared-rendering-treatment"},
         "scope":"diagnostic-flight-capture-only-not-gameplay-qualification","frames":frames.len(),"wallSeconds":wall,"simulatedSeconds":simulation,
         "achievedSimulationRate":simulation/wall,"requestedRate":request.warp,"normalizedSimulationRate":simulation/wall/request.warp as f64,
         "meanFps":frames.len() as f64/sampled_wall,"frameMilliseconds":distribution(intervals)?,"fixedCallbacksPerRenderedFrame":distribution(steps)?,
@@ -711,6 +725,7 @@ pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> 
         "material-census.json",
         "gpu-timing.json",
         "camera-chain.json",
+        "world-draw.json",
     ] {
         let path = directory.join(name);
         if path.exists() {
@@ -776,6 +791,82 @@ fn retain_aero_fixture(directory: &Path, output: &Path) -> Result<()> {
     if hash(&manifest)? != manifest_hash || hash(&destination.join("manifest.json"))? != manifest_hash
         || hash(&geometry)? != geometry_hash || hash(&destination.join("geometry.bin"))? != geometry_hash {
         return Err("field fixture changed while retaining".into());
+    }
+    Ok(())
+}
+
+fn validate_world_draw(world: &Value, capture: &Value, run_id: &str, pid: u32, mode: &str) -> Result<()> {
+    if !matches!(mode, "stock" | "suppressed")
+        || world["schema"] != "continuum-flight-world-draw/v1"
+        || world["runId"] != run_id || world["processId"].as_u64() != Some(pid as u64)
+        || world["vesselId"] != capture["frames"][0]["vesselId"] || world["mode"] != mode
+        || world["status"] != "completed"
+        || world["cleanupStatus"] != "removed-owned-hooks-restored-survivors"
+        || world["hooksRemoved"] != true || world["coverageComplete"] != true
+        || world["restorationComplete"] != true || world["faults"].as_u64() != Some(0)
+        || world["parts"].as_u64().filter(|n| *n > 0) != capture["frames"][0]["parts"].as_u64().filter(|n| *n > 0)
+        || world["parts"].as_u64().filter(|n| *n > 0).is_none()
+    {
+        return Err("world-draw identity, mode, coverage or lifecycle differs".into());
+    }
+    let count = |key: &str| world[key].as_u64().ok_or_else(|| format!("world-draw {key} absent or negative"));
+    let admitted = count("admitted")?;
+    let initial = count("initialEligible")?;
+    let dynamic = count("dynamicAdmissions")?;
+    let restored = count("restored")?;
+    let destroyed = count("destroyed")?;
+    let already_off = count("alreadyOff")?;
+    let initial_active = count("initialActive")?;
+    let end_active = count("endActive")?;
+    if initial == 0 || admitted > 50_000 || admitted < initial || dynamic != admitted - initial
+        || initial_active > initial || end_active > admitted
+        || restored.checked_add(destroyed) != Some(admitted)
+        || count("coverageChecks")? == 0 || count("observedFrames")? == 0
+    { return Err("world-draw lease counters or observed coverage differ".into()); }
+    let inventory = world["inventoryMilliseconds"].as_f64().ok_or("world inventory cost absent")?;
+    if !inventory.is_finite() || inventory < 0.0 || world["observerTicks"].as_u64().is_none()
+        || world["clockFrequency"].as_i64().filter(|n| *n > 0).is_none()
+        || world["clockFrequency"] != capture["clockFrequency"]
+    { return Err("world-draw observer measurement or clock differs".into()); }
+    let owners = world["owners"].as_array().ok_or("world owner leases absent")?;
+    if owners.len() as u64 != admitted { return Err("world-draw lease inventory differs".into()); }
+    let mut observed_initial = 0; let mut observed_active = 0; let mut observed_off = 0; let mut observed_restored = 0; let mut observed_destroyed = 0;
+    for (generation, owner) in owners.iter().enumerate() {
+        if owner["rendererId"].as_i64().filter(|n| *n != 0).is_none()
+            || owner["pqsId"].as_i64().filter(|n| *n != 0).is_none()
+            || owner["pqsName"].as_str().filter(|s| !s.is_empty()).is_none()
+            || !matches!(owner["ownershipKind"].as_str(), Some("native-quad-sphere-root" | "pqs-ancestry"))
+        { return Err("world-draw owner identity absent".into()); }
+        let original = owner["originalForceRenderingOff"].as_bool().ok_or("world original render flag absent")?;
+        let initial = owner["initial"].as_bool().ok_or("world initial lease flag absent")?;
+        let active = owner["initialActive"].as_bool().ok_or("world initial active flag absent")?;
+        if owner["leaseGeneration"].as_u64() != Some(generation as u64) {
+            return Err("world-draw lease generation differs".into());
+        }
+        let restored = owner["restored"].as_bool().ok_or("world restored lease flag absent")?;
+        let destroyed = owner["destroyed"].as_bool().ok_or("world destroyed lease flag absent")?;
+        if restored == destroyed { return Err("world-draw lease has no unique terminal outcome".into()); }
+        observed_initial += u64::from(initial); observed_off += u64::from(initial && original);
+        observed_active += u64::from(initial && active);
+        observed_restored += u64::from(restored); observed_destroyed += u64::from(destroyed);
+    }
+    if observed_initial != initial || observed_active != initial_active || observed_off != already_off || observed_restored != restored || observed_destroyed != destroyed {
+        return Err("world-draw counters do not match lease outcomes".into());
+    }
+    let hooks = world["hooks"].as_array().filter(|h| h.len() == 6).ok_or("world-draw six hook identities absent")?;
+    let expected = [("PQS.AssignQuad",100676842), ("PQSCache.DestroyQuad",100676966), ("PQSLandControl+LandClassScatter.CreateScatterMesh",100706694),
+        ("LandClassROC.CreateScatterMesh",100664069), ("PQSMod_MeshScatter.BuildCache",100676581), ("PQS.DestroyQuad",100676844)];
+    let mut methods = std::collections::BTreeSet::new();
+    for hook in hooks {
+        let method = hook["method"].as_str().filter(|s| !s.is_empty()).ok_or("world hook method absent")?;
+        let identity = hook["identity"].as_str().ok_or("world hook identity absent")?;
+        let pieces: Vec<_> = identity.split(':').collect();
+        let token = expected.iter().find_map(|(name, token)| (*name == method).then_some(*token));
+        if token.is_none() || !methods.insert(method) || pieces.len() != 3
+            || pieces[0] != "10657063-2fc3-43a7-84fa-d39e75e877bf" || pieces[1].parse::<u32>().ok() != token
+            || pieces[2].len() != 64 || !pieces[2].bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("world-draw hook identities empty or duplicated".into());
+        }
     }
     Ok(())
 }
@@ -850,6 +941,66 @@ fn camera_chain_summary(chain: &Value, capture: &Value, run_id: &str, pid: u32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn world_draw_rejects_incomplete_or_foreign_ownership() {
+        let mut options = BTreeMap::from([
+            ("--flight-save".into(), "Lab".into()),
+            ("--flight-checkpoint".into(), "Station".into()),
+            ("--flight-world-draw".into(), "suppressed".into()),
+        ]);
+        let request = Request::parse(&options).unwrap().unwrap();
+        assert!(request.arguments().contains(&"--continuum-flight-world-draw=suppressed".into()));
+        let launch = crate::launch::ResolvedLaunch::parse(&options).unwrap();
+        let restored = crate::launch::ResolvedLaunch::parse_from_json(&launch.identity_json().unwrap()).unwrap();
+        assert_eq!(restored.flight.unwrap().world_draw.as_deref(), Some("suppressed"));
+        options.insert("--flight-world-draw".into(), "stock".into());
+        assert_eq!(Request::parse(&options).unwrap().unwrap().world_draw.as_deref(), Some("stock"));
+        options.insert("--flight-world-draw".into(), "hidden".into());
+        assert!(Request::parse(&options).is_err());
+        let mut legacy = serde_json::to_value(&request).unwrap();
+        legacy.as_object_mut().unwrap().remove("worldDraw");
+        assert!(serde_json::from_value::<Request>(legacy).unwrap().world_draw.is_none());
+        let capture = json!({"clockFrequency":1000,"frames":[{"vesselId":"v","parts":196}]});
+        let row = json!({"rendererId":1,"pqsId":2,"pqsName":"Kerbin","ownershipKind":"native-quad-sphere-root","originalForceRenderingOff":false,
+            "initial":true,"initialActive":true,"leaseGeneration":0,"restored":true,"destroyed":false});
+        let mut pooled = row.clone(); pooled["initial"] = json!(false); pooled["leaseGeneration"] = json!(1);
+        let hooks = [("PQS.AssignQuad",100676842),("PQSCache.DestroyQuad",100676966),("PQSLandControl+LandClassScatter.CreateScatterMesh",100706694),
+            ("LandClassROC.CreateScatterMesh",100664069),("PQSMod_MeshScatter.BuildCache",100676581),("PQS.DestroyQuad",100676844)].iter()
+            .map(|(method,token)| json!({"method":method,"identity":format!("10657063-2fc3-43a7-84fa-d39e75e877bf:{token}:{}", "a".repeat(64))})).collect::<Vec<_>>();
+        let world = json!({"schema":"continuum-flight-world-draw/v1","runId":"r","processId":7,"vesselId":"v",
+            "mode":"suppressed","status":"completed","cleanupStatus":"removed-owned-hooks-restored-survivors",
+            "parts":196,"initialEligible":1,"admitted":2,"dynamicAdmissions":1,"destroyed":0,"restored":2,
+            "alreadyOff":0,"initialActive":1,"endActive":0,"faults":0,"coverageChecks":8,"observedFrames":4,
+            "hooksRemoved":true,"coverageComplete":true,"restorationComplete":true,"inventoryMilliseconds":1.2,
+            "observerTicks":42,"clockFrequency":1000,"owners":[row,pooled],
+            "hooks":hooks});
+        validate_world_draw(&world, &capture, "r", 7, "suppressed").unwrap();
+        for (key,value) in [("runId",json!("foreign")),("processId",json!(8)),("vesselId",json!("other")),("mode",json!("stock"))] {
+            let mut bad = world.clone(); bad[key] = value;
+            assert!(validate_world_draw(&bad, &capture, "r", 7, "suppressed").is_err(), "reject foreign {key}");
+        }
+        for key in ["runId","processId","vesselId","mode","status","parts","cleanupStatus","coverageComplete",
+            "restorationComplete","hooksRemoved","initialEligible","admitted","dynamicAdmissions","restored",
+            "destroyed","alreadyOff","initialActive","endActive","faults","coverageChecks","observedFrames",
+            "inventoryMilliseconds","observerTicks","clockFrequency","owners","hooks"] {
+            let mut bad = world.clone(); bad[key] = Value::Null;
+            assert!(validate_world_draw(&bad, &capture, "r", 7, "suppressed").is_err(), "reject {key}");
+        }
+        for (key,value) in [("dynamicAdmissions",json!(0)),("restored",json!(1)),("alreadyOff",json!(1)),
+            ("faults",json!(1)),("coverageChecks",json!(0)),("observedFrames",json!(0)),("inventoryMilliseconds",json!(-1))] {
+            let mut bad = world.clone(); bad[key] = value;
+            assert!(validate_world_draw(&bad, &capture, "r", 7, "suppressed").is_err(), "reject {key}");
+        }
+        for key in ["rendererId","pqsId","pqsName","originalForceRenderingOff","initial","initialActive","leaseGeneration","restored","destroyed"] {
+            let mut bad = world.clone(); bad["owners"][0][key] = Value::Null;
+            assert!(validate_world_draw(&bad, &capture, "r", 7, "suppressed").is_err(), "reject owner {key}");
+        }
+        let mut bad = world.clone(); bad["owners"][0]["destroyed"] = json!(true);
+        assert!(validate_world_draw(&bad, &capture, "r", 7, "suppressed").is_err());
+        let mut bad = world.clone(); bad["hooks"][0]["identity"] = json!("");
+        assert!(validate_world_draw(&bad, &capture, "r", 7, "suppressed").is_err());
+    }
 
     #[test]
     fn camera_chain_rejects_unpaired_or_foreign_native_evidence() {
@@ -1110,6 +1261,7 @@ mod tests {
             pulse_delta_v: 0.25,
             callback_attribution: false,
             camera_chain: false,
+            world_draw: None,
             hide_vessel: false,
             no_aero_fx: false,
             aero_quality: None,
@@ -1202,6 +1354,7 @@ mod tests {
             pulse_delta_v: 0.25,
             callback_attribution: false,
             camera_chain: false,
+            world_draw: None,
             hide_vessel: false,
             no_aero_fx: false,
             aero_quality: None,
@@ -1503,6 +1656,10 @@ pub fn validate_controls(
         let chain: Value = read(&output.join("camera-chain.json"))?;
         let summary = camera_chain_summary(&chain, report, run_id, pid)?;
         write_new(&output.join("camera-chain-summary.json"), &summary)?;
+    }
+    if let Some(mode) = &request.world_draw {
+        let world: Value = read(&output.join("world-draw.json"))?;
+        validate_world_draw(&world, report, run_id, pid, mode)?;
     }
     let part_path = output.join("part-batch.json");
     if request.part_batch {
