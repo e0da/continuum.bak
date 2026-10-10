@@ -163,14 +163,14 @@ namespace KspContinuum
         static object PresentationWait(float seconds) { active.presentationWaits++; return null; }
         public static void ObserveForMenu() { if (active != null) { active.Export(); active.Cleanup(); } }
         public void Update() { if (active == this && !exported && HighLogic.LoadedScene == GameScenes.MAINMENU) { Export(); Cleanup(); } }
-        void Export()
+        void Export(string phase = "menu")
         {
             if (exported) return; exported = true;
-            StartupDeferredTerrain.Observe();
+            StartupDeferredTerrain.Observe(phase);
             Debug.Log(Marker + "status=observed shortenedPlacementWaits=" + shortened + " stockPlacementWaits=" + stockFallbacks + " presentationWaits=" + presentationWaits + " terrainWaits=" + terrainWaits + " terrainPolls=" + terrainPolls + " terrainRays=" + terrainRays + " fixedBarriers=" + fixedBarriers);
         }
         void Cleanup() { harmony?.UnpatchAll(Owner); harmony = null; frames.Clear(); }
-        public void OnApplicationQuit() { if (active == this) { quitting = true; Export(); StartupDeferredTerrain.Shutdown(true); Cleanup(); } }
-        public void OnDestroy() { if (active == this) { Export(); StartupDeferredTerrain.Shutdown(quitting); Cleanup(); active = null; } }
+        public void OnApplicationQuit() { if (active == this) { quitting = true; Export("shutdown"); StartupDeferredTerrain.Shutdown(true); Cleanup(); } }
+        public void OnDestroy() { if (active == this) { Export("shutdown"); StartupDeferredTerrain.Shutdown(quitting); Cleanup(); active = null; } }
     }
 }

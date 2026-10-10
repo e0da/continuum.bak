@@ -153,13 +153,13 @@ namespace KspContinuum
                     Application.Quit(2);
                     if (!failed) throw;
                 }
-                finally { if (temporary != null) UnityEngine.Object.Destroy(temporary); Observe(); }
+                finally { if (temporary != null) UnityEngine.Object.Destroy(temporary); Observe("fulfillment"); }
             }
         }
-        internal static void Observe()
+        internal static void Observe(string phase)
         {
             if (harmony == null) return;
-            Debug.Log(Marker + "status=journal deferred=" + deferred + " materialized=" + materialized + " pending=" + pending.Count +
+            Debug.Log(Marker + "status=journal phase=" + phase + " deferred=" + deferred + " materialized=" + materialized + " pending=" + pending.Count +
                 " failures=" + failures + " unsupported=" + unsupported + " captureSeconds=" + (captureTicks / (double)Stopwatch.Frequency).ToString("R", System.Globalization.CultureInfo.InvariantCulture) +
                 " fulfillmentSeconds=" + (completionTicks / (double)Stopwatch.Frequency).ToString("R", System.Globalization.CultureInfo.InvariantCulture) + " menuPending=explicit-deferred-debt");
         }
@@ -171,7 +171,7 @@ namespace KspContinuum
         internal static void Shutdown(bool processQuitting)
         {
             if (harmony == null) return;
-            Observe();
+            Observe("shutdown");
             int discarded = pending.Count;
             if (!processQuitting && discarded != 0)
             {
