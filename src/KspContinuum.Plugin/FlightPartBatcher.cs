@@ -27,6 +27,7 @@ namespace KspContinuum
             public int retiredRenderers, restoredRetiredRenderers, sharedPartPoseSnapshots, sharedSourcePublications, rigidLocalChecks, materialBindingChecks, propertyBlockCaptures;
             public long sharedPoseTicks;
             public double maxInitialRecoveredPositionErrorMeters;
+            public int rigidRetainedSources, dynamicRetainedSources, dynamicPoseSnapshots;
             public float minBaseEmissionAlpha, maxBaseEmissionAlpha;
             public double preparationMilliseconds;
             public string cleanupStatus = "not-started";
@@ -35,6 +36,7 @@ namespace KspContinuum
         {
             public MeshRenderer Renderer; public MeshFilter Filter; public Mesh Mesh; public Material Material; public Part Owner;
             public string Key, Identity;
+            public bool Retained;
         }
         sealed class Packet
         {
@@ -158,7 +160,7 @@ namespace KspContinuum
             Stopwatch timer = Stopwatch.StartNew();
             retained = RetainedRenderSources.Requested; report.retainedProvider = retained;
             if (retained) RetainedRenderSources.Begin();
-            if (retained) report.recipe += " Retained provider: only FX-covered rigid-child sources retired; exact child local transforms checked every published frame. Original renderer components retained for property-block writers. Unknown idempotent renderer-disable writes are outside the stable-visibility contract; FX proxy bone transforms remain live.";
+            if (retained) report.recipe += " Retained provider: FX-covered sources retired independently of pose compilation. Rigid child locals checked each published frame; animation/Animator ancestry retains once-per-frame live source transforms. Sources outside owned FX coverage keep original main-camera batching leases. Original components retained for property-block writers. Unknown idempotent renderer-disable writes are outside stable visibility; FX proxy bones remain live.";
             if (retained && !FlightAeroBatcher.IsActive) throw new InvalidOperationException("Retained main renderer requires an active owned FX provider.");
             if (vessel == null || !vessel.loaded || vessel.packed || vessel.mainBody==null || vessel.mainBody.bodyName!="Kerbin" || !vessel.mainBody.ocean || vessel.altitude <= 0 || !SystemInfo.supportsInstancing)
                 throw new InvalidOperationException("Physical stock Kerbin vessel above ocean sea level and native instancing required.");
@@ -200,7 +202,7 @@ namespace KspContinuum
                     { report.fallbackRenderers++; continue; }
                     Part owner = renderer.GetComponentInParent<Part>();
                     if (owner == null || owner.partInfo == null || !parts.Contains(owner.flightID) && !vessel.parts.Contains(owner)) { report.fallbackRenderers++; continue; }
-                    if (retained && !RetainedRenderSources.Register(sourceRenderer, owner, mesh)) { report.fallbackRenderers++; continue; }
+                    bool sourceRetained = retained && RetainedRenderSources.Register(sourceRenderer, owner, mesh);
                     string materialKey = MaterialKey(material);
                     if(material.HasProperty("_EmissiveColor"))
                     {
@@ -216,7 +218,7 @@ namespace KspContinuum
                     {
                         packet = new Packet { Mesh = mesh, Material = Bind(material), Layer = renderer.gameObject.layer, Shadows=renderer.shadowCastingMode, ReceiveShadows=renderer.receiveShadows, Probes=renderer.lightProbeUsage }; packets.Add(packet); groups[key] = packet;
                     }
-                    packet.Sources.Add(new Source { Renderer = sourceRenderer, Filter=filter, Mesh = mesh, Material = material, Owner = owner, Key = materialKey, Identity = renderer.name+"#"+renderer.GetInstanceID() });
+                    packet.Sources.Add(new Source { Renderer = sourceRenderer, Filter=filter, Mesh = mesh, Material = material, Owner = owner, Key = materialKey, Identity = renderer.name+"#"+renderer.GetInstanceID(), Retained = sourceRetained });
                     report.eligibleRenderers++;
                 }
             }
@@ -280,13 +282,13 @@ namespace KspContinuum
                     throw new InvalidOperationException("Unsupported stock block values: "+source.Identity);
                 if (standard && (temperature.r != 0 || temperature.g != 0 || temperature.b != 0 || rim.r != 0 || rim.g != 0 || rim.b != 0 || emission.r != 0 || emission.g != 0 || emission.b != 0))
                     throw new InvalidOperationException("Standard diagnostic cannot preserve active heating/highlight/emission: "+source.Identity);
-                Matrix4x4 matrix = retained ? RetainedRenderSources.Pose(renderer) : renderer.transform.localToWorldMatrix;
+                Matrix4x4 matrix = source.Retained ? RetainedRenderSources.Pose(renderer) : renderer.transform.localToWorldMatrix;
                 for (int element=0;element<16;element++) if (!Finite(matrix[element])) throw new InvalidOperationException("Nonfinite source pose.");
                 if (matrix.determinant <= 0) throw new InvalidOperationException("Source determinant changed.");
                 packet.Matrices[i] = matrix; packet.Temperature[i] = temperature; packet.Rim[i] = rim; packet.Emission[i] = emission;
                 packet.Falloff[i] = falloff; packet.Opacity[i] = 1;
                 if (renderer.lightProbeUsage != packet.Probes) throw new InvalidOperationException("Source probe usage changed.");
-                if (packet.ProbePositions != null) packet.ProbePositions[i] = renderer.probeAnchor == null ? (retained ? RetainedRenderSources.Bounds(renderer).center : renderer.bounds.center) : renderer.probeAnchor.position;
+                if (packet.ProbePositions != null) packet.ProbePositions[i] = renderer.probeAnchor == null ? (source.Retained ? RetainedRenderSources.Bounds(renderer).center : renderer.bounds.center) : renderer.probeAnchor.position;
             }
             foreach (Packet packet in packets)
             {
@@ -313,7 +315,7 @@ namespace KspContinuum
                 foreach (Packet packet in packets)
                 {
                     if ((camera.cullingMask & (1 << packet.Layer)) == 0) continue;
-                    if (!retained) foreach (Source source in packet.Sources)
+                    foreach (Source source in packet.Sources) if (!source.Retained)
                     { if (source.Renderer.forceRenderingOff) throw new InvalidOperationException("Source visibility changed before lease."); leased.Add(source.Renderer); source.Renderer.forceRenderingOff=true; }
                     Graphics.DrawMeshInstanced(packet.Mesh, 0, packet.Material, packet.Matrices, packet.Matrices.Length, packet.Block,
                         packet.Shadows, packet.ReceiveShadows, packet.Layer, camera,
@@ -358,6 +360,7 @@ namespace KspContinuum
             if (retained) { report.restoredRetiredRenderers = RetainedRenderSources.RestoredCount; report.sharedPartPoseSnapshots = RetainedRenderSources.PoseSnapshots;
                 report.sharedSourcePublications = RetainedRenderSources.SourcePublications; report.rigidLocalChecks = RetainedRenderSources.LocalChecks; report.sharedPoseTicks = RetainedRenderSources.CaptureTicks; }
             if (retained) report.maxInitialRecoveredPositionErrorMeters = RetainedRenderSources.MaxInitialRecoveredPositionErrorMeters;
+            if (retained) { report.rigidRetainedSources = RetainedRenderSources.RigidSources; report.dynamicRetainedSources = RetainedRenderSources.DynamicSources; report.dynamicPoseSnapshots = RetainedRenderSources.DynamicPoseSnapshots; }
             report.restoredOriginals = restored.Count + (retained ? RetainedRenderSources.RestoredCount : 0);
             File.WriteAllText(Path.Combine(directory,"part-batch.json"), ReportJson.Encode(report));
         }

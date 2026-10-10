@@ -13,7 +13,7 @@ namespace KspContinuum
             internal Part Part;
             internal Matrix4x4 Local, World;
             internal Bounds MeshBounds, WorldBounds;
-            internal bool Enabled, ForcedOff, Retired;
+            internal bool Enabled, ForcedOff, Retired, Dynamic;
         }
         sealed class LocalGuard
         {
@@ -26,6 +26,7 @@ namespace KspContinuum
         static readonly Dictionary<Part, Matrix4x4> poses = new Dictionary<Part, Matrix4x4>();
         static int frame = -1;
         internal static int RetiredCount, RestoredCount, PoseSnapshots, SourcePublications, LocalChecks;
+        internal static int RigidSources, DynamicSources, DynamicPoseSnapshots;
         internal static long CaptureTicks;
         internal static double MaxInitialRecoveredPositionErrorMeters;
         internal static bool Requested { get { return Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-flight-part-retained") >= 0; } }
@@ -34,23 +35,27 @@ namespace KspContinuum
             if (sources.Count != 0) throw new InvalidOperationException("Retained render ownership already exists.");
             guards.Clear(); poses.Clear(); frame = -1;
             RetiredCount = RestoredCount = PoseSnapshots = SourcePublications = LocalChecks = 0;
+            RigidSources = DynamicSources = DynamicPoseSnapshots = 0;
             CaptureTicks = 0; MaxInitialRecoveredPositionErrorMeters = 0;
         }
         internal static bool Register(MeshRenderer renderer, Part part, Mesh mesh)
         {
             if (!Requested || renderer == null || part == null || mesh == null || !FlightAeroBatcher.Covers(renderer)) return false;
             var chain = new List<Transform>(); Transform node = renderer.transform;
+            bool dynamic = false;
             while (node != part.transform)
             {
-                if (node == null || node.GetComponent<Animation>() != null || node.GetComponent<Animator>() != null) return false;
+                if (node == null) { dynamic = true; break; }
+                if (node.GetComponent<Animation>() != null || node.GetComponent<Animator>() != null) dynamic = true;
                 chain.Add(node); node = node.parent;
             }
-            if (part.GetComponent<Animation>() != null || part.GetComponent<Animator>() != null) return false;
+            if (part.GetComponent<Animation>() != null || part.GetComponent<Animator>() != null) dynamic = true;
             if (sources.ContainsKey(renderer)) throw new InvalidOperationException("Duplicate retained render owner.");
-            foreach (Transform transform in chain) if (!guards.ContainsKey(transform)) guards.Add(transform, new LocalGuard {
+            if (!dynamic) foreach (Transform transform in chain) if (!guards.ContainsKey(transform)) guards.Add(transform, new LocalGuard {
                 Transform = transform, Parent = transform.parent, Position = transform.localPosition, Rotation = transform.localRotation, Scale = transform.localScale });
             sources.Add(renderer, new Source { Renderer = renderer, Part = part, Local = part.transform.worldToLocalMatrix * renderer.transform.localToWorldMatrix,
-                MeshBounds = mesh.bounds, Enabled = renderer.enabled, ForcedOff = renderer.forceRenderingOff });
+                MeshBounds = mesh.bounds, Enabled = renderer.enabled, ForcedOff = renderer.forceRenderingOff, Dynamic = dynamic });
+            if (dynamic) DynamicSources++; else RigidSources++;
             frame = -1; return true;
         }
         internal static void RetireAll()
@@ -59,7 +64,7 @@ namespace KspContinuum
             {
                 if (source.Renderer == null || source.Part == null) throw new InvalidOperationException("Source lost before geometry admission.");
                 Matrix4x4 original = source.Renderer.transform.localToWorldMatrix;
-                Matrix4x4 recovered = source.Part.transform.localToWorldMatrix * source.Local;
+                Matrix4x4 recovered = source.Dynamic ? original : source.Part.transform.localToWorldMatrix * source.Local;
                 for (int corner = 0; corner < 8; corner++)
                 {
                     Vector3 point = source.MeshBounds.center + Vector3.Scale(source.MeshBounds.extents,
@@ -97,9 +102,13 @@ namespace KspContinuum
             foreach (Source source in sources.Values)
             {
                 if (source.Part == null || !Visible(source.Renderer)) throw new InvalidOperationException("Retained source owner/visibility changed.");
-                Matrix4x4 pose;
-                if (!poses.TryGetValue(source.Part, out pose)) { pose = source.Part.transform.localToWorldMatrix; poses.Add(source.Part, pose); PoseSnapshots++; }
-                source.World = pose * source.Local;
+                if (source.Dynamic) { source.World = source.Renderer.transform.localToWorldMatrix; DynamicPoseSnapshots++; }
+                else
+                {
+                    Matrix4x4 pose;
+                    if (!poses.TryGetValue(source.Part, out pose)) { pose = source.Part.transform.localToWorldMatrix; poses.Add(source.Part, pose); PoseSnapshots++; }
+                    source.World = pose * source.Local;
+                }
                 for (int element = 0; element < 16; element++) if (!Finite(source.World[element])) throw new InvalidOperationException("Nonfinite retained pose.");
                 if (source.World.determinant <= 0) throw new InvalidOperationException("Retained pose determinant changed.");
                 Vector3 center = source.World.MultiplyPoint3x4(source.MeshBounds.center), extents = source.MeshBounds.extents;
