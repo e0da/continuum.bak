@@ -1,4 +1,5 @@
 #![recursion_limit = "256"]
+mod native_assets;
 use continuum_research_lab::{
     compare, hash, inventory, matrix, metrics, read, source_tree_hash, write_new, FlightReceipt,
     Result, VariantManifest,
@@ -37,6 +38,8 @@ fn run() -> Result<()> {
     let allowed: &[&str] = match operation.as_str() {
         "inventory" => &["--instance", "--output"],
         "admit-cache" => &["--instance", "--startup-cache", "--output"],
+        "install-native-assets" => &["--instance", "--manifest", "--output"],
+        "restore-native-assets" => &["--instance", "--installation", "--output"],
         "startup-timeline" => &["--log", "--output"],
         "prepare" => &["--output", "--variant"],
         "index" => &["--assembly", "--ilspy", "--output", "--project"],
@@ -74,6 +77,7 @@ fn run() -> Result<()> {
             "--startup-resource-image-mode",
             "--startup-resource-image",
             "--startup-work-scheduler",
+            "--native-asset-installation",
         ],
         "compare" => &[
             "--baseline",
@@ -384,6 +388,7 @@ fn run() -> Result<()> {
                 Some("true") => true,
                 _ => return Err("startup-work-scheduler must be true or false".into()),
             },
+            options.get("--native-asset-installation").map(Path::new),
         )?,
         "compare" => {
             if let Some(path) = options.get("--startup-screen") {
@@ -436,6 +441,8 @@ fn run() -> Result<()> {
                 .collect::<Vec<_>>();
             write_new(output, &compare(&left, &right, &treatments)?)?;
         }
+        "install-native-assets" => native_assets::install(Path::new(get("--instance")?), Path::new(get("--manifest")?), output)?,
+        "restore-native-assets" => native_assets::restore(Path::new(get("--instance")?), Path::new(get("--installation")?), output)?,
         "qualify" => write_new(
             output,
             &metrics(&read::<FlightReceipt>(Path::new(get("--receipt")?))?)?,
@@ -588,6 +595,7 @@ fn smoke(
     startup_resource_image_mode: &str,
     startup_resource_image: Option<&str>,
     startup_work_scheduler: bool,
+    native_asset_installation: Option<&Path>,
 ) -> Result<()> {
     let admission_started = Instant::now();
     if (startup_resource_image_mode != "none") != startup_resource_image.is_some() {
@@ -642,6 +650,18 @@ fn smoke(
         return Err("run output already exists".into());
     }
     let instance = instance.canonicalize().map_err(|e| e.to_string())?;
+    if instance.join("continuum-native-asset-transaction.local.json").exists() {
+        return Err("native asset transaction is unfinished; restore or complete it before launch".into());
+    }
+    let native_pointer = instance.join("continuum-native-asset-installation.local.json");
+    if native_pointer.exists() {
+        let pointer: Value = read(&native_pointer)?;
+        let installed = native_asset_installation.ok_or("this instance requires its native asset treatment receipt")?;
+        if pointer["installationReceipt"].as_str() != installed.to_str()
+            || pointer["installationSha256"].as_str() != Some(hash(installed)?.as_str()) {
+            return Err("native asset treatment receipt differs from the installed checkpoint".into());
+        }
+    }
     let ownership: Value = read(&instance.join("continuum-lab.local.json"))?;
     if ownership["scope"] != "disposable-lab" {
         return Err("instance is not marked as a disposable laboratory copy".into());
@@ -671,6 +691,9 @@ fn smoke(
     use std::io::Write;
     writeln!(lease, "ownerPid={}", std::process::id()).map_err(|e| e.to_string())?;
     let executable = instance.join("KSP.app/Contents/MacOS/KSP");
+    let native_assets = native_asset_installation
+        .map(|path| native_assets::Admission::admit(&instance, path))
+        .transpose()?;
     let assembly = instance.join("KSP.app/Contents/Resources/Data/Managed/Assembly-CSharp.dll");
     let assembly_hash = hash(&assembly)?;
     let executable_hash = hash(&executable)?;
@@ -876,6 +899,7 @@ fn smoke(
         None
     };
     let source_unchanged = hash(&assembly)? == assembly_hash
+        && native_assets.as_ref().map(|assets| assets.unchanged()).unwrap_or(true)
         && (!catalog_preparation || generated_catalog_hash.is_some())
         && catalog_before
             .as_ref()
@@ -922,6 +946,7 @@ fn smoke(
         "startupReadinessRequested":startup_readiness,
         "startupResourceImageModeRequested":startup_resource_image_mode,"startupResourceImage":startup_resource_image,
         "startupWorkSchedulerRequested":startup_work_scheduler,
+        "nativeAssetInstallation":native_assets.as_ref().map(|assets| assets.receipt()),
         "startupCatalogModeRequested":startup_catalog_mode,"startupCatalog":startup_catalog,"startupCatalogSha256":catalog_before,
         "generatedCatalogSha256":generated_catalog_hash,
         "startupProfileRequested":startup_profile,

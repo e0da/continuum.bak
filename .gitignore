@@ -1,6 +1,8 @@
 **/bin/
 !tools/numerics/src/bin/
 !tools/numerics/src/bin/*.rs
+!tools/bundle-audit/src/bin/
+!tools/bundle-audit/src/bin/*.rs
 **/obj/
 **/target/
 artifacts/

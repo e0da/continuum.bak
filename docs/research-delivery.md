@@ -62,6 +62,10 @@ Native admission streams both original digests together, hashes independent file
 
 ## Infrastructure obligations
 
+Native scene assets are another replacement boundary. The private Unity 2019.4 texture index records stable object IDs, authored mip layouts, color space and stream ranges. A streamed BC7-to-RGBA32 derivative preserves all original container bytes outside four scalar fields per texture and appends prepared mip payloads while retaining the original stream prefix. Inline textures remain explicit original-format cases. Fewer conversion warnings do not establish a faster startup; compare the complete launch and memory cost.
+
+Native asset installation verifies both source and derivative identities, keeps full rollback copies, binds referenced scene dependencies and their payload streams, and blocks laboratory launches during incomplete transactions. Its installed checkpoint requires an explicit native treatment receipt. Fully verify content once at installation; reserve immutable files and guard exact length/mtime plus receipt identities at launch. Restoration performs full post-run content verification and verifies the restored originals. Decoder/layout checks and successful scene activation remain separate from independent decoded-pixel and gameplay proofs.
+
 Continuum owns the C#/Rust laboratory, integration adapters, comparisons and packaging. Reuse Actions portable/private checks; introduce desktop Unity builds separately from Android when an actual project exists. Ops owns admitted Forge sessions, editor/runtime installation and private storage. Stack records verified build/install paths after they exist. Inspect current repository state before extending these owners; do not duplicate their tooling or claim capabilities from planned configurations.
 
 Use Meko clone/record operations and CKAN. Keep reference and playable installations intact, separate writable saves and transactional changes in disposable copies. Reserve visible Forge sessions; run one timed workload without competing builds and control only owned processes. Startup, headless throughput and visible flight remain distinct measurements.
