@@ -21,6 +21,7 @@ namespace KspContinuum
             public int propertyBlockSources, destroyedProxies, restoredOriginals;
             public int scaleOwners, nonuniformScaleOwners;
             public int linkedMeshDeformationRoots;
+            public int retainedSourceCameraVisits, sharedBoundsReads;
             public double preparationMilliseconds, maxInitialPositionErrorMeters, maxInitialNormalError;
             public string cleanupStatus = "not-started";
             public Fallback[] fallbacks;
@@ -46,6 +47,13 @@ namespace KspContinuum
         public static bool IsActive { get { return current != null; } }
         public static bool activeRequested { get { return Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-flight-aero-batch") >= 0; } }
         public static string FailureReason { get { return current != null && current.faulted ? current.report.reason : null; } }
+        internal static bool Covers(MeshRenderer renderer)
+        {
+            if (current == null || current.faulted || current.finished || current.cameras.Count != 3) return false;
+            foreach (Camera camera in current.cameras.Keys) if (camera == null || (camera.cullingMask & (1 << renderer.gameObject.layer)) == 0) return false;
+            foreach (Source source in current.sources) if (source.Renderer == renderer) return true;
+            return false;
+        }
         readonly List<Source> sources = new List<Source>();
         readonly List<Packet> packets = new List<Packet>();
         readonly Dictionary<string,int> fallback = new Dictionary<string,int>();
@@ -282,10 +290,12 @@ namespace KspContinuum
                 foreach (Source source in packet.Sources)
                 {
                     if (source.Renderer == null) throw new InvalidOperationException("Source renderer destroyed: " + source.Identity);
-                    if (!source.Renderer.enabled) throw new InvalidOperationException("Source renderer disabled: " + source.Identity);
+                    if (!RetainedRenderSources.Visible(source.Renderer)) throw new InvalidOperationException("Source renderer disabled: " + source.Identity);
                     if (source.Renderer.forceRenderingOff) throw new InvalidOperationException("Source renderer externally forced off: " + source.Identity);
                     if (!source.Renderer.gameObject.activeInHierarchy) throw new InvalidOperationException("Source hierarchy inactive: " + source.Identity);
-                    Bounds world = source.Renderer.bounds;
+                    bool retained = RetainedRenderSources.IsRetired(source.Renderer);
+                    Bounds world = retained ? RetainedRenderSources.Bounds(source.Renderer) : source.Renderer.bounds;
+                    if (retained) report.sharedBoundsReads++;
                     for (int corner = 0; corner < 8; corner++)
                     {
                         Vector3 point = world.center + Vector3.Scale(world.extents, new Vector3((corner&1)==0?-1:1,(corner&2)==0?-1:1,(corner&4)==0?-1:1));
@@ -310,6 +320,11 @@ namespace KspContinuum
                     if ((camera.cullingMask & (1 << packet.Object.layer)) == 0) continue;
                     foreach (Source source in packet.Sources)
                     {
+                        if (RetainedRenderSources.IsRetired(source.Renderer))
+                        {
+                            if (!RetainedRenderSources.Visible(source.Renderer)) throw new InvalidOperationException("Retained FX source visibility changed: " + source.Identity);
+                            report.retainedSourceCameraVisits++; continue;
+                        }
                         if (!source.Renderer.enabled || source.Renderer.forceRenderingOff || !source.Renderer.gameObject.activeInHierarchy)
                             throw new InvalidOperationException("Source renderer visibility changed before lease: " + source.Identity + " enabled=" + source.Renderer.enabled + " forceRenderingOff=" + source.Renderer.forceRenderingOff + " active=" + source.Renderer.gameObject.activeInHierarchy);
                         suppressed.Add(source.Renderer); source.Renderer.forceRenderingOff = true;
@@ -337,6 +352,7 @@ namespace KspContinuum
         void Fault(string reason)
         {
             if (faulted) return; faulted = true; report.faults++; report.reason = reason; report.status = "invalid-fell-back-to-stock";
+            FlightPartBatcher.ExternalRenderFault(reason);
             Release(); foreach (Packet packet in packets) if (packet.Renderer != null) packet.Renderer.enabled = false;
             Detach(); Write();
         }
