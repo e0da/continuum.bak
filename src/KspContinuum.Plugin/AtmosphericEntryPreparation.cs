@@ -41,10 +41,16 @@ namespace KspContinuum
             null, new[] { typeof(TimeWarp.Modes) }, null);
         static readonly List<Sample> samples = new List<Sample>();
         static readonly HashSet<uint> identities = new HashSet<uint>();
+        sealed class Listener
+        {
+            public void Modified(Vessel vessel) { AtmosphericEntryPreparation.Modified(vessel); }
+            public void Died(Part part) { AtmosphericEntryPreparation.Died(part); }
+        }
+        static readonly Listener listener = new Listener();
         static Report report;
         static string loaderDirectory, flightDirectory;
         static double startedWall, lastSampleWall = -1;
-        static bool hooks, ownedWarp, topologyDirty;
+        static bool modifiedHook, diedHook, ownedWarp, topologyDirty;
         static int normalFrames;
         public static bool Requested { get { return report != null; } }
         public static bool Admitted { get { return report != null && report.status == "capture-admitted"; } }
@@ -130,7 +136,9 @@ namespace KspContinuum
         {
             if (!Requested) return;
             flightDirectory = directory; startedWall = Time.realtimeSinceStartup; report.status = "approaching"; report.phase = "waiting-for-flight";
-            GameEvents.onVesselWasModified.Add(Modified); GameEvents.onPartDie.Add(Died); hooks = true; Write();
+            Write();
+            GameEvents.onVesselWasModified.Add(listener.Modified); modifiedHook = true;
+            GameEvents.onPartDie.Add(listener.Died); diedHook = true;
         }
         static void Modified(Vessel vessel)
         {
@@ -217,7 +225,8 @@ namespace KspContinuum
         }
         public static void ResetWarp()
         {
-            if (hooks) { GameEvents.onVesselWasModified.Remove(Modified); GameEvents.onPartDie.Remove(Died); hooks = false; }
+            if (modifiedHook) { GameEvents.onVesselWasModified.Remove(listener.Modified); modifiedHook = false; }
+            if (diedHook) { GameEvents.onPartDie.Remove(listener.Died); diedHook = false; }
             if (!ownedWarp) return;
             TimeWarp.SetRate(0, true);
             bool reset = TimeWarp.fetch != null && ModeSetter != null && (TimeWarp.WarpMode == TimeWarp.Modes.HIGH || (bool)ModeSetter.Invoke(TimeWarp.fetch, new object[] { TimeWarp.Modes.HIGH }));

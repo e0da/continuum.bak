@@ -126,6 +126,11 @@ namespace KspContinuum
 
         public void Update()
         {
+            if (active && FlightAeroBatcher.FailureReason != null)
+            {
+                Fail(new InvalidOperationException("Aero batch runtime rejected: " + FlightAeroBatcher.FailureReason));
+                return;
+            }
             if (!active || capturing) return;
             if (AtmosphericEntryPreparation.Requested && !AtmosphericEntryPreparation.Admitted)
             {
@@ -193,7 +198,18 @@ namespace KspContinuum
             catch (Exception error) { capturing = false; Fail(error); }
         }
         public void FixedUpdate() { Probe.ObserveFixedCallback(); }
-        Probe NewProbe() { FlightDiagnosticControls.Record(directory); return new Probe(null,false,simulationSeconds,wallTimeout,simulationSeconds > 0 ? directory : null); }
+        Probe NewProbe()
+        {
+            FlightDiagnosticControls.Record(directory);
+            string runId = null;
+            foreach (string argument in Environment.GetCommandLineArgs())
+                if (argument.StartsWith("--continuum-research-run=", StringComparison.Ordinal))
+                    runId = argument.Substring("--continuum-research-run=".Length);
+            FlightAeroBatcher.Report batch = FlightAeroBatcher.Start(FlightGlobals.ActiveVessel, directory, runId);
+            if (batch != null && batch.status != "installed-experimental")
+                throw new InvalidOperationException("Aero batch preparation rejected: " + batch.reason);
+            return new Probe(null,false,simulationSeconds,wallTimeout,simulationSeconds > 0 ? directory : null);
+        }
         static double OptionalNumber(string[] arguments,string prefix,double fallback,double minimum,double maximum)
         {
             double result = fallback; bool found=false;
@@ -300,9 +316,53 @@ namespace KspContinuum
                     (ScaleCheckpointLoadState.Requested ? "save=" + ScaleCheckpointLoadState.Save + "\ncheckpoint=" +
                     ScaleCheckpointLoadState.Checkpoint + "\nsourceSha256=" + ScaleCheckpointLoadState.SourceSha256 +
                     "\nsourceUnchanged=" + sourceUnchanged + "\n" : ""));
-                Finish(valid ? "complete" : "invalid", valid ? 0 : 2);
+                if (valid && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-flight-screenshot") >= 0)
+                {
+                    active = false;
+                    StartCoroutine(CaptureView(report.runId));
+                }
+                else Finish(valid ? "complete" : "invalid", valid ? 0 : 2);
             }
             catch (Exception error) { Fail(error); }
+        }
+
+        [Serializable]
+        sealed class FlightViewReport
+        {
+            public string schema = "continuum-flight-view/v1", runId, status, reason;
+            public int processId, width, height, captureFrame;
+            public double universalTime;
+        }
+
+        IEnumerator CaptureView(string runId)
+        {
+            yield return new WaitForEndOfFrame();
+            Texture2D image = null;
+            var view = new FlightViewReport { runId = runId, processId = System.Diagnostics.Process.GetCurrentProcess().Id,
+                width = Screen.width, height = Screen.height, universalTime = Planetarium.GetUniversalTime(), captureFrame = Time.frameCount };
+            int code = 0;
+            try
+            {
+                image = new Texture2D(view.width, view.height, TextureFormat.RGB24, false);
+                image.ReadPixels(new Rect(0, 0, view.width, view.height), 0, 0, false);
+                byte[] bytes = ImageConversion.EncodeToPNG(image);
+                if (bytes == null || bytes.Length == 0) throw new InvalidOperationException("Empty flight image.");
+                File.WriteAllBytes(Path.Combine(directory, "flight-view.png"), bytes);
+                view.status = "captured-after-window";
+            }
+            catch (Exception error)
+            {
+                code = 2; view.status = "capture-failed"; view.reason = error.GetType().Name + ": " + error.Message;
+                Debug.LogException(error);
+                File.WriteAllText(Path.Combine(directory, "status.txt"), "invalid\nreason=post-window-image-failed\n");
+            }
+            finally
+            {
+                if (image != null) UnityEngine.Object.Destroy(image);
+                try { File.WriteAllText(Path.Combine(directory, "flight-view.json"), JsonUtility.ToJson(view)); }
+                catch (Exception error) { Debug.LogException(error); code = 2; }
+                Finish(code == 0 ? "complete" : "invalid", code);
+            }
         }
 
         static bool Stable(ProbeReport report, out string reason)
@@ -405,6 +465,8 @@ namespace KspContinuum
             active = false;
             try { if (probe != null) probe.Dispose(); } catch (Exception error) { Debug.LogException(error); code = 2; }
             probe = null;
+            try { FlightAeroBatcher.Finish(); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
             try { FlightDiagnosticControls.Restore(); }
             catch (Exception error) { Debug.LogException(error); code = 2; }
             try { AtmosphericEntryPreparation.ResetWarp(); }

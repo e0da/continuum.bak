@@ -27,6 +27,8 @@ pub struct Request {
     pub hide_vessel: bool,
     pub no_aero_fx: bool,
     pub aero_quality: Option<u32>,
+    pub aero_batch: bool,
+    pub screenshot: bool,
     pub entry_target_altitude: Option<f64>,
 }
 impl Request {
@@ -118,6 +120,15 @@ impl Request {
         if aero_quality.is_some() && boolean("--flight-no-aero-fx")? {
             return Err("flight-aero-quality and flight-no-aero-fx are separate treatments".into());
         }
+        if boolean("--flight-aero-batch")?
+            && (boolean("--flight-no-aero-fx")?
+                || boolean("--flight-hide-vessel")?
+                || aero_quality == Some(0))
+        {
+            return Err(
+                "aero batch requires active aero effects and visible vessel renderers".into(),
+            );
+        }
         Ok(Some(Self {
             save: name("--flight-save")?,
             checkpoint: name("--flight-checkpoint")?,
@@ -137,6 +148,8 @@ impl Request {
             hide_vessel: boolean("--flight-hide-vessel")?,
             no_aero_fx: boolean("--flight-no-aero-fx")?,
             aero_quality,
+            aero_batch: boolean("--flight-aero-batch")?,
+            screenshot: boolean("--flight-screenshot")?,
         }))
     }
     pub fn arguments(&self) -> Vec<String> {
@@ -185,6 +198,12 @@ impl Request {
         }
         if let Some(quality) = self.aero_quality {
             args.push(format!("--continuum-flight-aero-quality={quality}"));
+        }
+        if self.aero_batch {
+            args.push("--continuum-flight-aero-batch".into());
+        }
+        if self.screenshot {
+            args.push("--continuum-flight-screenshot".into());
         }
         args
     }
@@ -253,10 +272,17 @@ pub fn unchanged(inputs: &Value) -> bool {
         .unwrap_or(false)
 }
 pub fn capture_directory(directory: &Path, run_id: &str, pid: u32) -> Result<Option<PathBuf>> {
-    owned_sidecar_directory(directory, "capture-start.json", run_id, pid)
+    owned_sidecar_directory(
+        directory,
+        "scale-profile-",
+        "capture-start.json",
+        run_id,
+        pid,
+    )
 }
 fn owned_sidecar_directory(
     directory: &Path,
+    family: &str,
     sidecar: &str,
     run_id: &str,
     pid: u32,
@@ -264,10 +290,7 @@ fn owned_sidecar_directory(
     let mut found = None;
     for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
-        if !entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with("scale-profile-")
+        if !entry.file_name().to_string_lossy().starts_with(family)
             || !entry
                 .file_type()
                 .map_err(|error| error.to_string())?
@@ -546,7 +569,8 @@ pub fn analyze(
         json!({"schema":"continuum-flight-profile-summary/v1","status":"capture-validated","runId":run_id,"request":request,
         "intrusiveDiagnosticsRequested":request.native_sample || request.callback_attribution,
         "vesselRenderingTreatmentRequested":request.hide_vessel,
-        "aeroEffectsTreatmentRequested":request.no_aero_fx || request.aero_quality.is_some(),
+        "aeroEffectsTreatmentRequested":request.no_aero_fx || request.aero_quality.is_some() || request.aero_batch,
+        "aeroBatchRequested":request.aero_batch,
         "aeroEffectsQualityRequested":request.aero_quality,
         "nonOverlappingEnclosedMilliseconds":scoped,
         "optionalPhaseAccounting":{"earlyUpdateMilliseconds":costs.get(early_name),"preUpdateMilliseconds":costs.get(pre_name),
@@ -579,6 +603,8 @@ pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> 
     for name in [
         "diagnostic-controls.json",
         "diagnostic-controls-end.json",
+        "aero-batch.json",
+        "flight-view.json",
         "perturbation.json",
         "render-census.json",
     ] {
@@ -590,6 +616,14 @@ pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> 
                 return Err("flight control evidence changed while copying".into());
             }
             write_new(&output.join(name), &value)?;
+        }
+    }
+    let view = directory.join("flight-view.png");
+    if view.exists() {
+        let before = hash(&view)?;
+        fs::copy(&view, output.join("flight-view.png")).map_err(|error| error.to_string())?;
+        if hash(&view)? != before || hash(&output.join("flight-view.png"))? != before {
+            return Err("flight screenshot changed while retaining".into());
         }
     }
     fs::copy(
@@ -627,6 +661,8 @@ mod tests {
             ("--flight-callback-attribution".into(), "true".into()),
             ("--flight-hide-vessel".into(), "true".into()),
             ("--flight-no-aero-fx".into(), "true".into()),
+            ("--flight-aero-batch".into(), "false".into()),
+            ("--flight-screenshot".into(), "true".into()),
             ("--flight-pulse-delta-v".into(), "25".into()),
         ]);
         let request = Request::parse(&options).unwrap().unwrap();
@@ -636,6 +672,34 @@ mod tests {
         assert!(!request
             .arguments()
             .contains(&"--continuum-native-boundary-bench".to_string()));
+        assert!(request.screenshot);
+        assert!(request
+            .arguments()
+            .contains(&"--continuum-flight-screenshot".to_string()));
+        let mut batch_options = options.clone();
+        batch_options.insert("--flight-aero-batch".into(), "true".into());
+        assert!(Request::parse(&batch_options).is_err());
+        batch_options.insert("--flight-no-aero-fx".into(), "false".into());
+        assert!(Request::parse(&batch_options).is_err());
+        batch_options.insert("--flight-hide-vessel".into(), "false".into());
+        batch_options.insert("--flight-aero-quality".into(), "0".into());
+        assert!(Request::parse(&batch_options).is_err());
+        batch_options.insert("--flight-aero-quality".into(), "1".into());
+        let batch_request = Request::parse(&batch_options).unwrap().unwrap();
+        assert!(batch_request.aero_batch);
+        assert!(batch_request
+            .arguments()
+            .contains(&"--continuum-flight-aero-batch".to_string()));
+        let mut lifecycle = json!({"schema":"continuum-flight-aero-batch/v1","runId":"run","processId":123,"vesselId":"vessel",
+            "status":"complete-experimental","faults":0,"eligibleRenderers":12,"batches":2,"cameraInvocations":3,"destroyedProxies":2,
+            "cleanupStatus":"removed-owned-hooks-restored-owned-renderers-destruction-requested",
+            "cameras":[{"role":"fx","invocations":1},{"role":"fx-depth","invocations":1},{"role":"velocity-occlusion","invocations":1}]});
+        assert!(validate_batch(&lifecycle, "run", 123, &json!("vessel")).is_ok());
+        lifecycle["cameras"][2]["invocations"] = json!(0);
+        assert!(validate_batch(&lifecycle, "run", 123, &json!("vessel")).is_err());
+        lifecycle["cameras"][2]["invocations"] = json!(1);
+        lifecycle["destroyedProxies"] = json!(1);
+        assert!(validate_batch(&lifecycle, "run", 123, &json!("vessel")).is_err());
         assert!(request.no_aero_fx);
         assert!(request
             .arguments()
@@ -703,6 +767,8 @@ mod tests {
             hide_vessel: false,
             no_aero_fx: false,
             aero_quality: None,
+            aero_batch: false,
+            screenshot: false,
             entry_target_altitude: None,
         };
         assert!(analyze(
@@ -714,6 +780,56 @@ mod tests {
             &json!({})
         )
         .is_err());
+    }
+    #[test]
+    fn entry_evidence_prefers_profile_and_retains_loader_failures() {
+        let directory = std::env::temp_dir().join(format!(
+            "continuum-entry-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let loader = directory.join("scale-loader-owned");
+        let profile = directory.join("scale-profile-owned");
+        fs::create_dir_all(&loader).unwrap();
+        let evidence = json!({"schema":"continuum-flight-entry/v1","runId":"run","processId":123,"status":"invalid","reason":"early-load-failure"});
+        write_new(&loader.join("entry.json"), &evidence).unwrap();
+        assert_eq!(
+            entry_directory(&directory, "run", 123).unwrap(),
+            Some(loader.clone())
+        );
+        fs::create_dir_all(&profile).unwrap();
+        write_new(&profile.join("entry.json"), &evidence).unwrap();
+        assert_eq!(
+            entry_directory(&directory, "run", 123).unwrap(),
+            Some(profile.clone())
+        );
+        assert!(entry_directory(&directory, "other-run", 123)
+            .unwrap()
+            .is_none());
+        assert!(entry_directory(&directory, "run", 456).unwrap().is_none());
+        write_new(&directory.join("flight-view.json"),&json!({"schema":"continuum-flight-view/v1","runId":"run","processId":123,"status":"captured-after-window","width":1,"height":1})).unwrap();
+        assert!(validate_view(&directory, "run", 123).is_err());
+        assert!(validate_view(&directory, "foreign-run", 123).is_err());
+        let failed_batch = json!({"schema":"continuum-flight-aero-batch/v1","runId":"run","processId":123,"status":"stock-fallback","reason":"preparation-rejected"});
+        write_new(&profile.join("aero-batch.json"), &failed_batch).unwrap();
+        let recovered = directory.join("recovered");
+        fs::create_dir_all(&recovered).unwrap();
+        recover_failed_aero_batch(&directory, "foreign-run", 123, &recovered).unwrap();
+        assert!(!recovered.join("aero-batch.json").exists());
+        recover_failed_aero_batch(&directory, "run", 123, &recovered).unwrap();
+        assert_eq!(
+            read::<Value>(&recovered.join("aero-batch.json")).unwrap(),
+            failed_batch
+        );
+        recover_failed_aero_batch(&directory, "run", 123, &recovered).unwrap();
+        let duplicate = directory.join("scale-profile-duplicate");
+        fs::create_dir_all(&duplicate).unwrap();
+        write_new(&duplicate.join("entry.json"), &evidence).unwrap();
+        assert!(entry_directory(&directory, "run", 123).is_err());
+        fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn timed_window_excludes_warmup_and_straddlers_and_accepts_normal_high_mode() {
@@ -735,6 +851,8 @@ mod tests {
             hide_vessel: false,
             no_aero_fx: false,
             aero_quality: None,
+            aero_batch: false,
+            screenshot: false,
             entry_target_altitude: None,
         };
         let frame = |id| json!({"contextFrame":id,"contextAligned":true,"scene":"FLIGHT","paused":false,"packed":false,"loaded":true,"vesselId":"vessel","parts":16,"rigidbodies":16,"joints":15,"colliders":16,"loadedVessels":1,"warpRate":1.0,"warpMode":"HIGH","fixedDeltaSeconds":0.02,"maximumDeltaSeconds":0.04,"physicsFrameLimitSeconds":0.04,"wallMilliseconds":50.0,"fixedCallbacksPerFrame":2,"altitudeMeters":100000.0,"atmosphereDepthMeters":70000.0});
@@ -984,6 +1102,21 @@ pub fn validate_controls(
     } else if request.hide_vessel || aero_treatment {
         return Err("requested rendering treatment end witness absent".into());
     }
+    let batch_path = output.join("aero-batch.json");
+    if batch_path.exists() {
+        let batch: Value = read(&batch_path)?;
+        if batch["runId"] != run_id || batch["processId"].as_u64() != Some(pid as u64) {
+            return Err("aero batch lifecycle evidence identity differs".into());
+        }
+        if request.aero_batch {
+            validate_batch(&batch, run_id, pid, &report["frames"][0]["vesselId"])?;
+        }
+    } else if request.aero_batch {
+        return Err("requested aero batch lifecycle evidence absent".into());
+    }
+    if request.screenshot {
+        validate_view(output, run_id, pid)?;
+    }
     let path = output.join("perturbation.json");
     if !path.exists() {
         return if request.perturbation == "quiet" {
@@ -1044,7 +1177,7 @@ pub fn retain_entry(
     pid: u32,
     output: &Path,
 ) -> Result<Option<Value>> {
-    let Some(directory) = owned_sidecar_directory(directory, "entry.json", run_id, pid)? else {
+    let Some(directory) = entry_directory(directory, run_id, pid)? else {
         return Ok(None);
     };
     let source = directory.join("entry.json");
@@ -1125,4 +1258,107 @@ fn validate_aero_boundary(request: &Request, controls: &Value) -> Result<()> {
         return Err("aero-effects suppression boundary witness incomplete".into());
     }
     Ok(())
+}
+
+fn entry_directory(directory: &Path, run_id: &str, pid: u32) -> Result<Option<PathBuf>> {
+    match owned_sidecar_directory(directory, "scale-profile-", "entry.json", run_id, pid)? {
+        Some(path) => Ok(Some(path)),
+        None => owned_sidecar_directory(directory, "scale-loader-", "entry.json", run_id, pid),
+    }
+}
+
+fn validate_batch(batch: &Value, run_id: &str, pid: u32, vessel: &Value) -> Result<()> {
+    if batch["schema"] != "continuum-flight-aero-batch/v1"
+        || batch["runId"] != run_id
+        || batch["processId"].as_u64() != Some(pid as u64)
+        || batch["vesselId"] != *vessel
+        || vessel.as_str().map(str::is_empty).unwrap_or(true)
+        || batch["status"] != "complete-experimental"
+        || batch["faults"].as_u64() != Some(0)
+        || batch["eligibleRenderers"].as_u64().unwrap_or(0) == 0
+        || batch["batches"].as_u64().unwrap_or(0) == 0
+        || batch["cameraInvocations"].as_u64().unwrap_or(0) == 0
+        || batch["destroyedProxies"] != batch["batches"]
+        || batch["cleanupStatus"]
+            != "removed-owned-hooks-restored-owned-renderers-destruction-requested"
+    {
+        return Err("requested aero batch inactive, invalid, or cleanup incomplete".into());
+    }
+    let cameras = batch["cameras"]
+        .as_array()
+        .ok_or("aero batch camera lifecycle absent")?;
+    for role in ["fx", "fx-depth", "velocity-occlusion"] {
+        if !cameras
+            .iter()
+            .any(|camera| camera["role"] == role && camera["invocations"].as_u64().unwrap_or(0) > 0)
+        {
+            return Err(format!("aero batch camera role not exercised: {role}"));
+        }
+    }
+    Ok(())
+}
+fn validate_view(output: &Path, run_id: &str, pid: u32) -> Result<()> {
+    let metadata: Value = read(&output.join("flight-view.json"))?;
+    if metadata["schema"] != "continuum-flight-view/v1"
+        || metadata["runId"] != run_id
+        || metadata["processId"].as_u64() != Some(pid as u64)
+        || metadata["status"] != "captured-after-window"
+    {
+        return Err("requested post-window screenshot identity or status differs".into());
+    }
+    let path = output.join("flight-view.png");
+    let length = fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len();
+    if !(24..=134217728).contains(&length) {
+        return Err("flight PNG absent or outside size bound".into());
+    }
+    use std::io::Read;
+    let mut header = [0u8; 24];
+    fs::File::open(path)
+        .map_err(|error| error.to_string())?
+        .read_exact(&mut header)
+        .map_err(|error| error.to_string())?;
+    let width = u32::from_be_bytes(header[16..20].try_into().unwrap());
+    let height = u32::from_be_bytes(header[20..24].try_into().unwrap());
+    if &header[..8] != b"\x89PNG\r\n\x1a\n"
+        || &header[12..16] != b"IHDR"
+        || width == 0
+        || height == 0
+        || metadata["width"].as_u64() != Some(width as u64)
+        || metadata["height"].as_u64() != Some(height as u64)
+    {
+        return Err("retained screenshot PNG header or dimensions differ".into());
+    }
+    Ok(())
+}
+
+pub fn recover_failed_aero_batch(
+    directory: &Path,
+    run_id: &str,
+    pid: u32,
+    output: &Path,
+) -> Result<()> {
+    let destination = output.join("aero-batch.json");
+    if destination.exists() {
+        return Ok(());
+    }
+    let Some(directory) =
+        owned_sidecar_directory(directory, "scale-profile-", "aero-batch.json", run_id, pid)?
+    else {
+        return Ok(());
+    };
+    let source = directory.join("aero-batch.json");
+    let before = hash(&source)?;
+    let report: Value = read(&source)?;
+    if report["schema"] != "continuum-flight-aero-batch/v1"
+        || report["runId"] != run_id
+        || report["processId"].as_u64() != Some(pid as u64)
+    {
+        return Err("failed aero batch sidecar identity or schema differs".into());
+    }
+    if hash(&source)? != before {
+        return Err("failed aero batch evidence changed while retaining".into());
+    }
+    write_new(&destination, &report)
 }

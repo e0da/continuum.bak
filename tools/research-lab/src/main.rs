@@ -96,6 +96,8 @@ fn run() -> Result<()> {
             "--flight-hide-vessel",
             "--flight-no-aero-fx",
             "--flight-aero-quality",
+            "--flight-aero-batch",
+            "--flight-screenshot",
             "--flight-entry-target-altitude",
         ],
         "compare" => &[
@@ -1081,12 +1083,17 @@ fn smoke(
             for (name, key) in [
                 ("diagnostic-controls.json", "diagnosticControls"),
                 ("diagnostic-controls-end.json", "diagnosticControlsEnd"),
+                ("aero-batch.json", "aeroBatchEvidence"),
+                ("flight-view.json", "flightViewEvidence"),
                 ("perturbation.json", "perturbationEvidence"),
             ] {
                 let path = output.join(name);
                 if path.exists() {
                     summary[key] = json!({"sha256":hash(&path)?,"report":read::<Value>(&path)?});
                 }
+            }
+            if request.screenshot {
+                summary["flightViewPngSha256"] = json!(hash(&output.join("flight-view.png"))?);
             }
             summary["entryEvidence"] = json!(flight_entry);
             summary["cameraReadbacks"] = json!({
@@ -1114,6 +1121,33 @@ fn smoke(
             "requested owned native sample incomplete; retained diagnostic receipt".to_string()
         });
     }
+    let mut flight_failure_evidence = None;
+    let mut flight_recovery_error = None;
+    if flight_error.is_some() {
+        let path = output.join("aero-batch.json");
+        if !path.exists() {
+            if let Err(error) = continuum_research_lab::flight::recover_failed_aero_batch(
+                &observer_directory,
+                &run_id,
+                child.id(),
+                output,
+            ) {
+                flight_recovery_error = Some(error);
+            }
+        }
+        if path.exists() {
+            match (hash(&path), read::<Value>(&path)) {
+                (Ok(digest), Ok(report)) => {
+                    flight_failure_evidence =
+                        Some(json!({"aeroBatch":{"sha256":digest,"report":report}}))
+                }
+                _ => {
+                    flight_recovery_error =
+                        Some("retained failed aero batch evidence unreadable".to_string())
+                }
+            }
+        }
+    }
     let flight_sources_unchanged = flight_inputs
         .as_ref()
         .map(continuum_research_lab::flight::unchanged)
@@ -1127,7 +1161,7 @@ fn smoke(
         "startedUnixSeconds":stamp,"ownedPid":child.id(),"reservationSha256":hash(reservation)?,"assemblySha256":assembly_hash,"playerSha256":executable_hash,
         "sourceUnchanged":source_unchanged,"flightSourcesUnchanged":flight_sources_unchanged,
         "flightRequest":flight,"flightCapture":flight_summary,"flightCaptureError":flight_error,"flightEntry":flight_entry,
-        "flightNativeSample":native_sample_receipt,
+        "flightNativeSample":native_sample_receipt,"flightFailureEvidence":flight_failure_evidence,"flightRecoveryError":flight_recovery_error,
         "captureCpuRss":"not-collected-by-runner; external-owned-process-sampling-required","wallSeconds":started.elapsed().as_secs_f64(),"exitCode":status.code(),
         "runId":run_id,"mainMenuStartObservedWallSeconds":menu_elapsed,"startupBoundary":"first-owned-addon-Start-in-main-menu","startupPollingResolutionSeconds":0.1,
         "admissionWallSeconds":admission_seconds,"admissionPlusMenuSeconds":menu_elapsed.map(|seconds| seconds+admission_seconds),
