@@ -243,7 +243,16 @@ namespace KspContinuum
                 if(document.engine!=Application.unityVersion || document.platform!=Application.platform.ToString() || document.instanceRoot!=root || document.assemblySha256!=AssemblySha ||
                     !document.recipe.SequenceEqual(Recipe(loader)) || !document.blacklist.SequenceEqual(((IEnumerable)Get(loader,"assetBlacklist")).Cast<string>())) throw new InvalidOperationException("Catalog runtime/recipe differs.");
                 AssetCatalogFile[] actual=Inventory(document.recipe);
-                if(actual.Length!=document.inventory.Length || actual.Where((f,i)=>f.path!=document.inventory[i].path || f.sha256!=document.inventory[i].sha256 || f.length!=document.inventory[i].length).Any()) throw new InvalidOperationException("Catalog source inventory differs.");
+                string consumer = Path.GetFullPath(typeof(StartupAssetCatalog).Assembly.Location);
+                bool consumerOnly = typeof(StartupAssetCatalog).Assembly.GetManifestResourceNames().Length == 0 &&
+                    !document.orderedFiles.Contains(consumer) && !document.bundles.Any(bundle => bundle.path == consumer);
+                AssetCatalogFile[] expected = document.inventory;
+                if (consumerOnly)
+                {
+                    actual = actual.Where(file => file.path != consumer).ToArray();
+                    expected = expected.Where(file => file.path != consumer).ToArray();
+                }
+                if(actual.Length!=expected.Length || actual.Where((f,i)=>f.path!=expected[i].path || f.sha256!=expected[i].sha256 || f.length!=expected[i].length).Any()) throw new InvalidOperationException("Catalog source inventory differs.");
                 IList definitions=(IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(bundleType));
                 foreach(var b in document.bundles)
                 {

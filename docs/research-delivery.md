@@ -20,7 +20,7 @@ Stretch work includes higher physics warp, broader mods, ECS/DOTS, different phy
 
 ## Active lanes and experiment record
 
-Keep one performance and one reconstruction experiment active by default. A shared prerequisite or decisive finding can change the order. Record hypothesis, target capability, frozen inputs, competing routes, acceptance tests, evidence, remaining unknowns and next resolving action. Include capture, packing, transfer, synchronization and publication in complete-workload cost.
+Batch independent changes toward a complete outcome and implement them concurrently. Resolve actual dependencies in order, then exercise one integrated candidate. Isolate pieces only when a failure or consequential ambiguity needs attribution. Record the inputs, evidence and remaining unknowns needed to resume the work; avoid a separate ceremony for every small optimization. Include capture, packing, transfer, synchronization and publication in complete-workload cost.
 
 The first performance target after a verified dev loop is startup/initial loading: its savings compound across every subsequent experiment. Freeze installed content, settings and mod initialization; distinguish first use from warm filesystem/shader caches. Measure owned process launch to the observed main-menu Start boundary separately from interactive menu readiness and checkpoint-to-flight readiness. Avoid deleting shared caches. Attribute assembly/mod scanning, config/part loading, assets/shaders and engine initialization before choosing a fix. Run timed startup confirmation without competing builds; reconstruction smoke timings with background work cannot establish a startup speedup.
 
@@ -49,6 +49,16 @@ Keep request preparation separate from the stock serial texture conversion and p
 The independent DDS alternative retains stock header parsing, format selection and publication while replacing whole-file and payload arrays with a file-backed mapped upload. The mapping must remain alive through synchronous Unity upload and be released on every completion or exception. Restrict this experiment to an immutable disposable profile; concurrent truncation of mapped files is outside that contract. Retain a managed fallback when mapping is unavailable.
 
 Compare the same prepared catalog and DLC profile with each alternative separately. Include admission in launch cost, ordered texture metadata and load/error sequence, scoped loading costs, bounded ownership counters and cleanup. Metadata parity establishes the startup seam only; it does not qualify rendered pixels or gameplay. One baseline and one candidate can settle a clear result. Repeat only for a specific ambiguity.
+
+## Replacement boot system
+
+The target is a prepared game image and capability-driven resource realization. Cook durable runtime-ready data once; open its catalog directly, construct the requested working set, and publish through explicit compatibility boundaries. Extend texture payloads toward model/material recipes, part definitions/prefabs and scene state rather than optimizing every old loader independently. Mod consumers that require eager objects need a compatibility adapter. Direct public texture fields make lazy realization a consumer-rewrite problem, not merely a dictionary lookup change.
+
+The first image prototype captures final raw texture bytes and format/mip/readability/color/profile metadata during an original cook. Reuse bypasses file parsing, decoding, conversion and compression. Unsupported rows use original loaders. A structured startup dispatcher completes ready child work inline, preserves genuine waits and budget yields, and retains ordered registry publication.
+
+Separate producer provenance from consumer identity: retain the exact producer helper snapshot with the image and bind the other input DLLs. Consumer-only changes can use the same supported artifact contract. Changes to cooking semantics, resource-producing helper behavior or artifact interpretation require a new recipe epoch or cook. The asset catalog similarly permits reviewed changes to its resource-free helper consumer while retaining source inputs, runtime recipe/blacklist and compiled-graph checks. These are explicit roles within the private immutable profile, not a general exemption for arbitrary mod changes.
+
+Native admission streams both original digests together, hashes independent files concurrently, avoids redundant prelaunch full reads, and retains full post-run checks. Its standalone operation measures admission without launching the game. Prepared-image reuse uses cheap source/payload metadata guards under reserved immutable ownership; hashes established during cooking remain provenance. This prototype does not claim hostile-writer protection.
 
 ## Infrastructure obligations
 

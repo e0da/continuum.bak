@@ -22,6 +22,10 @@ namespace KspContinuum
             try
             {
                 StartupTexturePrefetch.ObserveForMenu();
+                StartupAudioPrefetch.ObserveForMenu();
+                StartupResourceImage.ObserveForMenu();
+                StartupReadiness.ObserveForMenu();
+                StartupWorkScheduler.ObserveForMenu();
                 NativeBoundaryMonoReport report = Run();
                 string directory = Path.Combine(KSPUtil.ApplicationRootPath, "GameData", "KspContinuum", "PluginData");
                 Directory.CreateDirectory(directory);

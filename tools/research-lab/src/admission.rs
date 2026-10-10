@@ -1,11 +1,14 @@
 use crate::{hash, read, Result};
 use md5::{Digest, Md5};
 use serde_json::{json, Value};
+use sha2::Sha256;
 use std::{
     collections::BTreeMap,
     fs,
     io::Read,
     path::{Path, PathBuf},
+    thread,
+    time::SystemTime,
 };
 
 pub struct Admission {
@@ -14,9 +17,25 @@ pub struct Admission {
 }
 impl Admission {
     pub fn unchanged(&self) -> bool {
-        self.files
-            .iter()
-            .all(|(path, digest)| hash(path).map(|actual| actual == *digest).unwrap_or(false))
+        let entries: Vec<_> = self.files.iter().collect();
+        thread::scope(|scope| {
+            let workers: Vec<_> = (0..entries.len().min(3))
+                .map(|worker| {
+                    let entries = &entries;
+                    scope.spawn(move || {
+                        entries
+                            .iter()
+                            .skip(worker)
+                            .step_by(3)
+                            .all(|(path, digest)| {
+                                hash(path).map(|actual| actual == **digest).unwrap_or(false)
+                            })
+                    })
+                })
+                .collect();
+            let results: Vec<_> = workers.into_iter().map(|worker| worker.join()).collect();
+            results.into_iter().all(|result| result.unwrap_or(false))
+        })
     }
 }
 fn owned_path(path: &Path) -> Result<PathBuf> {
@@ -35,10 +54,11 @@ fn owned_path(path: &Path) -> Result<PathBuf> {
     }
     Ok(absolute)
 }
-fn original_md5(path: &Path) -> Result<String> {
+fn source_digests(path: &Path) -> Result<(String, String)> {
     let before = fs::metadata(path).map_err(|e| e.to_string())?;
     let mut stream = fs::File::open(path).map_err(|e| e.to_string())?;
     let mut digest = Md5::new();
+    let mut sha = Sha256::new();
     let mut buffer = [0u8; 65536];
     loop {
         let length = stream.read(&mut buffer).map_err(|e| e.to_string())?;
@@ -46,15 +66,39 @@ fn original_md5(path: &Path) -> Result<String> {
             break;
         }
         digest.update(&buffer[..length]);
+        sha.update(&buffer[..length]);
     }
     let after = fs::metadata(path).map_err(|e| e.to_string())?;
     if before.len() != after.len()
         || before.modified().map_err(|e| e.to_string())?
             != after.modified().map_err(|e| e.to_string())?
     {
-        return Err("original changed during MD5 admission".into());
+        return Err("original changed during dual-digest admission".into());
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok((
+        format!("{:x}", sha.finalize()),
+        format!("{:x}", digest.finalize()),
+    ))
+}
+#[derive(PartialEq, Eq)]
+struct FileSnapshot {
+    length: u64,
+    modified: SystemTime,
+}
+fn snapshot(path: &Path) -> Result<FileSnapshot> {
+    let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+    Ok(FileSnapshot {
+        length: metadata.len(),
+        modified: metadata.modified().map_err(|error| error.to_string())?,
+    })
+}
+fn derived_digest(path: &Path) -> Result<(String, FileSnapshot)> {
+    let before = snapshot(path)?;
+    let digest = hash(path)?;
+    if before != snapshot(path)? {
+        return Err("derived changed during SHA256 admission".into());
+    }
+    Ok((digest, before))
 }
 pub fn admit(
     instance: &Path,
@@ -96,10 +140,12 @@ pub fn admit(
         return Err("three cache rows required".into());
     }
     let mut files = BTreeMap::new();
-    files.insert(manifest_path, manifest_hash.clone());
+    files.insert(manifest_path.clone(), manifest_hash.clone());
     let mut proof = json!({"schema":"continuum-startup-cache-admission/v1","runId":run_id,
-        "instanceRoot":instance,"cacheRoot":cache,"engine":"2019.4.18f1","manifestSha256":manifest_hash,
+        "instanceRoot":instance,"cacheRoot":cache,"engine":"2019.4.18f1","manifestSha256":manifest_hash.clone(),
         "qualification":"private-immutable-profile-admission-not-decoded-content-equivalence"});
+    let mut jobs = Vec::new();
+    let mut derived_paths = std::collections::BTreeSet::new();
     for (relative, name) in [
         (
             "MakingHistory/AssetBundles/makinghistory_assets",
@@ -130,12 +176,8 @@ pub fn admit(
         let source_hash = source_hashes
             .get(&source_relative)
             .ok_or("source hash absent")?;
-        if row["sourceSha256"] != *source_hash || hash(&source)? != *source_hash {
+        if row["sourceSha256"] != *source_hash {
             return Err("source hash drift".into());
-        }
-        let source_md5 = original_md5(&source)?;
-        if row["sourceMd5"] != source_md5 {
-            return Err("source MD5 provenance differs".into());
         }
         let derived = owned_path(Path::new(
             row["derivedPath"].as_str().ok_or("derived path absent")?,
@@ -143,14 +185,63 @@ pub fn admit(
         if !derived.starts_with(&cache)
             || derived == cache
             || files.contains_key(&derived)
+            || !derived_paths.insert(derived.clone())
             || row["derivedLength"].as_u64()
                 != Some(fs::metadata(&derived).map_err(|e| e.to_string())?.len())
         {
             return Err("derived cache binding differs".into());
         }
-        let derived_hash = hash(&derived)?;
-        if row["derivedSha256"] != derived_hash {
-            return Err("derived hash drift".into());
+        jobs.push((
+            name,
+            source,
+            source_hash.clone(),
+            row["sourceMd5"].clone(),
+            derived,
+            row["derivedSha256"].clone(),
+        ));
+    }
+    let completed: Vec<_> = thread::scope(|scope| {
+        let workers: Vec<_> = jobs
+            .into_iter()
+            .map(
+                |(name, source, expected_source, expected_md5, derived, expected_derived)| {
+                    scope.spawn(move || -> Result<_> {
+                        let (source_hash, source_md5) = source_digests(&source)?;
+                        if source_hash != expected_source {
+                            return Err("source hash drift".into());
+                        }
+                        if expected_md5 != source_md5 {
+                            return Err("source MD5 provenance differs".into());
+                        }
+                        let (derived_hash, metadata) = derived_digest(&derived)?;
+                        if expected_derived != derived_hash {
+                            return Err("derived hash drift".into());
+                        }
+                        Ok((
+                            name,
+                            source_hash,
+                            source_md5,
+                            derived,
+                            derived_hash,
+                            metadata,
+                        ))
+                    })
+                },
+            )
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|_| Err("admission worker panicked".into()))
+            })
+            .collect()
+    });
+    for result in completed {
+        let (name, source_hash, source_md5, derived, derived_hash, metadata) = result?;
+        if snapshot(&derived)? != metadata {
+            return Err("derived metadata changed during admission".into());
         }
         files.insert(derived, derived_hash.clone());
         proof[format!("{name}_sourceSha256")] = json!(source_hash);
@@ -158,8 +249,8 @@ pub fn admit(
         proof[format!("{name}_sourceMd5")] = json!(source_md5);
     }
     let admission = Admission { proof, files };
-    if !admission.unchanged() {
-        return Err("cache changed during admission".into());
+    if hash(&manifest_path)? != manifest_hash {
+        return Err("manifest changed during admission".into());
     }
     Ok(admission)
 }
@@ -196,7 +287,7 @@ mod tests {
             fs::write(&derived, b"derived").unwrap();
             let digest = hash(&source).unwrap();
             source_hashes.insert(key, digest.clone());
-            rows.push(json!({"relativePath":relative,"originalPath":source,"sourceLength":6,"sourceSha256":digest,"sourceMd5":original_md5(&source).unwrap(),"derivedPath":derived,"derivedLength":7,"derivedSha256":hash(&derived).unwrap()}));
+            rows.push(json!({"relativePath":relative,"originalPath":source,"sourceLength":6,"sourceSha256":digest,"sourceMd5":source_digests(&source).unwrap().1,"derivedPath":derived,"derivedLength":7,"derivedSha256":hash(&derived).unwrap()}));
         }
         let path = cache.join("manifest.json");
         fs::write(&path,json!({"schema":"continuum-bundle-cache/v1","status":"complete","compression":"LZ4Runtime","engine":"2019.4.18f1","instanceRoot":instance,"bundles":rows}).to_string()).unwrap();
@@ -226,21 +317,35 @@ mod tests {
         assert!(admit(&instance, &cache, "next", &source_hashes).is_err());
     }
     #[test]
-    fn md5_known_vectors_and_stream_boundary() {
+    fn dual_digest_known_vectors_and_stream_boundary() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("source");
-        for (bytes, expected) in [
-            (b"".as_slice(), "d41d8cd98f00b204e9800998ecf8427e"),
-            (b"abc".as_slice(), "900150983cd24fb0d6963f7d28e17f72"),
+        for (bytes, expected_md5, expected_sha) in [
+            (
+                b"".as_slice(),
+                "d41d8cd98f00b204e9800998ecf8427e",
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            (
+                b"abc".as_slice(),
+                "900150983cd24fb0d6963f7d28e17f72",
+                "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            ),
         ] {
             fs::write(&path, bytes).unwrap();
-            assert_eq!(original_md5(&path).unwrap(), expected);
+            assert_eq!(
+                source_digests(&path).unwrap(),
+                (expected_sha.to_string(), expected_md5.to_string())
+            );
         }
         let bytes = vec![b'x'; 65537];
         fs::write(&path, &bytes).unwrap();
         assert_eq!(
-            original_md5(&path).unwrap(),
-            format!("{:x}", Md5::digest(&bytes))
+            source_digests(&path).unwrap(),
+            (
+                format!("{:x}", Sha256::digest(&bytes)),
+                format!("{:x}", Md5::digest(&bytes))
+            )
         );
     }
 }

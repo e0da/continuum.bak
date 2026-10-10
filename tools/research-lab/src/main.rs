@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 use continuum_research_lab::{
     compare, hash, inventory, matrix, metrics, read, source_tree_hash, write_new, FlightReceipt,
     Result, VariantManifest,
@@ -68,6 +69,11 @@ fn run() -> Result<()> {
             "--startup-texture-prefetch",
             "--startup-texture-observe",
             "--startup-dds-mapped",
+            "--startup-audio-prefetch",
+            "--startup-readiness",
+            "--startup-resource-image-mode",
+            "--startup-resource-image",
+            "--startup-work-scheduler",
         ],
         "compare" => &[
             "--baseline",
@@ -256,7 +262,7 @@ fn run() -> Result<()> {
             if read::<Value>(&instance.join("continuum-lab.local.json"))?["scope"] != "disposable-lab" {
                 return Err("disposable laboratory ownership required".into());
             }
-            let source_hashes = startup_bundle_hashes(&instance)?;
+            let source_hashes = expected_bundle_hashes(Path::new(get("--startup-cache")?))?;
             let admission = continuum_research_lab::admission::admit(
                 &instance, Path::new(get("--startup-cache")?), "offline-admission-proof", &source_hashes,
             )?;
@@ -355,6 +361,28 @@ fn run() -> Result<()> {
                 None | Some("false") => false,
                 Some("true") => true,
                 _ => return Err("startup-dds-mapped must be true or false".into()),
+            },
+            match options.get("--startup-audio-prefetch").map(String::as_str) {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err("startup-audio-prefetch must be true or false".into()),
+            },
+            match options.get("--startup-readiness").map(String::as_str) {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err("startup-readiness must be true or false".into()),
+            },
+            match options.get("--startup-resource-image-mode").map(String::as_str) {
+                None | Some("none") => "none",
+                Some("prepare") => "prepare",
+                Some("reuse") => "reuse",
+                _ => return Err("startup-resource-image-mode must be none, prepare, or reuse".into()),
+            },
+            options.get("--startup-resource-image").map(String::as_str),
+            match options.get("--startup-work-scheduler").map(String::as_str) {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err("startup-work-scheduler must be true or false".into()),
             },
         )?,
         "compare" => {
@@ -555,8 +583,22 @@ fn smoke(
     startup_texture_prefetch: bool,
     startup_texture_observe: bool,
     startup_dds_mapped: bool,
+    startup_audio_prefetch: bool,
+    startup_readiness: bool,
+    startup_resource_image_mode: &str,
+    startup_resource_image: Option<&str>,
+    startup_work_scheduler: bool,
 ) -> Result<()> {
     let admission_started = Instant::now();
+    if (startup_resource_image_mode != "none") != startup_resource_image.is_some() {
+        return Err("resource image mode requires one private image path".into());
+    }
+    if let Some(path) = startup_resource_image {
+        if !Path::new(path).is_absolute() { return Err("resource image path must be absolute".into()); }
+    }
+    if startup_resource_image_mode != "none" && (startup_texture_prefetch || startup_dds_mapped) {
+        return Err("resource image replaces the texture loader; select it independently of texture seam probes".into());
+    }
     let catalog_preparation = startup_catalog_mode.starts_with("prepare");
     if (startup_catalog_mode != "none") != startup_catalog.is_some() {
         return Err("catalog prepare/reuse requires one private catalog path".into());
@@ -632,7 +674,11 @@ fn smoke(
     let assembly = instance.join("KSP.app/Contents/Resources/Data/Managed/Assembly-CSharp.dll");
     let assembly_hash = hash(&assembly)?;
     let executable_hash = hash(&executable)?;
-    let bundle_hashes = startup_bundle_hashes(&instance)?;
+    let bundle_hashes = if startup_native_admission {
+        expected_bundle_hashes(Path::new(startup_cache.unwrap()))?
+    } else {
+        startup_bundle_hashes(&instance)?
+    };
     fs::create_dir(output).map_err(|e| e.to_string())?;
     let stdout = fs::File::create(output.join("player-stdout.log")).map_err(|e| e.to_string())?;
     let stderr = fs::File::create(output.join("player-stderr.log")).map_err(|e| e.to_string())?;
@@ -702,6 +748,27 @@ fn smoke(
         })
         .args(if startup_dds_mapped {
             vec!["--continuum-startup-dds-mapped"]
+        } else {
+            vec![]
+        })
+        .args(if startup_audio_prefetch {
+            vec!["--continuum-startup-audio-prefetch"]
+        } else {
+            vec![]
+        })
+        .args(if startup_readiness {
+            vec!["--continuum-startup-readiness"]
+        } else {
+            vec![]
+        })
+        .args(if startup_resource_image_mode != "none" {
+            vec![format!("--continuum-startup-resource-image-mode={startup_resource_image_mode}"),
+                format!("--continuum-startup-resource-image={}", startup_resource_image.unwrap())]
+        } else {
+            vec![]
+        })
+        .args(if startup_work_scheduler {
+            vec!["--continuum-startup-work-scheduler"]
         } else {
             vec![]
         })
@@ -851,6 +918,10 @@ fn smoke(
         "startupTexturePrefetchRequested":startup_texture_prefetch,
         "startupTextureObserveRequested":startup_texture_observe,
         "startupDdsMappedRequested":startup_dds_mapped,
+        "startupAudioPrefetchRequested":startup_audio_prefetch,
+        "startupReadinessRequested":startup_readiness,
+        "startupResourceImageModeRequested":startup_resource_image_mode,"startupResourceImage":startup_resource_image,
+        "startupWorkSchedulerRequested":startup_work_scheduler,
         "startupCatalogModeRequested":startup_catalog_mode,"startupCatalog":startup_catalog,"startupCatalogSha256":catalog_before,
         "generatedCatalogSha256":generated_catalog_hash,
         "startupProfileRequested":startup_profile,
@@ -868,6 +939,26 @@ fn smoke(
     Ok(())
 }
 
+fn expected_bundle_hashes(cache: &Path) -> Result<BTreeMap<String, String>> {
+    let manifest_path = cache.join("manifest.json");
+    if fs::metadata(&manifest_path).map_err(|e| e.to_string())?.len() > 65536 {
+        return Err("cache manifest too large".into());
+    }
+    let manifest: Value = read(&manifest_path)?;
+    let rows = manifest["bundles"].as_array().ok_or("cache rows absent")?;
+    if rows.len() != 3 { return Err("three source rows required".into()); }
+    let mut hashes = BTreeMap::new();
+    for relative in ["MakingHistory/AssetBundles/makinghistory_assets", "MakingHistory/AssetBundles/makinghistory_scene", "Serenity/AssetBundles/serenity_assets"] {
+        let matching: Vec<_> = rows.iter().filter(|row| row["relativePath"] == relative).collect();
+        if matching.len() != 1 { return Err("source row missing or duplicate".into()); }
+        let digest = matching[0]["sourceSha256"].as_str().ok_or("source hash absent")?;
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("source hash malformed".into());
+        }
+        hashes.insert(format!("GameData/SquadExpansion/{relative}"), digest.to_string());
+    }
+    Ok(hashes)
+}
 fn startup_bundle_hashes(instance: &Path) -> Result<BTreeMap<String, String>> {
     let mut hashes = BTreeMap::new();
     for relative in [
