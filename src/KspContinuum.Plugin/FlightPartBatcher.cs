@@ -232,7 +232,7 @@ namespace KspContinuum
                     packet.ProbePositions = new Vector3[n]; packet.ProbeLighting = new SphericalHarmonicsL2[n]; packet.ProbeOcclusion = new Vector4[n];
                 }
             }
-            UpdateInputs(); Camera.onPreCull += PreCull; Camera.onPostRender += PostRender; callbacks = true;
+            UpdateInputs(); CaptureResidentMaterialFixture(); Camera.onPreCull += PreCull; Camera.onPostRender += PostRender; callbacks = true;
             var opacityMethod=AccessTools.Method(typeof(Part),"SetOpacity",new[] { typeof(float) });
             if(opacityMethod==null || Harmony.GetPatchInfo(opacityMethod)?.Owners.Count>0) throw new InvalidOperationException("Owned stock opacity boundary unavailable.");
             opacityHook=new Harmony(PatchOwner); opacityHook.Patch(opacityMethod,prefix:new HarmonyMethod(typeof(FlightPartBatcher),nameof(OpacityChanging)));
@@ -241,6 +241,25 @@ namespace KspContinuum
             if (retained) { RetainedRenderSources.RetireAll(); report.retiredRenderers = RetainedRenderSources.RetiredCount; }
             report.packets = packets.Count; report.preparationMilliseconds = timer.Elapsed.TotalMilliseconds;
             report.status = "installed-experimental"; report.cleanupStatus = "owned-hooks-active"; Write();
+        }
+        void CaptureResidentMaterialFixture()
+        {
+            string explicitDirectory = Environment.GetEnvironmentVariable("CONTINUUM_RESIDENT_MATERIAL_FIXTURE");
+            if (!Flag("--continuum-resident-material-fixture") && string.IsNullOrEmpty(explicitDirectory)) return;
+            var sources = new List<ResidentMaterialFixtureCapture.Source>();
+            foreach (Packet packet in packets) for (int i = 0; i < packet.Sources.Count; i++)
+            {
+                Source source = packet.Sources[i];
+                if (source.Material.shader.name != "KSP/Emissive/Bumped Specular (Mapped)") continue;
+                if (packet.ProbeLighting == null || packet.ProbeOcclusion == null)
+                    throw new InvalidDataException("Mapped fixture requires actual per-source SH and occlusion.");
+                observed.Clear(); source.Renderer.GetPropertyBlock(observed);
+                sources.Add(new ResidentMaterialFixtureCapture.Source { Mesh = source.Mesh, Material = packet.Material, Renderer = source.Renderer, Part = source.Owner,
+                    Matrix = packet.Matrices[i], Temperature = packet.Temperature[i], Rim = packet.Rim[i], Emission = packet.Emission[i],
+                    Lighting = packet.ProbeLighting[i], Occlusion = packet.ProbeOcclusion[i], Falloff = packet.Falloff[i],
+                    RawOpacity = observed.GetFloat(PropertyIDs._Opacity), EffectiveOpacity = packet.Opacity[i] });
+            }
+            ResidentMaterialFixtureCapture.Capture(vessel, string.IsNullOrEmpty(explicitDirectory) ? Path.Combine(directory, "resident-material-fixture") : explicitDirectory, report.runId, sources);
         }
         Material Bind(Material original)
         {

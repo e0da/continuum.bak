@@ -22,7 +22,7 @@ Shader "Continuum/FlightPartSpecularInstanced"
   Tags { "RenderType"="Opaque" "Queue"="Geometry" }
   LOD 300
   CGPROGRAM
-  #pragma target 3.0
+  #pragma target 3.5
   #pragma surface surf BlinnPhong fullforwardshadows addshadow
   #pragma multi_compile_instancing
   #include "UnityCG.cginc"

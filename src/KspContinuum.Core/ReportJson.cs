@@ -76,6 +76,7 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.FlightAeroBatcher+Report" ||
                  type.FullName == "KspContinuum.FlightAeroFieldRenderer+Report" ||
                  type.FullName == "KspContinuum.FlightPartBatcher+Report" ||
+                 type.FullName == "KspContinuum.ResidentMaterialFixtureCapture+Topology" ||
                  type.FullName == "KspContinuum.StartupSiteProof+Report" ||
                  type.FullName == "KspContinuum.StartupSiteProof+Row" ||
                  type.FullName == "KspContinuum.FlightAeroBatcher+Fallback" ||
@@ -130,6 +131,9 @@ namespace KspContinuum
                 type != typeof(LiveSweepStatus) &&
                 type != typeof(LiveControlReply) &&
                 type != typeof(NativeBoundaryMonoReport) && type != typeof(NativeBoundaryMonoRow) &&
+                type != typeof(ResidentMaterialManifest) && type != typeof(ResidentTextureAsset) &&
+                type != typeof(ResidentMaterialAsset) && type != typeof(ResidentMaterialProperty) &&
+                type != typeof(ResidentInstanceAsset) && type != typeof(ResidentLighting) &&
                 type != typeof(NativeBoundaryMonoTiming) && type != typeof(ManagedReconstructionObservation) && !pluginDiagnostic)
                 throw new ArgumentException("Unsupported report type: " + type.FullName);
             output.Append('{'); bool firstField = true;

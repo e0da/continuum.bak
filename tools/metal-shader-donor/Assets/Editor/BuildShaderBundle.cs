@@ -13,7 +13,10 @@ public static class BuildShaderBundle
     [Serializable] sealed class Receipt
     {
         public string schema = "continuum-shader-build/v1", unityVersion, revision, graphicsApi, bundleName, bundleSha256, editorFullVersion, editorBinarySha256, toolAssemblySha256;
-        public bool instancingRequired, compilerFailureProbePassed;
+        public bool instancingRequired, referenceVariantsRequired, compilerFailureProbePassed;
+        public int instancingStrippingValue = -1;
+        public string instancingStrippingName, generatedPassSourceDirectory;
+        public string[] instancingStrippingEnumNames, instancingStrippingDisplayNames;
         public string[] shaders;
         public string[] retainedVariants;
         public Input[] inputs;
@@ -41,6 +44,8 @@ public static class BuildShaderBundle
         if (string.IsNullOrWhiteSpace(name) || !(name[0] >= 'a' && name[0] <= 'z' || name[0] >= '0' && name[0] <= '9') || name.Any(c => !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.')) || name.Contains(".."))
             throw new Exception("Bundle name must be one lowercase filename.");
         bool instancing = Environment.GetEnvironmentVariable("CONTINUUM_SHADER_REQUIRE_INSTANCING") == "1";
+        bool reference = Environment.GetEnvironmentVariable("CONTINUUM_SHADER_REQUIRE_REFERENCE") == "1";
+        if (reference && !instancing) throw new Exception("Reference comparison requires the instanced variant contract too.");
         bool selectiveInstancing = Environment.GetEnvironmentVariable("CONTINUUM_SHADER_SELECTIVE_INSTANCING") == "1";
         if (selectiveInstancing && !instancing) throw new Exception("Selective instancing requires retained instancing variants.");
         var output = Environment.GetEnvironmentVariable("CONTINUUM_SHADER_BUNDLE_OUTPUT");
@@ -87,6 +92,33 @@ public static class BuildShaderBundle
                         throw new Exception("Unable to retain shadow instancing variant for " + path);
                     retained.Add(shader.name + ":ShadowCaster:SHADOWS_DEPTH,INSTANCING_ON");
                 }
+                if (reference && surface)
+                {
+                    // Both consumers use captured SH and one directional light.
+                    foreach (bool packet in new[] { false, true }) foreach (bool probes in new[] { false, true })
+                    foreach (int shadow in new[] { 0, 1 })
+                    {
+                        var k = new List<string> { "DIRECTIONAL" };
+                        if (packet) k.Add("INSTANCING_ON");
+                        if (probes) k.Add("LIGHTPROBE_SH");
+                        if (shadow > 0) k.Add("SHADOWS_SCREEN");
+                        string tuple = shader.name + ":ForwardBase:" + string.Join(",", k);
+                        if (retained.Contains(tuple)) continue;
+                        try
+                        {
+                            if (!variants.Add(new ShaderVariantCollection.ShaderVariant(shader, PassType.ForwardBase, k.ToArray())))
+                                throw new Exception("Unable to retain reference/probe variant " + tuple);
+                        }
+                        catch (ArgumentException error) { throw new Exception("Unsupported reference/probe variant " + tuple, error); }
+                        retained.Add(tuple);
+                    }
+                    if (File.ReadAllText(path).Contains("addshadow"))
+                    {
+                        if (!variants.Add(new ShaderVariantCollection.ShaderVariant(shader, PassType.ShadowCaster, "SHADOWS_DEPTH")))
+                            throw new Exception("Unable to retain reference shadow variant for " + path);
+                        retained.Add(shader.name + ":ShadowCaster:SHADOWS_DEPTH");
+                    }
+                }
             }
         }
         if (instancing && retained.Count == 0) throw new Exception("No instancing shader variants retained.");
@@ -95,6 +127,11 @@ public static class BuildShaderBundle
         if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(variantPath) != null)
             throw new Exception("Generated variant path already exists.");
         if (instancing) AssetDatabase.CreateAsset(variants, variantPath);
+        SerializedObject graphicsSettings = null;
+        int originalInstancingStripping = -1, effectiveInstancingStripping = -1;
+        string strippingName = null;
+        string[] strippingNames = null, strippingDisplayNames = null;
+        string generatedSource = Environment.GetEnvironmentVariable("CONTINUUM_SHADER_GENERATED_SOURCE_OUTPUT");
         var builds = new[]
         {
             new AssetBundleBuild
@@ -105,6 +142,37 @@ public static class BuildShaderBundle
         };
         try
         {
+            if (instancing)
+            {
+                var settings = AssetDatabase.LoadAllAssetsAtPath("ProjectSettings/GraphicsSettings.asset");
+                if (settings.Length != 1) throw new Exception("Unique graphics settings required.");
+                graphicsSettings = new SerializedObject(settings[0]);
+                var stripping = graphicsSettings.FindProperty("m_InstancingStripping");
+                if (stripping == null || stripping.propertyType != SerializedPropertyType.Enum) throw new Exception("Pinned instancing stripping enum unavailable.");
+                strippingNames = stripping.enumNames; strippingDisplayNames = stripping.enumDisplayNames;
+                int keepAll = Array.FindIndex(strippingNames, n => new string(n.Where(char.IsLetter).ToArray()).Equals("KeepAll", StringComparison.OrdinalIgnoreCase));
+                if (keepAll < 0) throw new Exception("KeepAll instancing stripping enum unavailable: " + string.Join(",", strippingNames));
+                originalInstancingStripping = stripping.enumValueIndex;
+                stripping.enumValueIndex = keepAll;
+                graphicsSettings.ApplyModifiedPropertiesWithoutUndo(); graphicsSettings.Update();
+                stripping = graphicsSettings.FindProperty("m_InstancingStripping");
+                if (stripping.enumValueIndex != keepAll) throw new Exception("KeepAll instancing admission failed.");
+                effectiveInstancingStripping = stripping.intValue; strippingName = stripping.enumNames[keepAll];
+            }
+            if (!string.IsNullOrEmpty(generatedSource))
+            {
+                if (!Path.IsPathRooted(generatedSource) || Directory.Exists(generatedSource) || File.Exists(generatedSource)) throw new Exception("Generated source output must be a new absolute directory.");
+                var method = typeof(ShaderUtil).GetMethod("GetShaderPassSourceCode", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic, null, new[] { typeof(Shader), typeof(int), typeof(int) }, null);
+                if (method == null) throw new Exception("Pinned generated pass source API unavailable.");
+                Directory.CreateDirectory(generatedSource);
+                for (int shaderIndex = 0; shaderIndex < paths.Length; shaderIndex++)
+                {
+                    Shader shader = AssetDatabase.LoadAssetAtPath<Shader>(paths[shaderIndex]);
+                    var probe = new Material(shader);
+                    try { for (int pass = 0; pass < probe.passCount; pass++) File.WriteAllText(Path.Combine(generatedSource, "shader-" + shaderIndex + "-subshader-0-pass-" + pass + ".txt"), (string)method.Invoke(null, new object[] { shader, 0, pass }) ?? ""); }
+                    finally { UnityEngine.Object.DestroyImmediate(probe); }
+                }
+            }
             var manifest = BuildPipeline.BuildAssetBundles(output, builds, BuildAssetBundleOptions.StrictMode | BuildAssetBundleOptions.ChunkBasedCompression | BuildAssetBundleOptions.ForceRebuildAssetBundle, BuildTarget.StandaloneOSX);
             if (manifest == null || !File.Exists(Path.Combine(output, name))) throw new Exception("Shader bundle build failed.");
             foreach (string path in paths) if (ShaderUtil.ShaderHasError(AssetDatabase.LoadAssetAtPath<Shader>(path))) throw new Exception("Shader error after bundle build: " + path);
@@ -115,11 +183,16 @@ public static class BuildShaderBundle
                 .Concat(File.Exists("Packages/packages-lock.json") ? new[] { "Packages/packages-lock.json" } : new string[0])
                 .OrderBy(p => p, StringComparer.Ordinal).Select(p => new Input { path = p, sha256 = Hash(p) }).ToArray();
             var receipt = new Receipt { unityVersion = Application.unityVersion, editorFullVersion = editorVersion, editorBinarySha256 = Hash(Path.Combine(EditorApplication.applicationContentsPath, "MacOS/Unity")), toolAssemblySha256 = Hash(typeof(BuildShaderBundle).Assembly.Location), revision = "3310a4d4f880", graphicsApi = apiText,
-                bundleName = name, bundleSha256 = Hash(Path.Combine(output, name)), instancingRequired = instancing, shaders = names.ToArray(), retainedVariants = retained.ToArray(), inputs = inputs };
+                bundleName = name, bundleSha256 = Hash(Path.Combine(output, name)), instancingRequired = instancing, referenceVariantsRequired = reference, shaders = names.ToArray(), retainedVariants = retained.ToArray(), inputs = inputs,
+                instancingStrippingValue = effectiveInstancingStripping, instancingStrippingName = strippingName, instancingStrippingEnumNames = strippingNames, instancingStrippingDisplayNames = strippingDisplayNames, generatedPassSourceDirectory = generatedSource };
             File.WriteAllText(Path.Combine(output, "build-receipt.json"), JsonUtility.ToJson(receipt, true));
             Debug.Log("Built " + apiText + " shader bundle with " + paths.Length + " shaders; instancing=" + instancing);
         }
-        finally { if (instancing) AssetDatabase.DeleteAsset(variantPath); else UnityEngine.Object.DestroyImmediate(variants); }
+        finally
+        {
+            if (graphicsSettings != null && originalInstancingStripping >= 0) { graphicsSettings.Update(); graphicsSettings.FindProperty("m_InstancingStripping").enumValueIndex = originalInstancingStripping; graphicsSettings.ApplyModifiedPropertiesWithoutUndo(); }
+            if (instancing) AssetDatabase.DeleteAsset(variantPath); else UnityEngine.Object.DestroyImmediate(variants);
+        }
     }
 
     public static void VerifyCompilerFailure()

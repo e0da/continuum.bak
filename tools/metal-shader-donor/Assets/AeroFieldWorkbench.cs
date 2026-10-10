@@ -35,6 +35,10 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         public float[] flowDirection, cameraPosition, cameraRotation;
         public bool paused; public string[] shaders;
         public bool benchmarkActive; public string lastBenchmark,lastBenchmarkStatus,lastBenchmarkReason, pipelineMode = "full";
+        public string materialMode, materialDiagnostic, materialTopologyId, materialStateSha256, materialBundleSha256;
+        public long materialGeneration;
+        public int materialInstances, materialMeshes, materialPackets, materialDrawCalls, materialSubmittedFrames, materialSnapshotPublications, materialOccupiedPixels;
+        public bool materialPixelProof;
     }
     [Serializable] sealed class Benchmark
     {
@@ -67,6 +71,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     TcpListener listener; Thread worker; volatile bool stopping;
     int queued, smokeFrames, capturesPending; float clock, nextPoll;
     string activeBundlePath;
+    ResidentMaterialRuntime resident;
     Benchmark benchmark; long benchmarkWarmupEnd,benchmarkDeadline,benchmarkPreviousTicks; int benchmarkPreviousFrame,lastRenderedFrame=-1,renderedInFrame;
     bool benchmarkCapturing,priorPaused; int priorVSync,priorFrameRate;
     RenderingPath benchmarkRenderPath,observedRenderPath; ColorSpace benchmarkColorSpace; bool renderPathRecorded;
@@ -171,6 +176,10 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             WriteStatus();
         }
     }
+    void OnPreCull()
+    {
+        if(resident!=null) try { resident.Submit(view); } catch(Exception error) { state.reloadError="material-submit: "+error; if(state.benchmarkActive) EndBenchmark("invalid","material-submit-failed"); WriteStatus(); Application.Quit(2); enabled=false; }
+    }
     static string Escape(string v) { return v.Replace("\\","\\\\").Replace("\"","\\\"").Replace("\n","\\n").Replace("\r","\\r"); }
     void Execute(string text)
     {
@@ -185,7 +194,10 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             case "setflow": if(words.Length!=4) throw new InvalidDataException("setflow x y z"); Vector3 nextDirection=new Vector3(Number(words[1]),Number(words[2]),Number(words[3])); if(nextDirection.sqrMagnitude<.000001f) throw new InvalidDataException("Zero flow."); direction=nextDirection.normalized; break;
             case "setintensity": if(words.Length!=2) throw new InvalidDataException("setintensity value"); effect.x=Mathf.Clamp(Number(words[1]),0,10); break;
             case "setclock": if(words.Length!=2) throw new InvalidDataException("setclock seconds"); float nextClock=Number(words[1]); if(nextClock<0||nextClock>1000000) throw new InvalidDataException("Clock0..1000000."); clock=nextClock; break;
-            case "rendermode": if(words.Length!=2||!(words[1]=="full"||words[1]=="geometry"||words[1]=="fields")) throw new InvalidDataException("rendermode full|geometry|fields"); state.pipelineMode=words[1]; ribbonCommands?.Clear(); sceneCommands?.Clear(); break;
+            case "rendermode": if(words.Length!=2||!(words[1]=="full"||words[1]=="geometry"||words[1]=="fields")||(resident!=null&&words[1]!="geometry")) throw new InvalidDataException("rendermode full|geometry|fields; resident material admits geometry only."); state.pipelineMode=words[1]; ribbonCommands?.Clear(); sceneCommands?.Clear(); break;
+            case "materialmode": if(resident==null||words.Length!=2) throw new InvalidDataException("Loaded material fixture and reference|instanced required."); resident.SetMode(words[1]); state.materialPixelProof=false; state.materialOccupiedPixels=0; break;
+            case "materialdiagnostic": if(resident==null||words.Length!=2) throw new InvalidDataException("Loaded material fixture and off|defaults|single required."); resident.SetDiagnostic(words[1]); state.materialPixelProof=false; state.materialOccupiedPixels=0; break;
+            case "snapshotreload": if(resident==null) throw new InvalidDataException("Loaded material fixture required."); resident.ReloadSnapshot(Absolute(text.Substring(words[0].Length).Trim())); geometryBounds=resident.Bounds; state.materialPixelProof=false; state.materialOccupiedPixels=0; break;
             case "benchmark": if(words.Length!=3) throw new InvalidDataException("benchmark warmupSeconds captureSeconds"); BeginBenchmark(Number(words[1]),Number(words[2])); break;
             case "cancelbenchmark": if(!state.benchmarkActive) throw new InvalidOperationException("No active benchmark."); EndBenchmark("interrupted","operator-cancelled"); break;
             case "cameraorbit": if(words.Length!=4) throw new InvalidDataException("cameraorbit yaw pitch distance"); Quaternion orbit=Quaternion.Euler(Mathf.Clamp(Number(words[2]),-89,89),Number(words[1]),0); view.transform.position=geometryBounds.center+orbit*Vector3.back*Mathf.Clamp(Number(words[3]),.1f,10000); view.transform.LookAt(geometryBounds.center); break;
@@ -200,6 +212,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     void BeginBenchmark(double warmup,double duration)
     {
         if(state.benchmarkActive||capturesPending!=0||smokeFrames>0||!SplashScreen.isFinished) throw new InvalidOperationException("Idle persistent host after splash required.");
+        if(resident!=null&&resident.Diagnostic!="off") throw new InvalidOperationException("Material diagnostics cannot be benchmarked.");
         if(warmup<0||warmup>30||duration<1||duration>30) throw new InvalidDataException("Warmup0..30 and capture1..30 seconds required.");
         benchmark=new Benchmark {hostId=state.hostId,processId=state.processId,renderer=state.renderer,graphicsVersion=SystemInfo.graphicsDeviceVersion,unity=Application.unityVersion,
             renderPath=view.actualRenderingPath.ToString(),pipelineMode=state.pipelineMode,geometrySource=state.geometrySource,fixtureSha256=state.fixtureSha256,bundleSha256=state.bundleSha256,generation=state.generation,
@@ -209,13 +222,19 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             graphicsUVStartsAtTop=SystemInfo.graphicsUVStartsAtTop,cameraProjectionM11=view.projectionMatrix.m11,gpuProjectionToTextureM11=GL.GetGPUProjectionMatrix(view.projectionMatrix,true).m11,
             width=Screen.width,height=Screen.height,antiAliasing=QualitySettings.antiAliasing,qualityLevel=QualitySettings.GetQualityLevel(),colorSpace=QualitySettings.activeColorSpace.ToString(),paused=true,
             frequency=System.Diagnostics.Stopwatch.Frequency,frameMilliseconds=new double[65536],frameStartedTicks=new long[65536],frameEndedTicks=new long[65536],renderedFrames=new int[65536]};
-        foreach(MeshFilter filter in geometryRoot.GetComponentsInChildren<MeshFilter>())
+        if(resident!=null)
+        {
+            benchmark.geometryRendererCount=resident.InstanceCount; benchmark.geometryVertexCount=resident.VertexCount; benchmark.geometryTriangleCount=resident.TriangleCount;
+            benchmark.geometrySubmissionScope="Resident real-material fixture; shared immutable meshes/textures with reference full-affine draws or instance packets, captured visual state/light/SH; not stock shader equivalence.";
+        }
+        else foreach(MeshFilter filter in geometryRoot.GetComponentsInChildren<MeshFilter>())
         {
             Mesh mesh=filter.sharedMesh; if(mesh==null) throw new InvalidDataException("Missing fixture mesh.");
             benchmark.geometryRendererCount++; benchmark.geometryVertexCount=checked(benchmark.geometryVertexCount+mesh.vertexCount);
             for(int sub=0;sub<mesh.subMeshCount;sub++) benchmark.geometryTriangleCount=checked(benchmark.geometryTriangleCount+(int)(mesh.GetIndexCount(sub)/3));
         }
         if(HashFile(activeBundlePath)!=state.bundleSha256||(!string.IsNullOrEmpty(fixturePath)&&HashFile(fixturePath)!=state.fixtureSha256)) throw new InvalidOperationException("Loaded source identity drifted before benchmark.");
+        if(resident!=null) resident.ValidateLoadedFiles();
         priorVSync=QualitySettings.vSyncCount; priorFrameRate=Application.targetFrameRate; priorPaused=state.paused;
         try
         {
@@ -258,6 +277,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         try
         {
             if(HashFile(activeBundlePath)!=benchmark.bundleSha256||(!string.IsNullOrEmpty(fixturePath)&&HashFile(fixturePath)!=benchmark.fixtureSha256)) { benchmark.status="invalid"; benchmark.reason="source-identity-drifted"; }
+            if(resident!=null) resident.ValidateLoadedFiles();
         }
         catch(Exception error) { benchmark.status="invalid"; benchmark.reason="source-check-failed: "+error.Message; }
         Array.Resize(ref benchmark.frameMilliseconds,benchmark.sampleCount); Array.Resize(ref benchmark.frameStartedTicks,benchmark.sampleCount); Array.Resize(ref benchmark.frameEndedTicks,benchmark.sampleCount); Array.Resize(ref benchmark.renderedFrames,benchmark.sampleCount);
@@ -330,6 +350,27 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     }
     void LoadFixture(string path,bool initial)
     {
+        if(new FileInfo(path).Length>1048576) throw new InvalidDataException("Fixture manifest bound.");
+        if(JsonUtility.FromJson<Fixture>(File.ReadAllText(path)).schema=="continuum-resident-material-fixture/v2")
+        {
+            string bundlePath=Environment.GetEnvironmentVariable("CONTINUUM_RESIDENT_PART_BUNDLE");
+            if(string.IsNullOrEmpty(bundlePath)) throw new InvalidDataException("CONTINUUM_RESIDENT_PART_BUNDLE required.");
+            var nextResident=new ResidentMaterialRuntime(path,Absolute(bundlePath));
+            try
+            {
+                if(resident!=null) { nextResident.SetMode(resident.Mode); nextResident.SetDiagnostic(resident.Diagnostic); }
+                // Candidate activation can roll back to the still-live owner's camera and settings.
+                nextResident.Activate(view,initial);
+                if(resident!=null) { resident.TransferActivationTo(nextResident); resident.Dispose(); }
+                if(geometryRoot!=null) { geometryRoot.SetActive(false); Destroy(geometryRoot); geometryRoot=null; }
+                foreach(Mesh mesh in meshes) Destroy(mesh); meshes.Clear();
+                resident=nextResident; geometryBounds=resident.Bounds;
+                state.pipelineMode="geometry"; sceneCommands?.Clear(); ribbonCommands?.Clear();
+                fixturePath=path; fixtureSeen=resident.ManifestSha256; state.fixtureSha256=fixtureSeen; state.geometrySource="private-resident-material-v2"; state.fixtureReloads++; state.materialPixelProof=false; state.materialOccupiedPixels=0;
+                return;
+            }
+            catch { nextResident.Dispose(); throw; }
+        }
         string manifestHash=HashFile(path); if(new FileInfo(path).Length>1048576) throw new InvalidDataException("Fixture manifest bound.");
         Fixture metadata=JsonUtility.FromJson<Fixture>(File.ReadAllText(path));
         if(metadata==null||metadata.schema!="continuum-aero-field-fixture/v1"||metadata.geometry!="geometry.bin") throw new InvalidDataException("Fixture schema/path.");
@@ -359,6 +400,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
                 direction=Vector(metadata.flowDirection); if(direction.sqrMagnitude<.000001f) throw new InvalidDataException("Flow direction."); direction.Normalize(); effect=Vector4Of(metadata.effectParameters); texture=Vector4Of(metadata.textureParameters); Vector4 color=Vector4Of(metadata.effectColor); effectColor=new Color(color.x,color.y,color.z,color.w); Vector3 falls=Vector(metadata.falloffs); falloffs=new Vector4(falls.x,falls.y,falls.z,0);
                 view.transform.SetPositionAndRotation(position,q); view.fieldOfView=metadata.fov; view.nearClipPlane=metadata.near; view.farClipPlane=metadata.far;
             }
+            if(resident!=null) { resident.Dispose(); resident=null; }
             if(geometryRoot!=null) { geometryRoot.SetActive(false); Destroy(geometryRoot); } foreach(Mesh mesh in meshes) Destroy(mesh); meshes.Clear(); meshes.AddRange(loaded); geometryRoot=next; next.SetActive(true); ComputeBounds();
             fixturePath=path; fixtureSeen=manifestHash; state.fixtureSha256=manifestHash; state.geometrySource="private-frozen-geometry"; state.fixtureReloads++;
         }
@@ -384,6 +426,13 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     void OnPreRender()
     {
         if(coverage==null) return;
+        if(resident!=null)
+        {
+            ribbonCommands?.Clear();
+            if(sceneMap==null||sceneMap.width!=Screen.width||sceneMap.height!=Screen.height) { if(sceneMap!=null) { sceneMap.Release(); Destroy(sceneMap); } sceneMap=Target("Resident positive scene depth",RenderTextureFormat.RFloat,0); }
+            if(sceneCommands==null) { sceneCommands=new CommandBuffer {name="Resident main-camera positive eye depth"}; view.AddCommandBuffer(CameraEvent.AfterForwardOpaque,sceneCommands); }
+            sceneCommands.Clear(); sceneCommands.Blit(BuiltinRenderTextureType.CurrentActive,sceneMap,depthCopy); sceneCommands.SetRenderTarget(BuiltinRenderTextureType.CameraTarget); return;
+        }
         if(state.pipelineMode=="geometry") { ribbonCommands?.Clear(); sceneCommands?.Clear(); return; }
         EnsureTargets(); field.CopyFrom(view); field.enabled=false; field.depthTextureMode=DepthTextureMode.None; field.cullingMask=1<<28; field.targetTexture=fieldMap; field.clearFlags=CameraClearFlags.SolidColor; field.backgroundColor=Color.clear; field.transform.SetPositionAndRotation(view.transform.position,view.transform.rotation);
         field.RenderWithShader(coverage.shader,"RenderType"); state.fieldRenders++;
@@ -408,7 +457,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     void OnRenderImage(RenderTexture source,RenderTexture destination)
     {
         if(depthCopy==null) { Graphics.Blit(source,destination); return; }
-        if(state.pipelineMode!="geometry") Globals(); Graphics.Blit(source,destination); if(state.pipelineMode=="full") { Graphics.Blit(source,destination,sheath); state.composites++; } state.frames++;
+        if(resident==null&&state.pipelineMode!="geometry") Globals(); Graphics.Blit(source,destination); if(resident==null&&state.pipelineMode=="full") { Graphics.Blit(source,destination,sheath); state.composites++; } state.frames++;
         RenderingPath path=view.actualRenderingPath; if(!renderPathRecorded||observedRenderPath!=path) { observedRenderPath=path; renderPathRecorded=true; state.renderPath=path.ToString(); }
         if(lastRenderedFrame==Time.frameCount) renderedInFrame++; else { lastRenderedFrame=Time.frameCount; renderedInFrame=1; }
         if(smokeFrames>0&&state.frames==smokeFrames) StartCoroutine(Capture(true));
@@ -424,11 +473,16 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         string path=Path.Combine(output,"frame-"+state.frames+"-"+DateTime.UtcNow.Ticks+".png"); var image=new Texture2D(Screen.width,Screen.height,TextureFormat.RGB24,false);
         RenderTexture previous=RenderTexture.active;
         try { RenderTexture.active=null; image.ReadPixels(new Rect(0,0,Screen.width,Screen.height),0,0); image.Apply(); RenderTexture.active=previous; File.WriteAllBytes(path,image.EncodeToPNG()); state.lastPng=path;
-            state.viewOccupiedPixels=PixelProof(fieldMap,true); state.flowOccupiedPixels=PixelProof(flowMap,false); state.sceneOccupiedPixels=PixelProof(sceneMap,false);
-            state.fieldPixelProof=state.viewOccupiedPixels>0&&state.flowOccupiedPixels>0&&state.sceneOccupiedPixels>0; WriteStatus(); }
-        catch(Exception error) { state.fieldPixelProof=false; state.reloadError="capture: "+error.Message; WriteStatus(); if(quit) Application.Quit(2); }
+            if(resident!=null)
+            {
+                int count=PixelProof(sceneMap,false);
+                state.materialOccupiedPixels=count; state.materialPixelProof=count>0&&resident.SubmittedFrames>0&&resident.DrawCalls>0;
+            }
+            else { state.viewOccupiedPixels=PixelProof(fieldMap,true); state.flowOccupiedPixels=PixelProof(flowMap,false); state.sceneOccupiedPixels=PixelProof(sceneMap,false);
+                state.fieldPixelProof=state.viewOccupiedPixels>0&&state.flowOccupiedPixels>0&&state.sceneOccupiedPixels>0; } WriteStatus(); }
+        catch(Exception error) { state.fieldPixelProof=false; state.materialPixelProof=false; state.materialOccupiedPixels=0; state.reloadError="capture: "+error.Message; WriteStatus(); if(quit) Application.Quit(2); }
         finally { RenderTexture.active=previous; Destroy(image); capturesPending--; }
-        if(quit) Application.Quit(state.splashFinishedAtCapture&&state.fieldPixelProof&&state.renderPath=="Forward"&&state.fieldRenders>0&&state.flowRenders>0&&state.composites>0&&state.ribbonSubmissions>0?0:2);
+        if(quit) Application.Quit(state.splashFinishedAtCapture&&state.renderPath=="Forward"&&(resident!=null?state.materialPixelProof:state.fieldPixelProof&&state.fieldRenders>0&&state.flowRenders>0&&state.composites>0&&state.ribbonSubmissions>0)?0:2);
     }
     static int PixelProof(RenderTexture rt,bool normalDepth)
     {
@@ -450,11 +504,14 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             state.cameraPosition=new[] {position.x,position.y,position.z}; state.cameraRotation=new[] {rotation.x,rotation.y,rotation.z,rotation.w};
         }
         state.flowDirection=new[] {direction.x,direction.y,direction.z}; state.intensity=effect.x; state.effectClock=clock;
+        if(resident!=null) { state.materialMode=resident.Mode; state.materialDiagnostic=resident.Diagnostic; state.materialTopologyId=resident.TopologyId; state.materialStateSha256=resident.StateSha256; state.materialBundleSha256=resident.BundleSha256; state.materialGeneration=resident.Generation; state.materialInstances=resident.InstanceCount; state.materialMeshes=resident.MeshCount; state.materialPackets=resident.PacketCount; state.materialDrawCalls=resident.DrawCalls; state.materialSubmittedFrames=resident.SubmittedFrames; state.materialSnapshotPublications=resident.SnapshotPublications; state.contract="Resident supported real-material fixture; original Continuum shader, no stock lighting/effect equivalence."; }
+        else { state.materialMode=null; state.materialDiagnostic=null; state.materialTopologyId=null; state.materialStateSha256=null; state.materialBundleSha256=null; state.materialGeneration=0; state.materialInstances=0; state.materialMeshes=0; state.materialPackets=0; state.materialDrawCalls=0; state.materialSubmittedFrames=0; state.materialSnapshotPublications=0; state.materialOccupiedPixels=0; state.materialPixelProof=false; state.contract="Frozen gray opaque fixture or labelled analytic geometry; isolated experimental fields, no stock appearance equivalence."; }
         string target=Path.Combine(output,"status.json"),temp=target+".tmp"; File.WriteAllText(temp,JsonUtility.ToJson(state,true)); if(File.Exists(target)) File.Replace(temp,target,null); else File.Move(temp,target);
     }
     void OnDestroy()
     {
         if(state.benchmarkActive) EndBenchmark("interrupted","host-destroyed");
+        if(resident!=null) { resident.Dispose(); resident=null; }
         stopping=true; listener?.Stop(); Command command; while(commands.TryDequeue(out command)) { command.response="{\"error\":\"host-stopping\"}"; command.done=true; }
         if(view!=null&&ribbonCommands!=null) view.RemoveCommandBuffer(CameraEvent.AfterEverything,ribbonCommands); ribbonCommands?.Release();
         if(view!=null&&sceneCommands!=null) view.RemoveCommandBuffer(CameraEvent.AfterForwardOpaque,sceneCommands); sceneCommands?.Release();

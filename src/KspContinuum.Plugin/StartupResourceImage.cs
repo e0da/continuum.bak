@@ -46,6 +46,7 @@ namespace KspContinuum
         [ThreadStatic] static bool discardingRetainedPixels;
         readonly List<ResourceImageEntry> cooked = new List<ResourceImageEntry>();
         readonly Dictionary<string, ResourceImageEntry> entries = new Dictionary<string, ResourceImageEntry>(StringComparer.Ordinal);
+        readonly Dictionary<Texture2D, ResourceImageEntry> publishedTextures = new Dictionary<Texture2D, ResourceImageEntry>();
         Harmony harmony;
         MethodInfo rawBytes, graphicsFormat, isSrgb, setObject, setSuccessful;
         string mode, directory, root, runId, producerFingerprint;
@@ -160,19 +161,21 @@ namespace KspContinuum
         static bool LoadPrefix(DatabaseLoader<GameDatabase.TextureInfo> __instance, UrlDir.UrlFile urlFile, FileInfo file, ref IEnumerator __result)
         {
             if (active == null || active.mode != "reuse") return true;
-            GameDatabase.TextureInfo result;
-            if (!active.Restore(__instance, urlFile, file, out result)) return true;
+            GameDatabase.TextureInfo result; ResourceImageEntry publishedEntry;
+            if (!active.Restore(__instance, urlFile, file, out result, out publishedEntry)) return true;
             GameDatabase.TextureInfo previousObject = __instance.obj; bool previousSuccess = __instance.successful;
             try
             {
                 active.setObject.Invoke(__instance, new object[] { result });
                 active.setSuccessful.Invoke(__instance, new object[] { true });
+                active.publishedTextures.Add(result.texture, publishedEntry);
                 StartupAssetGeneration.Published("texture-image");
             }
             catch (Exception error)
             {
                 active.setObject.Invoke(__instance, new object[] { previousObject });
                 active.setSuccessful.Invoke(__instance, new object[] { previousSuccess });
+                active.publishedTextures.Remove(result.texture);
                 UnityEngine.Object.Destroy(result.texture); active.errors++;
                 StartupAssetGeneration.Fallback("texture-image", "publication-failed");
                 Debug.LogWarning("[Continuum resource image] publication fallback: " + error.Message); return true;
@@ -320,9 +323,9 @@ namespace KspContinuum
             }
             unrepresented += duplicates.Count;
         }
-        bool Restore(DatabaseLoader<GameDatabase.TextureInfo> loader, UrlDir.UrlFile file, FileInfo source, out GameDatabase.TextureInfo result)
+        bool Restore(DatabaseLoader<GameDatabase.TextureInfo> loader, UrlDir.UrlFile file, FileInfo source, out GameDatabase.TextureInfo result, out ResourceImageEntry publishedEntry)
         {
-            result = null; Texture2D texture = null;
+            publishedEntry = null; result = null; Texture2D texture = null;
             ResourceImageEntry entry;
             double started = Time.realtimeSinceStartup;
             try
@@ -350,6 +353,7 @@ namespace KspContinuum
                 source.Refresh();
                 if (source.Length != entry.sourceLength || source.LastWriteTimeUtc.Ticks != entry.sourceModifiedTicks) throw new InvalidDataException("Source changed during restoration.");
                 result = new GameDatabase.TextureInfo(file, texture, entry.normalMap, entry.infoReadable, entry.infoCompressed);
+                publishedEntry = entry;
                 publicationSeconds += Time.realtimeSinceStartup - started; restoredBytes += bytes.LongLength; hits++; return true;
             }
             catch (Exception error)
@@ -357,6 +361,23 @@ namespace KspContinuum
                 if (texture != null) UnityEngine.Object.Destroy(texture);
                 errors++; misses++; StartupAssetGeneration.Fallback("texture-image", error.GetType().Name); Debug.LogWarning("[Continuum resource image] fallback " + file.url + ": " + error.Message); return false;
             }
+        }
+        internal static ResourceImageEntry PublishedPayload(Texture2D texture, out string payloadPath)
+        {
+            payloadPath = null; ResourceImageEntry entry;
+            if (active == null || active.mode != "reuse" || active.failed || texture == null ||
+                !active.publishedTextures.TryGetValue(texture, out entry))
+                throw new InvalidDataException("Texture has no admitted prepared publication identity.");
+            if (texture.width != entry.width || texture.height != entry.height || (int)texture.format != entry.format ||
+                texture.mipmapCount != entry.mipCount || Convert.ToInt32(active.graphicsFormat.Invoke(texture, null)) != entry.graphicsFormat ||
+                texture.isReadable != entry.actualReadable || (int)texture.filterMode != entry.filter || (int)texture.wrapMode != entry.wrap ||
+                texture.anisoLevel != entry.aniso || texture.mipMapBias != entry.mipBias)
+                throw new InvalidDataException("Published texture metadata or sampler changed.");
+            payloadPath = Path.Combine(active.directory, entry.payload); RequireNoSymlinks(payloadPath);
+            var info = new FileInfo(payloadPath);
+            if (info.Length != entry.payloadLength || info.LastWriteTimeUtc.Ticks != entry.payloadModifiedTicks || Digest(payloadPath) != entry.payloadSha256)
+                throw new InvalidDataException("Published prepared payload changed.");
+            return entry;
         }
         string Relative(string path)
         {
