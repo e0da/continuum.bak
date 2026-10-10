@@ -30,6 +30,7 @@ namespace KspContinuum
         static FieldInfo spawnHost;
         static int deferred, materialized, failures, unsupported;
         static long captureTicks, completionTicks;
+        public struct PublicationState { public LaunchSite Site; public bool Previous; }
 
         internal static void Install(Action<PSystemSetup, PQS, Transform> original, Func<bool> inRegistration)
         {
@@ -51,7 +52,9 @@ namespace KspContinuum
             try
             {
                 foreach (MethodInfo method in methods.Take(2)) harmony.Patch(method, prefix: new HarmonyMethod(typeof(StartupDeferredTerrain), nameof(OrientPrefix)));
-                foreach (MethodInfo method in methods.Skip(2).Take(3)) harmony.Patch(method, prefix: new HarmonyMethod(typeof(StartupDeferredTerrain), nameof(SitePrefix)));
+                foreach (MethodInfo method in methods.Skip(2).Take(2)) harmony.Patch(method, prefix: new HarmonyMethod(typeof(StartupDeferredTerrain), nameof(SitePrefix)));
+                harmony.Patch(methods[4], prefix: new HarmonyMethod(typeof(StartupDeferredTerrain), nameof(PublicationPrefix)),
+                    finalizer: new HarmonyMethod(typeof(StartupDeferredTerrain), nameof(PublicationFinalizer)));
                 harmony.Patch(methods[5], prefix: new HarmonyMethod(typeof(StartupDeferredTerrain), nameof(ActivatePrefix)));
                 foreach (MethodInfo method in spawnMethods) harmony.Patch(method, prefix: new HarmonyMethod(typeof(StartupDeferredTerrain), nameof(SpawnPrefix)));
                 Debug.Log(Marker + "status=installed supported=analytic-static-stock-sites unsupported=mobile-water-raycast-randomized-custom-sites ownership=single-pending-obligation-per-site");
@@ -106,6 +109,23 @@ namespace KspContinuum
         {
             LaunchSite site = spawnHost.GetValue(__instance) as LaunchSite;
             if (site != null) SitePrefix(site);
+        }
+        static void PublicationPrefix(LaunchSite __instance, out PublicationState __state)
+        {
+            __state = default(PublicationState);
+            Obligation obligation;
+            if (pending.TryGetValue(__instance, out obligation) && obligation.Completing)
+            {
+                __state.Site = __instance; __state.Previous = obligation.Publishing;
+                obligation.Publishing = true;
+            }
+            else SitePrefix(__instance);
+        }
+        static Exception PublicationFinalizer(PublicationState __state, Exception __exception)
+        {
+            Obligation obligation;
+            if (__state.Site != null && pending.TryGetValue(__state.Site, out obligation)) obligation.Publishing = __state.Previous;
+            return __exception;
         }
         static void ActivatePrefix(PQS pqs)
         {
