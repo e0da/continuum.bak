@@ -21,12 +21,17 @@ namespace KspContinuum
             internal Vector3 Position, Scale;
             internal Quaternion Rotation;
         }
+        sealed class AnimationLease { internal Animation Component; internal AnimationCullingType Original; internal bool Owned; }
+        sealed class AnimatorLease { internal Animator Component; internal AnimatorCullingMode Original; internal bool Owned; }
         static readonly Dictionary<MeshRenderer, Source> sources = new Dictionary<MeshRenderer, Source>();
         static readonly Dictionary<Transform, LocalGuard> guards = new Dictionary<Transform, LocalGuard>();
         static readonly Dictionary<Part, Matrix4x4> poses = new Dictionary<Part, Matrix4x4>();
+        static readonly Dictionary<Animation, AnimationLease> animations = new Dictionary<Animation, AnimationLease>();
+        static readonly Dictionary<Animator, AnimatorLease> animators = new Dictionary<Animator, AnimatorLease>();
         static int frame = -1;
         internal static int RetiredCount, RestoredCount, PoseSnapshots, SourcePublications, LocalChecks;
         internal static int RigidSources, DynamicSources, DynamicPoseSnapshots;
+        internal static int AnimationCullingLeases, RestoredAnimationCullingLeases;
         internal static long CaptureTicks;
         internal static double MaxInitialRecoveredPositionErrorMeters;
         internal static bool Requested { get { return Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-flight-part-retained") >= 0; } }
@@ -34,8 +39,10 @@ namespace KspContinuum
         {
             if (sources.Count != 0) throw new InvalidOperationException("Retained render ownership already exists.");
             guards.Clear(); poses.Clear(); frame = -1;
+            animations.Clear(); animators.Clear();
             RetiredCount = RestoredCount = PoseSnapshots = SourcePublications = LocalChecks = 0;
             RigidSources = DynamicSources = DynamicPoseSnapshots = 0;
+            AnimationCullingLeases = RestoredAnimationCullingLeases = 0;
             CaptureTicks = 0; MaxInitialRecoveredPositionErrorMeters = 0;
         }
         internal static bool Register(MeshRenderer renderer, Part part, Mesh mesh)
@@ -46,10 +53,10 @@ namespace KspContinuum
             while (node != part.transform)
             {
                 if (node == null) { dynamic = true; break; }
-                if (node.GetComponent<Animation>() != null || node.GetComponent<Animator>() != null) dynamic = true;
+                if (CaptureAnimation(node)) dynamic = true;
                 chain.Add(node); node = node.parent;
             }
-            if (part.GetComponent<Animation>() != null || part.GetComponent<Animator>() != null) dynamic = true;
+            if (CaptureAnimation(part.transform)) dynamic = true;
             if (sources.ContainsKey(renderer)) throw new InvalidOperationException("Duplicate retained render owner.");
             if (!dynamic) foreach (Transform transform in chain) if (!guards.ContainsKey(transform)) guards.Add(transform, new LocalGuard {
                 Transform = transform, Parent = transform.parent, Position = transform.localPosition, Rotation = transform.localRotation, Scale = transform.localScale });
@@ -57,6 +64,13 @@ namespace KspContinuum
                 MeshBounds = mesh.bounds, Enabled = renderer.enabled, ForcedOff = renderer.forceRenderingOff, Dynamic = dynamic });
             if (dynamic) DynamicSources++; else RigidSources++;
             frame = -1; return true;
+        }
+        static bool CaptureAnimation(Transform transform)
+        {
+            Animation animation = transform.GetComponent<Animation>(); Animator animator = transform.GetComponent<Animator>();
+            if (animation != null && !animations.ContainsKey(animation)) animations.Add(animation, new AnimationLease { Component = animation, Original = animation.cullingType });
+            if (animator != null && !animators.ContainsKey(animator)) animators.Add(animator, new AnimatorLease { Component = animator, Original = animator.cullingMode });
+            return animation != null || animator != null;
         }
         internal static void RetireAll()
         {
@@ -75,6 +89,16 @@ namespace KspContinuum
                 }
             }
             if (MaxInitialRecoveredPositionErrorMeters > 0.005) throw new InvalidOperationException("Recovered source geometry exceeds frozen 5mm positional gate.");
+            foreach (AnimationLease lease in animations.Values)
+            {
+                if (lease.Component == null || lease.Component.cullingType != lease.Original) throw new InvalidOperationException("Animation culling changed before retirement.");
+                lease.Component.cullingType = AnimationCullingType.AlwaysAnimate; lease.Owned = true; AnimationCullingLeases++;
+            }
+            foreach (AnimatorLease lease in animators.Values)
+            {
+                if (lease.Component == null || lease.Component.cullingMode != lease.Original) throw new InvalidOperationException("Animator culling changed before retirement.");
+                lease.Component.cullingMode = AnimatorCullingMode.AlwaysAnimate; lease.Owned = true; AnimationCullingLeases++;
+            }
             foreach (Source source in sources.Values)
             {
                 if (source.Renderer == null || !source.Renderer.enabled || source.Renderer.forceRenderingOff) throw new InvalidOperationException("Source changed before retirement.");
@@ -93,6 +117,8 @@ namespace KspContinuum
             if (frame == Time.frameCount) return;
             long started = Stopwatch.GetTimestamp();
             poses.Clear();
+            foreach (AnimationLease lease in animations.Values) if (lease.Owned && (lease.Component == null || lease.Component.cullingType != AnimationCullingType.AlwaysAnimate)) throw new InvalidOperationException("Owned animation culling changed.");
+            foreach (AnimatorLease lease in animators.Values) if (lease.Owned && (lease.Component == null || lease.Component.cullingMode != AnimatorCullingMode.AlwaysAnimate)) throw new InvalidOperationException("Owned animator culling changed.");
             foreach (LocalGuard guard in guards.Values)
             {
                 Transform transform = guard.Transform; LocalChecks++;
@@ -127,7 +153,17 @@ namespace KspContinuum
                 if (source.Renderer != null) { source.Renderer.enabled = source.Enabled; source.Renderer.forceRenderingOff = source.ForcedOff; RestoredCount++; }
                 source.Retired = false;
             }
+            foreach (AnimationLease lease in animations.Values) if (lease.Owned)
+            {
+                if (lease.Component != null) { lease.Component.cullingType = lease.Original; RestoredAnimationCullingLeases++; }
+                lease.Owned = false;
+            }
+            foreach (AnimatorLease lease in animators.Values) if (lease.Owned)
+            {
+                if (lease.Component != null) { lease.Component.cullingMode = lease.Original; RestoredAnimationCullingLeases++; }
+                lease.Owned = false;
+            }
         }
-        internal static void Clear() { RestoreAll(); sources.Clear(); guards.Clear(); poses.Clear(); frame = -1; }
+        internal static void Clear() { RestoreAll(); sources.Clear(); guards.Clear(); poses.Clear(); animations.Clear(); animators.Clear(); frame = -1; }
     }
 }

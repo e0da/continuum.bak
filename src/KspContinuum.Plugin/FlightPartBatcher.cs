@@ -28,6 +28,7 @@ namespace KspContinuum
             public long sharedPoseTicks;
             public double maxInitialRecoveredPositionErrorMeters;
             public int rigidRetainedSources, dynamicRetainedSources, dynamicPoseSnapshots;
+            public int animationCullingLeases, restoredAnimationCullingLeases;
             public float minBaseEmissionAlpha, maxBaseEmissionAlpha;
             public double preparationMilliseconds;
             public string cleanupStatus = "not-started";
@@ -350,8 +351,8 @@ namespace KspContinuum
         {
             if (finished) return; finished=true; if (retained) RetainedRenderSources.RestoreAll(); Release(); Detach(); foreach (Packet packet in packets) if (packet.Material!=null) { UnityEngine.Object.Destroy(packet.Material); report.releasedMaterials++; }
             if (bundle!=null) { bundle.Unload(true); report.releasedBundle=true; } report.cleanupStatus="restored-owned-renderers-removed-owned-hooks-destruction-requested";
-            if (retained && RetainedRenderSources.RestoredCount != RetainedRenderSources.RetiredCount)
-            { faulted = true; report.faults++; report.reason = "Retired source destroyed before restoration."; }
+            if (retained && (RetainedRenderSources.RestoredCount != RetainedRenderSources.RetiredCount || RetainedRenderSources.AnimationCullingLeases != RetainedRenderSources.RestoredAnimationCullingLeases))
+            { faulted = true; report.faults++; report.reason = "Retired source or owned animation destroyed before restoration."; }
             if (!faulted) report.status="complete-experimental"; else report.status="invalid-fell-back-to-stock";
             Write(); if (retained) RetainedRenderSources.Clear();
         }
@@ -361,6 +362,7 @@ namespace KspContinuum
                 report.sharedSourcePublications = RetainedRenderSources.SourcePublications; report.rigidLocalChecks = RetainedRenderSources.LocalChecks; report.sharedPoseTicks = RetainedRenderSources.CaptureTicks; }
             if (retained) report.maxInitialRecoveredPositionErrorMeters = RetainedRenderSources.MaxInitialRecoveredPositionErrorMeters;
             if (retained) { report.rigidRetainedSources = RetainedRenderSources.RigidSources; report.dynamicRetainedSources = RetainedRenderSources.DynamicSources; report.dynamicPoseSnapshots = RetainedRenderSources.DynamicPoseSnapshots; }
+            if (retained) { report.animationCullingLeases = RetainedRenderSources.AnimationCullingLeases; report.restoredAnimationCullingLeases = RetainedRenderSources.RestoredAnimationCullingLeases; }
             report.restoredOriginals = restored.Count + (retained ? RetainedRenderSources.RestoredCount : 0);
             File.WriteAllText(Path.Combine(directory,"part-batch.json"), ReportJson.Encode(report));
         }
