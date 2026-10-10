@@ -92,7 +92,14 @@ namespace KspContinuum
         }
         static void Require(MethodInfo method, int token)
         {
-            if (method == null || method.MetadataToken != token || Harmony.GetPatchInfo(method)?.Owners.Count > 0) throw new InvalidOperationException("Pinned timing seam differs or already owned: " + token);
+            if (method == null || method.MetadataToken != token) throw new InvalidOperationException("Pinned timing seam differs: " + token);
+            Patches patches = Harmony.GetPatchInfo(method);
+            if (patches == null || patches.Owners.Count == 0) return;
+            bool deferredOrientation = Environment.GetCommandLineArgs().Contains("--continuum-startup-deferred-terrain") &&
+                (token == 100676987 || token == 100677006) && patches.Owners.Count == 1 && patches.Owners[0] == "continuum.startup-deferred-terrain" &&
+                patches.Prefixes.Count == 1 && patches.Prefixes[0].PatchMethod.DeclaringType == typeof(StartupDeferredTerrain) &&
+                patches.Prefixes[0].PatchMethod.Name == "OrientPrefix" && patches.Postfixes.Count == 0 && patches.Transpilers.Count == 0 && patches.Finalizers.Count == 0;
+            if (!deferredOrientation) throw new InvalidOperationException("Pinned timing seam already owned: " + token);
         }
         void AddScope(Type type, string name, int token)
         {
