@@ -75,6 +75,7 @@ fn run() -> Result<()> {
             "--startup-audio-prefetch",
             "--startup-readiness",
             "--startup-deferred-terrain",
+            "--startup-site-proof",
             "--startup-resource-image-mode",
             "--startup-resource-image",
             "--startup-work-scheduler",
@@ -419,6 +420,11 @@ fn run() -> Result<()> {
                 Some("true") => true,
                 _ => return Err("startup-deferred-terrain must be true or false".into()),
             },
+            match options.get("--startup-site-proof").map(String::as_str) {
+                None => None,
+                Some("Desert_Airfield") => Some("Desert_Airfield"),
+                _ => return Err("startup-site-proof supports Desert_Airfield".into()),
+            },
             match options
                 .get("--startup-resource-image-mode")
                 .map(String::as_str)
@@ -657,6 +663,7 @@ fn smoke(
     startup_audio_prefetch: bool,
     startup_readiness: bool,
     startup_deferred_terrain: bool,
+    startup_site_proof: Option<&str>,
     startup_resource_image_mode: &str,
     startup_resource_image: Option<&str>,
     startup_work_scheduler: bool,
@@ -891,6 +898,7 @@ fn smoke(
         } else {
             vec![]
         })
+        .args(startup_site_proof.map(|site| vec![format!("--continuum-startup-site-proof={site}")]).unwrap_or_default())
         .args(if startup_resource_image_mode != "none" {
             vec![
                 format!("--continuum-startup-resource-image-mode={startup_resource_image_mode}"),
@@ -1184,6 +1192,14 @@ fn smoke(
             Err(error) => deferred_terrain_error = Some(error),
         }
     }
+    let mut site_proof_evidence = None;
+    let mut site_proof_error = None;
+    if let Some(site) = startup_site_proof {
+        match continuum_research_lab::startup::retain_site_proof(&observer_directory, &run_id, child.id(), output, site, startup_deferred_terrain) {
+            Ok(evidence) => site_proof_evidence = Some(evidence),
+            Err(error) => site_proof_error = Some(error),
+        }
+    }
     if let Some(value) = &observation {
         write_new(&output.join("runtime-observation.json"), value)?;
     }
@@ -1206,6 +1222,8 @@ fn smoke(
         "startupAudioPrefetchRequested":startup_audio_prefetch,
         "startupReadinessRequested":startup_readiness,
         "startupDeferredTerrainRequested":startup_deferred_terrain,
+        "startupSiteProofRequested":startup_site_proof,
+        "startupSiteProofEvidence":site_proof_evidence,"startupSiteProofError":site_proof_error,
         "startupDeferredTerrainEvidence":deferred_terrain_evidence,"startupDeferredTerrainError":deferred_terrain_error,
         "startupResourceImageModeRequested":startup_resource_image_mode,"startupResourceImage":startup_resource_image,
         "startupWorkSchedulerRequested":startup_work_scheduler,
@@ -1218,7 +1236,7 @@ fn smoke(
         "startupBuildCacheRequested":startup_build_cache,"startupCache":startup_cache,"bundleSha256":bundle_hashes,
         "startupCachedBundlesRequested":startup_cached_bundles,
         "startupNativeAdmissionRequested":startup_native_admission,"cacheAdmissionSha256":proof_hash,"cacheAdmissionFiles":admission.as_ref().map(|value|&value.files),
-        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none()&&deferred_terrain_error.is_none() {"passed"} else {"failed"},
+        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none()&&deferred_terrain_error.is_none()&&site_proof_error.is_none() {"passed"} else {"failed"},
         "qualification":if flight.is_some() {"diagnostic-window-only; behavior-and-gameplay-not-qualified"} else if catalog_preparation {"catalog-content-and-fresh-process-reuse-proof-required"} else {"process-exit-only-native-receipt-review-and-flight-proof-required"}}),
     )?;
     if timed_out
@@ -1227,6 +1245,7 @@ fn smoke(
         || !flight_sources_unchanged
         || flight_error.is_some()
         || deferred_terrain_error.is_some()
+        || site_proof_error.is_some()
     {
         return Err("owned process smoke failed; retained logs and receipt".into());
     }

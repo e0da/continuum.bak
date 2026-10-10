@@ -1,5 +1,29 @@
-use crate::Result;
+use crate::{hash, read, write_new, Result};
 use serde_json::{json, Value};
+use std::{fs, path::Path};
+
+pub fn retain_site_proof(directory: &Path, run: &str, pid: u32, output: &Path, site: &str, deferred: bool) -> Result<Value> {
+    let mut found = None;
+    for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if !entry.file_name().to_string_lossy().starts_with("startup-site-proof-") || !entry.file_type().map_err(|error| error.to_string())?.is_file() { continue; }
+        let report: Value = match read(&entry.path()) { Ok(value) => value, Err(_) => continue };
+        if report["runId"] != run || report["processId"].as_u64() != Some(pid as u64) { continue; }
+        if found.is_some() { return Err("duplicate owned site proof".into()); }
+        found = Some((entry.path(), report));
+    }
+    let (path, report) = found.ok_or("requested owned site proof absent")?;
+    let digest = hash(&path)?;
+    write_new(&output.join("startup-site-proof.json"), &report)?;
+    if hash(&path)? != digest { return Err("site proof changed while retaining".into()); }
+    if report["schema"] != "continuum-startup-site-proof/v1" || report["status"] != "complete-site-proof" || report["site"] != site
+        || report["spawnPoints"].as_u64().unwrap_or(0) == 0 || report["requestedSitePendingAfter"] != false
+        || report["localPositionToleranceMeters"].as_f64() != Some(0.01) || report["altitudeToleranceMeters"].as_f64() != Some(0.01)
+        || report["latitudeLongitudeToleranceDegrees"].as_f64() != Some(1e-8)
+        || (deferred && (report["requestedSitePendingBefore"] != true || report["pendingBefore"].as_u64().unwrap_or(0) == 0))
+    { return Err("site proof invalid or requested debt not exercised; report retained".into()); }
+    Ok(json!({"sha256":digest,"report":report,"scope":"stock-getter-publication-and-invariants; independent-stock-reference-parity-required"}))
+}
 
 pub fn deferred_terrain(log: &str) -> Result<Value> {
     let marker = "[Continuum deferred terrain] ";

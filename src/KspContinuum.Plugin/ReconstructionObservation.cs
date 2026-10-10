@@ -40,6 +40,7 @@ namespace KspContinuum
                 string path = Path.Combine(directory, "reconstruction-" + Guid.NewGuid().ToString("N") + ".json");
                 using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
                 using (var writer = new StreamWriter(stream)) writer.Write(encoded);
+                StartupSiteProof.RunIfRequested();
                 Debug.Log("[Continuum reconstruction] version=" + version);
             }
             catch (Exception error) { Debug.LogException(error); Application.Quit(2); }
