@@ -30,6 +30,8 @@ pub struct Request {
     pub aero_quality: Option<u32>,
     pub aero_batch: bool,
     pub part_batch: bool,
+    #[serde(default)]
+    pub part_retained: bool,
     pub part_shader_bundle: Option<PathBuf>,
     pub part_standard_fallback: bool,
     pub screenshot: bool,
@@ -134,6 +136,10 @@ impl Request {
             );
         }
         let part_batch = boolean("--flight-part-batch")?;
+        let part_retained = boolean("--flight-part-retained")?;
+        if part_retained && (!part_batch || !boolean("--flight-aero-batch")?) {
+            return Err("retained part renderer requires both owned part and aero providers".into());
+        }
         let part_standard_fallback = boolean("--flight-part-standard-fallback")?;
         let part_shader_bundle = options.get("--flight-part-shader-bundle").map(PathBuf::from);
         let gpu_timing_library = options.get("--flight-gpu-timing-library").map(PathBuf::from);
@@ -178,6 +184,7 @@ impl Request {
             aero_quality,
             aero_batch: boolean("--flight-aero-batch")?,
             part_batch,
+            part_retained,
             part_shader_bundle,
             part_standard_fallback,
             screenshot: boolean("--flight-screenshot")?,
@@ -235,6 +242,9 @@ impl Request {
         }
         if self.part_batch {
             args.push("--continuum-flight-part-batch".into());
+        }
+        if self.part_retained {
+            args.push("--continuum-flight-part-retained".into());
         }
         if let Some(bundle) = &self.part_shader_bundle {
             args.push(format!("--continuum-flight-part-shader-bundle={}", bundle.display()));
@@ -621,6 +631,7 @@ pub fn analyze(
         "aeroEffectsTreatmentRequested":request.no_aero_fx || request.aero_quality.is_some() || request.aero_batch,
         "aeroBatchRequested":request.aero_batch,
         "partBatchRequested":request.part_batch,
+        "partRetainedRequested":request.part_retained,
         "aeroEffectsQualityRequested":request.aero_quality,
         "nonOverlappingEnclosedMilliseconds":scoped,
         "optionalPhaseAccounting":{"earlyUpdateMilliseconds":costs.get(early_name),"preUpdateMilliseconds":costs.get(pre_name),
@@ -857,6 +868,7 @@ mod tests {
             aero_quality: None,
             aero_batch: false,
             part_batch: false,
+            part_retained: false,
             part_shader_bundle: None,
             part_standard_fallback: false,
             screenshot: false,
@@ -945,6 +957,7 @@ mod tests {
             aero_quality: None,
             aero_batch: false,
             part_batch: false,
+            part_retained: false,
             part_shader_bundle: None,
             part_standard_fallback: false,
             screenshot: false,
@@ -1434,6 +1447,14 @@ fn validate_part_batch(request: &Request, batch: &Value, run_id: &str, pid: u32,
         || batch["cleanupStatus"] != "restored-owned-renderers-removed-owned-hooks-destruction-requested"
     {
         return Err("requested part batch inactive, invalid, or cleanup incomplete".into());
+    }
+    if batch["retainedProvider"].as_bool().unwrap_or(false) != request.part_retained {
+        return Err("retained renderer treatment differs from declared request".into());
+    }
+    if request.part_retained && (batch["retiredRenderers"] != batch["eligibleRenderers"]
+        || batch["restoredRetiredRenderers"] != batch["retiredRenderers"]
+        || batch["sharedPartPoseSnapshots"].as_u64().unwrap_or(0) == 0) {
+        return Err("retained renderer ownership or shared pose publication incomplete".into());
     }
     match batch["shaderSource"].as_str() {
         Some("custom-bundle") => {
