@@ -93,7 +93,7 @@ namespace KspContinuum
                 type != typeof(LiveSweepStatus) &&
                 type != typeof(LiveControlReply) &&
                 type != typeof(NativeBoundaryMonoReport) && type != typeof(NativeBoundaryMonoRow) &&
-                type != typeof(NativeBoundaryMonoTiming))
+                type != typeof(NativeBoundaryMonoTiming) && type != typeof(ManagedReconstructionObservation))
                 throw new ArgumentException("Unsupported report type: " + type.FullName);
             output.Append('{'); bool firstField = true;
             foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Instance))

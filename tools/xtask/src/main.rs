@@ -33,6 +33,7 @@ const DOTNET_TESTS: &[&str] = &[
     "tests/KspContinuum.RigidCluster6Dof.Tests",
     "tests/KspContinuum.StructuralExperiment.Tests",
     "tests/KspContinuum.Tools.Tests",
+    "tests/KspContinuum.Reconstruction.Tests",
     "src/KspContinuum.Mission/Tests/Mission.Tests.csproj",
 ];
 
@@ -49,6 +50,12 @@ fn run() -> Result {
     let root = repository_root()?;
     let arguments: Vec<String> = env::args().skip(1).collect();
     match arguments.first().map(String::as_str) {
+        Some("lab") => {
+            let mut command = Command::new("cargo");
+            command.current_dir(&root).args(["run", "--release", "--manifest-path", "tools/research-lab/Cargo.toml", "--"]).args(&arguments[1..]);
+            let status = command.status().map_err(|e| e.to_string())?;
+            if status.success() { Ok(()) } else { Err(format!("laboratory exited with {status}")) }
+        }
         Some("portable") => portable(&root),
         Some("field") => field(&root),
         Some("structural") => structural(&root),
@@ -126,6 +133,7 @@ fn native_cpu_throughput_bench(root: &Path, output: &str) -> Result {
 }
 
 fn field(root: &Path) -> Result {
+    checked(root, "cargo", &["test", "--manifest-path", "tools/research-lab/Cargo.toml"])?;
     checked(
         root,
         "cargo",

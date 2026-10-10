@@ -6,6 +6,8 @@ An experimental KSP 1 mechanics and performance lab with an addon, captured work
 
 The [roadmap and goal index](docs/roadmap.md) retains the KSP experiments and their evidence while Gimbal advances independently. A023 substituted an empty native physics callback and restored it; useful replacement dynamics and measured KSP performance improvement remain open research outcomes. The Rust CPU/Metal results are synthetic kernel measurements, not game-framerate evidence.
 
+The [local research program](docs/ksp-research-program.md) adds guarded inventory, managed indexing/recomposition, a 30-case benchmark blueprint, owned process runs, and matched receipt checks. Its [delivery ledger](docs/research-delivery.md) keeps reconstruction, performance, modern Unity, and subsystem replacement gates separate.
+
 ## What exists
 
 - A main-menu benchmark compares 8, 32, and 128 aligned boxes as a chain of Unity fixed joints and as one compound rigid body. Both retain the same collider geometry. It uses separate physics scenes and does not change global simulation settings.
