@@ -28,6 +28,8 @@ Native workers or a sidecar are useful where they remove repeated parsing, permi
 
 The model slice must falsify unsupported-format fallback, clone/shared-prefab identity, hierarchy/mesh/material/collider/animation/bone equivalence, changed callback order, and a complete-startup regression after admission and publication are charged.
 
+The completed texture extension now prepares all 1,644 rows, including the five stock-generated normal-map mip chains, with five readability restorations and no unrepresented rows. Reuse reports 1,644 hits and zero fallbacks. An independent audit found all 1,639 previous rows unchanged, checked every distinct new-image payload digest, and verified the added RGBA mip layouts and equal mapped RGB channels. Source-channel decode and GPU sampling fidelity remain separate gates. Shared game identity performs one physical hash and five guarded reuses. The observed prepared launch fell from 28.36 to 26.16 seconds; this combined treatment is one resolving observation, not an isolated speedup for either component.
+
 ## Retained vessel rendering
 
 Build a vessel rendering service around shared immutable assets, stable instance IDs and contiguous changing pose/thermal/highlight state. Construct its topology once per vessel generation. Read each physical part pose once, update supported animated roots, and publish one snapshot for main view, shadows and effects.
@@ -37,6 +39,10 @@ The service must take rendering ownership for admitted sources. The current prot
 First resolve whether the remaining rendering interval is CPU submission/driver waiting or GPU work. Aligned native-thread observations and available GPU evidence select the next consumer. If repeated effect work dominates, use shared vessel depth/normal/coverage and flow-axis occlusion inputs for a bounded flame renderer. If renderer management dominates, prioritize full source-renderer retirement and changed-state publication. Both advance the same retained rendering system.
 
 Geometry, moving poses, texture/shader inputs, lighting, shadows and effect behavior require concrete fidelity checks. A fewer-pass shader with different appearance cannot establish an equivalent speedup. Full-frame measurements include state capture, conversion, synchronization and publication.
+
+Particles and instancing are candidate consumers of this shared rendering state. A hybrid reentry renderer can construct vessel coverage once, use a bounded surface/volume contribution for the sheath, and use instanced ribbons or quads for streaks and wisps. The same machinery could support condensation trails, exhaust and sparks after their behavior is defined. Pool emitters, share materials, retain per-instance state, and bound projected coverage and LOD; replacing shells with excessive transparent overdraw can merely move the cost.
+
+The current OpenGL 4.1 player needs an explicit backend path. Unity 2019's built-in mesh-particle GPU instancing requires shader target 4.5, whose OpenGL support begins at 4.3. It cannot be assumed available here. Custom ordinary instanced quads with vertex-shader motion can use the established lower-feature instancing route; compute-driven particle simulation belongs to a qualified backend such as a future Metal player. Particle simulation and particle draw instancing are separate capabilities. See [Unity particle instancing](https://docs.unity3d.com/2019.4/Documentation/Manual/PartSysInstancing.html) and [shader feature requirements](https://docs.unity3d.com/2019.4/Documentation/Manual/SL-ShaderCompileTargets.html).
 
 ## Computation and engine ownership
 
