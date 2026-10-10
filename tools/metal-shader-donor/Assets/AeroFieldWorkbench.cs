@@ -34,6 +34,26 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         public float cameraYaw, cameraPitch, cameraDistance, intensity, effectClock;
         public float[] flowDirection, cameraPosition, cameraRotation;
         public bool paused; public string[] shaders;
+        public bool benchmarkActive; public string lastBenchmark,lastBenchmarkStatus,lastBenchmarkReason, pipelineMode = "full";
+    }
+    [Serializable] sealed class Benchmark
+    {
+        public string schema="continuum-aero-workbench-benchmark/v1",status,reason,hostId,renderer,graphicsVersion,unity,renderPath,pipelineMode,geometrySource,fixtureSha256,bundleSha256,generation,assemblySha256,frozenControlsJson;
+        public string scope="Consecutive workbench Update boundaries containing one fully witnessed prior rendered frame; inclusive main-thread wall intervals, not GPU duration or KSP gameplay.";
+        public int processId,width,height,vSyncCount,targetFrameRate,antiAliasing,qualityLevel,sampleCount,omittedDeadlineStraddlers,commandsDuringCapture,capacity=65536;
+        public int geometryRendererCount,geometryVertexCount,geometryTriangleCount;
+        public string geometrySubmissionScope="Static gray fixture, unbatched MeshRenderer submission workload; not the admitted KSP packet renderer.";
+        public string colorSpace,processResourceStatus,processResourceError; public bool paused,graphicsUVStartsAtTop;
+        public float cameraProjectionM11,gpuProjectionToTextureM11,cameraFov,cameraNear,cameraFar;
+        public float[] effectColor,effectParameters,textureParameters,falloffs;
+        public string processResourceScope="Whole process CPU and RSS sampled outside retained frame intervals; resource window may include final omitted deadline straddler, not GPU duration.";
+        public long processResourceStartTicks,processResourceEndTicks,workingSetStartBytes,workingSetEndBytes;
+        public double processCpuSeconds;
+        public double warmupSeconds,requestedCaptureSeconds,measuredSeconds;
+        public long frequency,windowStartTicks,windowEndTicks;
+        public double[] frameMilliseconds;
+        public long[] frameStartedTicks,frameEndedTicks;
+        public int[] renderedFrames;
     }
     sealed class Command { public string text, response; public volatile bool done; }
     readonly ConcurrentQueue<Command> commands = new ConcurrentQueue<Command>();
@@ -45,7 +65,12 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     RenderTexture fieldMap, flowMap, sceneMap;
     CommandBuffer ribbonCommands, sceneCommands;
     TcpListener listener; Thread worker; volatile bool stopping;
-    int queued, smokeFrames; float clock, nextPoll;
+    int queued, smokeFrames, capturesPending; float clock, nextPoll;
+    string activeBundlePath;
+    Benchmark benchmark; long benchmarkWarmupEnd,benchmarkDeadline,benchmarkPreviousTicks; int benchmarkPreviousFrame,lastRenderedFrame=-1,renderedInFrame;
+    bool benchmarkCapturing,priorPaused; int priorVSync,priorFrameRate;
+    RenderingPath benchmarkRenderPath,observedRenderPath; ColorSpace benchmarkColorSpace; bool renderPathRecorded;
+    System.Diagnostics.Process benchmarkProcess; TimeSpan benchmarkCpuStart;
     string output, publicationPath, publicationSeen, fixturePath, fixtureSeen;
     Vector3 direction = Vector3.down;
     Color effectColor = new Color(1,.3f,.05f,1);
@@ -128,15 +153,17 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     void Update()
     {
         if(view==null||coverage==null) return;
+        if(state.benchmarkActive) TickBenchmark();
         if(!state.paused) clock+=Time.unscaledDeltaTime;
         Command command; for(int i=0;i<8&&commands.TryDequeue(out command);i++)
         {
             Interlocked.Decrement(ref queued);
-            try { Execute(command.text); command.response=JsonUtility.ToJson(state); }
+            if(state.benchmarkActive&&benchmarkCapturing) benchmark.commandsDuringCapture++;
+            try { Execute(command.text); command.response=state.benchmarkActive?"{\"benchmarkActive\":true,\"hostId\":\""+state.hostId+"\"}":JsonUtility.ToJson(state); }
             catch(Exception error) { state.commandErrors++; command.response="{\"error\":\""+Escape(error.Message)+"\",\"hostId\":\""+state.hostId+"\"}"; }
             command.done=true;
         }
-        if(Time.realtimeSinceStartup>=nextPoll)
+        if(!state.benchmarkActive&&Time.realtimeSinceStartup>=nextPoll)
         {
             nextPoll=Time.realtimeSinceStartup+1;
             try { if(!string.IsNullOrEmpty(publicationPath)&&HashFile(publicationPath)!=publicationSeen) ReloadPublication(); } catch(Exception e) { state.reloadError=e.Message; }
@@ -148,21 +175,122 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     void Execute(string text)
     {
         string[] words=text.Split(new[] {' '},StringSplitOptions.RemoveEmptyEntries); if(words.Length==0) throw new InvalidDataException("Empty command.");
-        switch(words[0].ToLowerInvariant())
+        string operation=words[0].ToLowerInvariant();
+        if(state.benchmarkActive&&operation!="status"&&operation!="quit"&&operation!="cancelbenchmark") throw new InvalidOperationException("Benchmark freezes controls, captures, fixtures and shaders.");
+        switch(operation)
         {
             case "status": break;
             case "pause": state.paused=true; break;
             case "resume": state.paused=false; break;
             case "setflow": if(words.Length!=4) throw new InvalidDataException("setflow x y z"); Vector3 nextDirection=new Vector3(Number(words[1]),Number(words[2]),Number(words[3])); if(nextDirection.sqrMagnitude<.000001f) throw new InvalidDataException("Zero flow."); direction=nextDirection.normalized; break;
             case "setintensity": if(words.Length!=2) throw new InvalidDataException("setintensity value"); effect.x=Mathf.Clamp(Number(words[1]),0,10); break;
+            case "setclock": if(words.Length!=2) throw new InvalidDataException("setclock seconds"); float nextClock=Number(words[1]); if(nextClock<0||nextClock>1000000) throw new InvalidDataException("Clock0..1000000."); clock=nextClock; break;
+            case "rendermode": if(words.Length!=2||!(words[1]=="full"||words[1]=="geometry"||words[1]=="fields")) throw new InvalidDataException("rendermode full|geometry|fields"); state.pipelineMode=words[1]; ribbonCommands?.Clear(); sceneCommands?.Clear(); break;
+            case "benchmark": if(words.Length!=3) throw new InvalidDataException("benchmark warmupSeconds captureSeconds"); BeginBenchmark(Number(words[1]),Number(words[2])); break;
+            case "cancelbenchmark": if(!state.benchmarkActive) throw new InvalidOperationException("No active benchmark."); EndBenchmark("interrupted","operator-cancelled"); break;
             case "cameraorbit": if(words.Length!=4) throw new InvalidDataException("cameraorbit yaw pitch distance"); Quaternion orbit=Quaternion.Euler(Mathf.Clamp(Number(words[2]),-89,89),Number(words[1]),0); view.transform.position=geometryBounds.center+orbit*Vector3.back*Mathf.Clamp(Number(words[3]),.1f,10000); view.transform.LookAt(geometryBounds.center); break;
             case "bundlehotreload": ReloadBundle(Absolute(text.Substring(words[0].Length).Trim()),null,"manual-"+DateTime.UtcNow.Ticks); break;
             case "fixturehotreload": LoadFixture(Absolute(text.Substring(words[0].Length).Trim()),false); break;
             case "captureframe": StartCoroutine(Capture(false)); break;
-            case "quit": Application.Quit(0); break;
+            case "quit": if(state.benchmarkActive) EndBenchmark("interrupted","operator-quit"); Application.Quit(0); break;
             default: throw new InvalidDataException("Unknown command.");
         }
-        WriteStatus();
+        if(!state.benchmarkActive) WriteStatus();
+    }
+    void BeginBenchmark(double warmup,double duration)
+    {
+        if(state.benchmarkActive||capturesPending!=0||smokeFrames>0||!SplashScreen.isFinished) throw new InvalidOperationException("Idle persistent host after splash required.");
+        if(warmup<0||warmup>30||duration<1||duration>30) throw new InvalidDataException("Warmup0..30 and capture1..30 seconds required.");
+        benchmark=new Benchmark {hostId=state.hostId,processId=state.processId,renderer=state.renderer,graphicsVersion=SystemInfo.graphicsDeviceVersion,unity=Application.unityVersion,
+            renderPath=view.actualRenderingPath.ToString(),pipelineMode=state.pipelineMode,geometrySource=state.geometrySource,fixtureSha256=state.fixtureSha256,bundleSha256=state.bundleSha256,generation=state.generation,
+            assemblySha256=HashFile(typeof(AeroFieldWorkbench).Assembly.Location),frozenControlsJson=JsonUtility.ToJson(state),warmupSeconds=warmup,requestedCaptureSeconds=duration,
+            cameraFov=view.fieldOfView,cameraNear=view.nearClipPlane,cameraFar=view.farClipPlane,
+            effectColor=new[] {effectColor.r,effectColor.g,effectColor.b,effectColor.a},effectParameters=new[] {effect.x,effect.y,effect.z,effect.w},textureParameters=new[] {texture.x,texture.y,texture.z,clock},falloffs=new[] {falloffs.x,falloffs.y,falloffs.z,falloffs.w},
+            graphicsUVStartsAtTop=SystemInfo.graphicsUVStartsAtTop,cameraProjectionM11=view.projectionMatrix.m11,gpuProjectionToTextureM11=GL.GetGPUProjectionMatrix(view.projectionMatrix,true).m11,
+            width=Screen.width,height=Screen.height,antiAliasing=QualitySettings.antiAliasing,qualityLevel=QualitySettings.GetQualityLevel(),colorSpace=QualitySettings.activeColorSpace.ToString(),paused=true,
+            frequency=System.Diagnostics.Stopwatch.Frequency,frameMilliseconds=new double[65536],frameStartedTicks=new long[65536],frameEndedTicks=new long[65536],renderedFrames=new int[65536]};
+        foreach(MeshFilter filter in geometryRoot.GetComponentsInChildren<MeshFilter>())
+        {
+            Mesh mesh=filter.sharedMesh; if(mesh==null) throw new InvalidDataException("Missing fixture mesh.");
+            benchmark.geometryRendererCount++; benchmark.geometryVertexCount=checked(benchmark.geometryVertexCount+mesh.vertexCount);
+            for(int sub=0;sub<mesh.subMeshCount;sub++) benchmark.geometryTriangleCount=checked(benchmark.geometryTriangleCount+(int)(mesh.GetIndexCount(sub)/3));
+        }
+        if(HashFile(activeBundlePath)!=state.bundleSha256||(!string.IsNullOrEmpty(fixturePath)&&HashFile(fixturePath)!=state.fixtureSha256)) throw new InvalidOperationException("Loaded source identity drifted before benchmark.");
+        priorVSync=QualitySettings.vSyncCount; priorFrameRate=Application.targetFrameRate; priorPaused=state.paused;
+        try
+        {
+            QualitySettings.vSyncCount=0; Application.targetFrameRate=-1; state.paused=true;
+            benchmark.vSyncCount=QualitySettings.vSyncCount; benchmark.targetFrameRate=Application.targetFrameRate;
+            WriteStatus(); benchmark.frozenControlsJson=JsonUtility.ToJson(state);
+            benchmarkRenderPath=view.actualRenderingPath; benchmarkColorSpace=QualitySettings.activeColorSpace;
+            benchmarkWarmupEnd=System.Diagnostics.Stopwatch.GetTimestamp()+(long)(warmup*benchmark.frequency); benchmarkCapturing=false; benchmarkPreviousTicks=0; state.benchmarkActive=true;
+        }
+        catch { QualitySettings.vSyncCount=priorVSync; Application.targetFrameRate=priorFrameRate; state.paused=priorPaused; benchmark=null; throw; }
+    }
+    void TickBenchmark()
+    {
+        long now=System.Diagnostics.Stopwatch.GetTimestamp();
+        if(Screen.width!=benchmark.width||Screen.height!=benchmark.height||QualitySettings.vSyncCount!=0||Application.targetFrameRate!=-1||QualitySettings.antiAliasing!=benchmark.antiAliasing||QualitySettings.GetQualityLevel()!=benchmark.qualityLevel||QualitySettings.activeColorSpace!=benchmarkColorSpace||!SplashScreen.isFinished||view.actualRenderingPath!=benchmarkRenderPath)
+        { EndBenchmark("invalid","effective-controls-or-presentation-changed"); return; }
+        if(!benchmarkCapturing)
+        {
+            if(now<benchmarkWarmupEnd) return;
+            BeginProcessResources();
+            now=System.Diagnostics.Stopwatch.GetTimestamp();
+            benchmarkCapturing=true; benchmark.windowStartTicks=now; benchmarkPreviousTicks=now; benchmarkPreviousFrame=Time.frameCount;
+            benchmarkDeadline=now+(long)(benchmark.requestedCaptureSeconds*benchmark.frequency); return;
+        }
+        if(now<=benchmarkPreviousTicks||Time.frameCount!=benchmarkPreviousFrame+1||lastRenderedFrame!=benchmarkPreviousFrame||renderedInFrame!=1)
+        { EndBenchmark("invalid","missing-duplicate-or-nonconsecutive-render-witness"); return; }
+        if(now>benchmarkDeadline) { benchmark.omittedDeadlineStraddlers++; EndBenchmark(benchmark.sampleCount>0?"completed":"invalid",benchmark.sampleCount>0?"monotonic-window-complete":"no-complete-frame-intervals"); return; }
+        int index=benchmark.sampleCount; if(index>=benchmark.capacity) { EndBenchmark("invalid","sample-capacity-exceeded"); return; }
+        benchmark.frameStartedTicks[index]=benchmarkPreviousTicks; benchmark.frameEndedTicks[index]=now; benchmark.renderedFrames[index]=benchmarkPreviousFrame;
+        benchmark.frameMilliseconds[index]=(now-benchmarkPreviousTicks)*1000.0/benchmark.frequency; benchmark.sampleCount++;
+        benchmarkPreviousTicks=now; benchmarkPreviousFrame=Time.frameCount;
+    }
+    void EndBenchmark(string status,string reason)
+    {
+        if(!state.benchmarkActive) return;
+        state.benchmarkActive=false; EndProcessResources(); benchmark.status=status; benchmark.reason=reason; benchmark.windowEndTicks=benchmarkPreviousTicks;
+        if(status=="completed"&&benchmark.commandsDuringCapture>0) { benchmark.status="invalid"; benchmark.reason="diagnostic-command-interference"; }
+        benchmark.measuredSeconds=benchmarkCapturing?(benchmark.windowEndTicks-benchmark.windowStartTicks)/(double)benchmark.frequency:0;
+        QualitySettings.vSyncCount=priorVSync; Application.targetFrameRate=priorFrameRate; state.paused=priorPaused;
+        try
+        {
+            if(HashFile(activeBundlePath)!=benchmark.bundleSha256||(!string.IsNullOrEmpty(fixturePath)&&HashFile(fixturePath)!=benchmark.fixtureSha256)) { benchmark.status="invalid"; benchmark.reason="source-identity-drifted"; }
+        }
+        catch(Exception error) { benchmark.status="invalid"; benchmark.reason="source-check-failed: "+error.Message; }
+        Array.Resize(ref benchmark.frameMilliseconds,benchmark.sampleCount); Array.Resize(ref benchmark.frameStartedTicks,benchmark.sampleCount); Array.Resize(ref benchmark.frameEndedTicks,benchmark.sampleCount); Array.Resize(ref benchmark.renderedFrames,benchmark.sampleCount);
+        try
+        {
+            string path=Path.Combine(output,"benchmark-"+DateTime.UtcNow.Ticks+".json"),temp=path+".tmp";
+            File.WriteAllText(temp,JsonUtility.ToJson(benchmark,true)); File.Move(temp,path); state.lastBenchmark=path; state.lastBenchmarkStatus=benchmark.status; state.lastBenchmarkReason=benchmark.reason;
+        }
+        catch(Exception error) { state.lastBenchmark=null; state.lastBenchmarkStatus="invalid"; state.lastBenchmarkReason="benchmark-export-failed"; state.reloadError="benchmark-export-failed: "+error.Message; }
+        finally { benchmark=null; benchmarkCapturing=false; }
+        try { WriteStatus(); } catch(Exception error) { Debug.LogError("Workbench benchmark status export failed: "+error.Message); }
+    }
+    void BeginProcessResources()
+    {
+        try
+        {
+            benchmarkProcess=System.Diagnostics.Process.GetCurrentProcess(); benchmarkProcess.Refresh();
+            benchmarkCpuStart=benchmarkProcess.TotalProcessorTime; benchmark.workingSetStartBytes=benchmarkProcess.WorkingSet64;
+            benchmark.processResourceStartTicks=System.Diagnostics.Stopwatch.GetTimestamp(); benchmark.processResourceStatus="started";
+        }
+        catch(Exception error) { benchmark.processResourceStatus="unsupported"; benchmark.processResourceError=error.GetType().Name+": "+error.Message; benchmarkProcess?.Dispose(); benchmarkProcess=null; }
+    }
+    void EndProcessResources()
+    {
+        if(benchmarkProcess==null) { if(string.IsNullOrEmpty(benchmark.processResourceStatus)) benchmark.processResourceStatus="not-started"; return; }
+        try
+        {
+            benchmarkProcess.Refresh(); benchmark.processResourceEndTicks=System.Diagnostics.Stopwatch.GetTimestamp();
+            benchmark.processCpuSeconds=(benchmarkProcess.TotalProcessorTime-benchmarkCpuStart).TotalSeconds; benchmark.workingSetEndBytes=benchmarkProcess.WorkingSet64;
+            benchmark.processResourceStatus=benchmark.processCpuSeconds>=0?"available":"invalid-negative-cpu-delta";
+        }
+        catch(Exception error) { benchmark.processResourceStatus="unsupported"; benchmark.processResourceError=error.GetType().Name+": "+error.Message; }
+        finally { benchmarkProcess.Dispose(); benchmarkProcess=null; }
     }
     void ReloadPublication()
     {
@@ -196,6 +324,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             coverage=materials[0]; flowMaterial=materials[1]; sheath=materials[2]; ribbon=materials[3]; depthCopy=materials[4]; bundle=next;
             ribbonCommands?.Clear(); sceneCommands?.Clear(); foreach(Material material in old) if(material!=null) Destroy(material); if(previous!=null) previous.Unload(true);
             state.bundleSha256=before; state.generation=generation; state.shaders=Array.ConvertAll(materials.ToArray(),m=>m.shader.name); state.shaderReloads++; state.reloadError=null;
+            activeBundlePath=path;
         }
         catch { foreach(Material material in materials) Destroy(material); next.Unload(true); throw; }
     }
@@ -255,6 +384,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     void OnPreRender()
     {
         if(coverage==null) return;
+        if(state.pipelineMode=="geometry") { ribbonCommands?.Clear(); sceneCommands?.Clear(); return; }
         EnsureTargets(); field.CopyFrom(view); field.enabled=false; field.depthTextureMode=DepthTextureMode.None; field.cullingMask=1<<28; field.targetTexture=fieldMap; field.clearFlags=CameraClearFlags.SolidColor; field.backgroundColor=Color.clear; field.transform.SetPositionAndRotation(view.transform.position,view.transform.rotation);
         field.RenderWithShader(coverage.shader,"RenderType"); state.fieldRenders++;
         float radius=Mathf.Max(1,geometryBounds.extents.magnitude); flow.CopyFrom(view); flow.enabled=false; flow.depthTextureMode=DepthTextureMode.None; flow.orthographic=true; flow.orthographicSize=radius*1.1f; flow.nearClipPlane=.01f; flow.farClipPlane=radius*4+.1f; flow.aspect=1; flow.cullingMask=1<<28; flow.targetTexture=flowMap; flow.clearFlags=CameraClearFlags.SolidColor; flow.backgroundColor=Color.clear;
@@ -264,7 +394,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         if(sceneCommands==null) { sceneCommands=new CommandBuffer { name="Current main-camera positive eye depth" }; view.AddCommandBuffer(CameraEvent.AfterForwardOpaque,sceneCommands); }
         sceneCommands.Clear(); sceneCommands.Blit(BuiltinRenderTextureType.CurrentActive,sceneMap,depthCopy); sceneCommands.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
         if(ribbonCommands==null) { ribbonCommands=new CommandBuffer { name="256 bounded original ribbons" }; view.AddCommandBuffer(CameraEvent.AfterEverything,ribbonCommands); }
-        ribbonCommands.Clear(); ribbonCommands.DrawMeshInstanced(quad,0,ribbon,0,seeds,256); state.ribbonSubmissions++;
+        ribbonCommands.Clear(); if(state.pipelineMode=="full") { ribbonCommands.DrawMeshInstanced(quad,0,ribbon,0,seeds,256); state.ribbonSubmissions++; }
     }
     void Globals()
     {
@@ -278,11 +408,15 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     void OnRenderImage(RenderTexture source,RenderTexture destination)
     {
         if(depthCopy==null) { Graphics.Blit(source,destination); return; }
-        Globals(); Graphics.Blit(source,destination); Graphics.Blit(source,destination,sheath); state.composites++; state.frames++; state.renderPath=view.actualRenderingPath.ToString();
+        if(state.pipelineMode!="geometry") Globals(); Graphics.Blit(source,destination); if(state.pipelineMode=="full") { Graphics.Blit(source,destination,sheath); state.composites++; } state.frames++;
+        RenderingPath path=view.actualRenderingPath; if(!renderPathRecorded||observedRenderPath!=path) { observedRenderPath=path; renderPathRecorded=true; state.renderPath=path.ToString(); }
+        if(lastRenderedFrame==Time.frameCount) renderedInFrame++; else { lastRenderedFrame=Time.frameCount; renderedInFrame=1; }
         if(smokeFrames>0&&state.frames==smokeFrames) StartCoroutine(Capture(true));
     }
     IEnumerator Capture(bool quit)
     {
+        if(state.benchmarkActive) yield break;
+        capturesPending++;
         // Startup fields can render underneath Unity's splash presentation.
         while(!SplashScreen.isFinished) yield return null;
         yield return new WaitForEndOfFrame();
@@ -293,7 +427,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             state.viewOccupiedPixels=PixelProof(fieldMap,true); state.flowOccupiedPixels=PixelProof(flowMap,false); state.sceneOccupiedPixels=PixelProof(sceneMap,false);
             state.fieldPixelProof=state.viewOccupiedPixels>0&&state.flowOccupiedPixels>0&&state.sceneOccupiedPixels>0; WriteStatus(); }
         catch(Exception error) { state.fieldPixelProof=false; state.reloadError="capture: "+error.Message; WriteStatus(); if(quit) Application.Quit(2); }
-        finally { RenderTexture.active=previous; Destroy(image); }
+        finally { RenderTexture.active=previous; Destroy(image); capturesPending--; }
         if(quit) Application.Quit(state.splashFinishedAtCapture&&state.fieldPixelProof&&state.renderPath=="Forward"&&state.fieldRenders>0&&state.flowRenders>0&&state.composites>0&&state.ribbonSubmissions>0?0:2);
     }
     static int PixelProof(RenderTexture rt,bool normalDepth)
@@ -301,7 +435,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         RenderTexture previous=RenderTexture.active; var pixels=new Texture2D(rt.width,rt.height,TextureFormat.RGBAFloat,false,true);
         try { RenderTexture.active=rt; pixels.ReadPixels(new Rect(0,0,rt.width,rt.height),0,0); pixels.Apply(); int count=0;
             foreach(Color color in pixels.GetPixels()) { float depth=normalDepth?color.a:color.r; if(!Finite(depth)||depth<0) throw new InvalidDataException("Invalid native field depth.");
-                if(depth>0) { if(normalDepth&&(!Finite(color.r)||!Finite(color.g)||!Finite(color.b)||color.r<0||color.r>1||color.g<0||color.g>1||color.b<0||color.b>1)) throw new InvalidDataException("Invalid native normal encoding."); count++; } } return count; }
+                if(depth>0) { if(normalDepth&&(!Finite(color.r)||!Finite(color.g)||!Finite(color.b)||color.r<0||color.r>1||color.g<0||color.g>1||color.b<0||color.b>1)) throw new InvalidDataException("Invalid native normal encoding: "+color.r.ToString("R",CultureInfo.InvariantCulture)+","+color.g.ToString("R",CultureInfo.InvariantCulture)+","+color.b.ToString("R",CultureInfo.InvariantCulture)+" at depth "+depth.ToString("R",CultureInfo.InvariantCulture)); count++; } } return count; }
         finally { RenderTexture.active=previous; Destroy(pixels); }
     }
     void WriteStatus()
@@ -320,6 +454,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     }
     void OnDestroy()
     {
+        if(state.benchmarkActive) EndBenchmark("interrupted","host-destroyed");
         stopping=true; listener?.Stop(); Command command; while(commands.TryDequeue(out command)) { command.response="{\"error\":\"host-stopping\"}"; command.done=true; }
         if(view!=null&&ribbonCommands!=null) view.RemoveCommandBuffer(CameraEvent.AfterEverything,ribbonCommands); ribbonCommands?.Release();
         if(view!=null&&sceneCommands!=null) view.RemoveCommandBuffer(CameraEvent.AfterForwardOpaque,sceneCommands); sceneCommands?.Release();
@@ -327,4 +462,5 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         foreach(RenderTexture rt in new[] {fieldMap,flowMap,sceneMap}) if(rt!=null) { rt.Release(); Destroy(rt); }
         foreach(Mesh mesh in meshes) Destroy(mesh); if(quad!=null) Destroy(quad); if(noise!=null) Destroy(noise); if(bundle!=null) bundle.Unload(true); if(field!=null) Destroy(field.gameObject); if(flow!=null) Destroy(flow.gameObject); if(geometryRoot!=null) Destroy(geometryRoot);
     }
+    void OnApplicationQuit() { if(state.benchmarkActive) EndBenchmark("interrupted","application-quit"); }
 }

@@ -16,17 +16,30 @@ float2 FieldUV(float2 uv)
  #endif
  return uv;
 }
+float2 FieldTextureUVToClip(float2 uv)
+{
+ float2 clip=uv*2-1;
+ #if UNITY_UV_STARTS_AT_TOP
+ clip.y=-clip.y;
+ #endif
+ return clip;
+}
+float2 FieldClipToTextureUV(float4 clip)
+{
+ // Raw render textures use Unity's grab-screen convention, not the active camera's projection sign.
+ float4 screen=ComputeGrabScreenPos(clip);
+ return screen.xy/screen.w;
+}
 float3 FieldWorld(float2 uv, float depth)
 {
- // Inverse projection is the camera's GPU projection; the producer supplies its RT orientation.
- float4 q=mul(_ContinuumViewInverseProjection,float4(uv*2-1,UNITY_NEAR_CLIP_VALUE,1));
+ float4 q=mul(_ContinuumViewInverseProjection,float4(FieldTextureUVToClip(uv),UNITY_NEAR_CLIP_VALUE,1));
  float3 ray=q.xyz/q.w;
  return mul(_ContinuumViewCameraToWorld,float4(ray*(depth/max(-ray.z,.00001)),1)).xyz;
 }
 float Exposed(float3 world, float3 normal)
 {
  float4 projected=mul(_ContinuumFlowViewProjection,float4(world,1));
- float2 uv=projected.xy/projected.w*.5+.5;
+ float2 uv=FieldClipToTextureUV(projected);
  if (any(uv<0)||any(uv>1)) return 0;
  float stored=tex2Dlod(_ContinuumFlowField,float4(uv,0,0)).r*_ContinuumFlowFar;
  float depth=-mul(_ContinuumFlowWorldToView,float4(world,1)).z;

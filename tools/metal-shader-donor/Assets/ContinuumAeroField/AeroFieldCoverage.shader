@@ -18,7 +18,7 @@ Shader "Continuum/AeroFieldCoverage"
    {
     // Two-sided packets retain the visible face's oriented geometric normal.
     float3 n=normalize(i.normal)*(facing>=0?1:-1);
-    return float4(n*.5+.5,max(i.depth,0));
+    return float4(saturate(n*.5+.5),max(i.depth,0));
    }
    ENDCG
   }

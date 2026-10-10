@@ -40,7 +40,7 @@ Shader "Continuum/AeroFieldRibbon"
     float wobble=sin(phase*6.2831853+seed)*clamp(_ContinuumTextureParameters.z,0,4)*width;
     float3 world=anchor+normal*.015+downstream*((v.vertex.y+.5+phase*.35)*lengthMeters)+crossAxis*(v.vertex.x*width+wobble);
     o.position=mul(UNITY_MATRIX_VP,float4(world,1));
-    o.screen=ComputeScreenPos(o.position); o.depth=-mul(UNITY_MATRIX_V,float4(world,1)).z;
+    o.screen=ComputeGrabScreenPos(o.position); o.depth=-mul(UNITY_MATRIX_V,float4(world,1)).z;
     o.uv=v.uv; o.exposure=exposed;
     if(exposed<=0) o.position=float4(-2,-2,0,1);
     return o;

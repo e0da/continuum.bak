@@ -11,7 +11,7 @@ public static class BuildAeroFieldWorkbench
 {
     [Serializable] sealed class Receipt
     {
-        public string schema = "continuum-aero-workbench-build/v1", unity, editorRevision, graphicsApi, output, workbenchSourceSha256, buildSourceSha256, fixtureShaderSourceSha256, status;
+        public string schema = "continuum-aero-workbench-build/v1", unity, editorRevision, graphicsApi, output, workbenchSourceSha256, buildSourceSha256, fixtureShaderSourceSha256, status, toolAssemblySha256, playerAssemblySha256, packagesSha256;
         public string qualification = "Player built; actual rendering, fixture loading and persistent reload require native consumer proof.";
     }
     static string Hash(string path) { using(var stream=File.OpenRead(path)) using(var sha=SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-","").ToLowerInvariant(); }
@@ -21,8 +21,12 @@ public static class BuildAeroFieldWorkbench
         string output=Environment.GetEnvironmentVariable("CONTINUUM_AERO_WORKBENCH_PLAYER");
         if(string.IsNullOrEmpty(output)||!Path.IsPathRooted(output)||!output.EndsWith(".app",StringComparison.Ordinal)||Directory.Exists(output)||File.Exists(output)) throw new InvalidOperationException("New absolute private .app output required.");
         string apiText=Environment.GetEnvironmentVariable("CONTINUUM_SHADER_GRAPHICS_API")??"OpenGLCore";
-        GraphicsDeviceType api; if(apiText=="OpenGLCore") api=GraphicsDeviceType.OpenGLCore; else if(apiText=="Metal") api=GraphicsDeviceType.Metal; else throw new InvalidOperationException("Explicit supported graphics API required.");
-        PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.StandaloneOSX,false); PlayerSettings.SetGraphicsAPIs(BuildTarget.StandaloneOSX,new[] {api});
+        GraphicsDeviceType[] apis;
+        if(apiText=="OpenGLCore") apis=new[] {GraphicsDeviceType.OpenGLCore};
+        else if(apiText=="Metal") apis=new[] {GraphicsDeviceType.Metal};
+        else if(apiText=="Metal,OpenGLCore") apis=new[] {GraphicsDeviceType.Metal,GraphicsDeviceType.OpenGLCore};
+        else throw new InvalidOperationException("Explicit supported graphics API required.");
+        PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.StandaloneOSX,false); PlayerSettings.SetGraphicsAPIs(BuildTarget.StandaloneOSX,apis);
         PlayerSettings.defaultScreenWidth=960; PlayerSettings.defaultScreenHeight=540; PlayerSettings.fullScreenMode=FullScreenMode.Windowed; PlayerSettings.runInBackground=true;
         string scenePath="Assets/ContinuumWorkbenchScene-"+Guid.NewGuid().ToString("N")+".unity";
         string materialPath=scenePath+".mat";
@@ -38,7 +42,8 @@ public static class BuildAeroFieldWorkbench
             BuildReport report=BuildPipeline.BuildPlayer(new BuildPlayerOptions { scenes=new[] {scenePath},locationPathName=output,target=BuildTarget.StandaloneOSX,options=BuildOptions.Development });
             if(report.summary.result!=BuildResult.Succeeded) throw new InvalidOperationException("Workbench build failed: "+report.summary.result);
             var receipt=new Receipt { unity=Application.unityVersion,editorRevision="3310a4d4f880",graphicsApi=apiText,output=output,status="built",
-                workbenchSourceSha256=Hash("Assets/AeroFieldWorkbench.cs"),buildSourceSha256=Hash("Assets/Editor/BuildAeroFieldWorkbench.cs"),fixtureShaderSourceSha256=Hash("Assets/FixtureOpaque.shader") };
+                workbenchSourceSha256=Hash("Assets/AeroFieldWorkbench.cs"),buildSourceSha256=Hash("Assets/Editor/BuildAeroFieldWorkbench.cs"),fixtureShaderSourceSha256=Hash("Assets/FixtureOpaque.shader"),
+                toolAssemblySha256=Hash(typeof(BuildAeroFieldWorkbench).Assembly.Location),playerAssemblySha256=Hash(Path.Combine(output,"Contents/Resources/Data/Managed/Assembly-CSharp.dll")),packagesSha256=Hash("Packages/manifest.json") };
             using(var writer=new StreamWriter(new FileStream(output+".build.json",FileMode.CreateNew,FileAccess.Write))) writer.Write(JsonUtility.ToJson(receipt,true));
         }
         finally { AssetDatabase.DeleteAsset(scenePath); AssetDatabase.DeleteAsset(materialPath); }
