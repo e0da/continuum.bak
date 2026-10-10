@@ -39,6 +39,10 @@ pub struct Request {
     pub aero_field_bundle: Option<PathBuf>,
     pub part_batch: bool,
     #[serde(default)]
+    pub part_mapped_only: bool,
+    #[serde(default)]
+    pub part_reference: bool,
+    #[serde(default)]
     pub part_retained: bool,
     pub part_shader_bundle: Option<PathBuf>,
     pub part_standard_fallback: bool,
@@ -164,6 +168,14 @@ impl Request {
             }
         }
         let part_retained = boolean("--flight-part-retained")?;
+        let part_mapped_only = boolean("--flight-part-mapped-only")?;
+        let part_reference = boolean("--flight-part-reference")?;
+        if (part_mapped_only || part_reference) && !part_batch {
+            return Err("part family/reference selections require part batch".into());
+        }
+        if part_reference && part_retained {
+            return Err("reference part renderer excludes retained ownership".into());
+        }
         if part_retained && (!part_batch || !boolean("--flight-aero-batch")?) {
             return Err("retained part renderer requires both owned part and aero providers".into());
         }
@@ -215,6 +227,8 @@ impl Request {
             aero_field,
             aero_field_bundle,
             part_batch,
+            part_mapped_only,
+            part_reference,
             part_retained,
             part_shader_bundle,
             part_standard_fallback,
@@ -286,6 +300,8 @@ impl Request {
         if self.part_batch {
             args.push("--continuum-flight-part-batch".into());
         }
+        if self.part_mapped_only { args.push("--continuum-flight-part-mapped-only".into()); }
+        if self.part_reference { args.push("--continuum-flight-part-reference".into()); }
         if self.part_retained {
             args.push("--continuum-flight-part-retained".into());
         }
@@ -683,6 +699,8 @@ pub fn analyze(
         "aeroBatchRequested":request.aero_batch,
         "aeroFieldRequested":request.aero_field,
         "partBatchRequested":request.part_batch,
+        "partMappedOnlyRequested":request.part_mapped_only,
+        "partReferenceRequested":request.part_reference,
         "partRetainedRequested":request.part_retained,
         "aeroEffectsQualityRequested":request.aero_quality,
         "nonOverlappingEnclosedMilliseconds":scoped,
@@ -1116,7 +1134,7 @@ mod tests {
         let valid = json!({"schema":"continuum-flight-part-batch/v1","runId":"run","processId":123,"vesselId":"vessel",
             "status":"complete-experimental","faults":0,"eligibleRenderers":36,"packets":1,"cameraInvocations":10,"drawSubmissions":10,
             "restoredOriginals":36,"cleanupStatus":"restored-owned-renderers-removed-owned-hooks-destruction-requested",
-            "shaderSource":"shipped-standard-diagnostic"});
+            "shaderSource":"shipped-standard-diagnostic","family":"supported-specular-families","mode":"replacement","retainedProvider":false});
         assert!(validate_part_batch(&request, &valid, "run", 123, &json!("vessel")).is_err());
         request.part_standard_fallback = true;
         assert!(validate_part_batch(&request, &valid, "run", 123, &json!("vessel")).is_ok());
@@ -1126,6 +1144,30 @@ mod tests {
         }
         let mut fallback = valid.clone(); fallback["status"] = json!("stock-fallback");
         assert!(validate_part_batch(&request, &fallback, "run", 123, &json!("vessel")).is_err());
+        request.part_reference = true; request.part_mapped_only = true;
+        let mut reference = valid.clone(); reference["mode"] = json!("reference"); reference["family"] = json!("KSP/Emissive/Bumped Specular (Mapped)");
+        for key in ["cameraInvocations", "drawSubmissions", "suppressedRenderers", "restoredOriginals"] { reference[key] = json!(0); }
+        assert!(validate_part_batch(&request, &reference, "run", 123, &json!("vessel")).is_ok());
+        for key in ["suppressedRenderers", "restoredOriginals", "drawSubmissions"] {
+            let mut mutated = reference.clone(); mutated[key] = json!(1);
+            assert!(validate_part_batch(&request, &mutated, "run", 123, &json!("vessel")).is_err());
+        }
+        reference["mode"] = json!("replacement");
+        assert!(validate_part_batch(&request, &reference, "run", 123, &json!("vessel")).is_err());
+        let mut missing_provider = valid.clone(); missing_provider.as_object_mut().unwrap().remove("retainedProvider");
+        request.part_reference = false; request.part_mapped_only = false;
+        assert!(validate_part_batch(&request, &missing_provider, "run", 123, &json!("vessel")).is_err());
+    }
+    #[test]
+    fn mapped_reference_selection_requires_provider_and_excludes_retirement() {
+        let mut options = BTreeMap::from([("--flight-save".into(),"Lab".into()),("--flight-checkpoint".into(),"vacuum".into()),("--flight-part-reference".into(),"true".into())]);
+        assert!(Request::parse(&options).is_err());
+        options.insert("--flight-part-batch".into(),"true".into()); options.insert("--flight-part-mapped-only".into(),"true".into());
+        let request = Request::parse(&options).unwrap().unwrap();
+        assert!(request.arguments().contains(&"--continuum-flight-part-reference".into()));
+        assert!(request.arguments().contains(&"--continuum-flight-part-mapped-only".into()));
+        options.insert("--flight-part-retained".into(),"true".into()); options.insert("--flight-aero-batch".into(),"true".into());
+        assert!(Request::parse(&options).is_err());
     }
     #[test]
     fn camera_contract_rejects_unobserved_or_drifting_views() {
@@ -1269,6 +1311,8 @@ mod tests {
             aero_field: false,
             aero_field_bundle: None,
             part_batch: false,
+            part_mapped_only: false,
+            part_reference: false,
             part_retained: false,
             part_shader_bundle: None,
             part_standard_fallback: false,
@@ -1362,6 +1406,8 @@ mod tests {
             aero_field: false,
             aero_field_bundle: None,
             part_batch: false,
+            part_mapped_only: false,
+            part_reference: false,
             part_retained: false,
             part_shader_bundle: None,
             part_standard_fallback: false,
@@ -1665,6 +1711,16 @@ pub fn validate_controls(
     if request.part_batch {
         let part: Value = read(&part_path)?;
         validate_part_batch(request, &part, run_id, pid, &report["frames"][0]["vesselId"])?;
+        if part["captureStartTicks"] != report["captureStartClockTimestamp"] || part["captureEndTicks"] != report["captureEndClockTimestamp"] || part["clockFrequency"] != report["clockFrequency"] {
+            return Err("part cost window differs from full flight capture".into());
+        }
+        let start_frame = part["captureStartFrame"].as_u64().ok_or("part start frame absent")?;
+        if part["captureEndFrame"].as_u64().filter(|frame| *frame >= start_frame).is_none() { return Err("part frame bounds invalid".into()); }
+        for key in ["windowPublicationTicks", "windowMainCameraTicks", "windowRestorationTicks", "windowPropertyBlockCaptures", "windowProbeCalls", "windowUpdateCalls", "windowPropertyBlockTicks", "windowProbeTicks", "windowMatrixBoundsTicks"] {
+            if part[key].as_u64().is_none() { return Err(format!("part window counter absent or invalid: {key}")); }
+            if request.part_reference && part[key].as_u64() != Some(0) { return Err("reference part rendering unexpectedly performed hot work".into()); }
+        }
+        if !request.part_reference && part["windowUpdateCalls"].as_u64().unwrap_or(0) == 0 { return Err("replacement part publication not observed in capture".into()); }
     }
     if request.screenshot {
         validate_view(output, run_id, pid)?;
@@ -1892,14 +1948,22 @@ fn validate_part_batch(request: &Request, batch: &Value, run_id: &str, pid: u32,
         || batch["faults"].as_u64() != Some(0)
         || batch["eligibleRenderers"].as_u64().unwrap_or(0) == 0
         || batch["packets"].as_u64().unwrap_or(0) == 0
-        || batch["cameraInvocations"].as_u64().unwrap_or(0) == 0
-        || batch["drawSubmissions"].as_u64().unwrap_or(0) == 0
-        || batch["restoredOriginals"] != batch["eligibleRenderers"]
         || batch["cleanupStatus"] != "restored-owned-renderers-removed-owned-hooks-destruction-requested"
     {
         return Err("requested part batch inactive, invalid, or cleanup incomplete".into());
     }
-    if batch["retainedProvider"].as_bool().unwrap_or(false) != request.part_retained {
+    if batch["family"] != if request.part_mapped_only { "KSP/Emissive/Bumped Specular (Mapped)" } else { "supported-specular-families" }
+        || batch["mode"] != if request.part_reference { "reference" } else { "replacement" } {
+        return Err("part rendering family/mode differs from declared request".into());
+    }
+    if request.part_reference {
+        for key in ["cameraInvocations", "drawSubmissions", "suppressedRenderers", "restoredOriginals"] {
+            if batch[key].as_u64() != Some(0) { return Err("reference part rendering mutated incumbent ownership".into()); }
+        }
+    } else if batch["cameraInvocations"].as_u64().unwrap_or(0) == 0 || batch["drawSubmissions"].as_u64().unwrap_or(0) == 0 || batch["restoredOriginals"] != batch["eligibleRenderers"] {
+        return Err("replacement part draws or restoration incomplete".into());
+    }
+    if batch["retainedProvider"].as_bool() != Some(request.part_retained) {
         return Err("retained renderer treatment differs from declared request".into());
     }
     if request.part_retained { validate_retained_part_batch(batch)?; }

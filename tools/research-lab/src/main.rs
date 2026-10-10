@@ -106,6 +106,8 @@ fn run() -> Result<()> {
             "--flight-aero-field",
             "--flight-aero-field-bundle",
             "--flight-part-batch",
+            "--flight-part-mapped-only",
+            "--flight-part-reference",
             "--flight-part-retained",
             "--flight-part-shader-bundle",
             "--flight-part-standard-fallback",

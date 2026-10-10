@@ -320,6 +320,8 @@ const FLIGHT_KEYS: &[(&str, &str)] = &[
     ("aeroField", "aero-field"),
     ("aeroFieldBundle", "aero-field-bundle"),
     ("partBatch", "part-batch"),
+    ("partMappedOnly", "part-mapped-only"),
+    ("partReference", "part-reference"),
     ("partRetained", "part-retained"),
     ("partShaderBundle", "part-shader-bundle"),
     ("partStandardFallback", "part-standard-fallback"),

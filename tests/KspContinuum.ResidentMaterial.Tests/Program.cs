@@ -108,6 +108,76 @@ static class Program
             ResidentMaterialProperty[] properties = jsonManifest.materials[0].properties;
             Check(properties.Length == 3 && properties[0].value[2] == .75f && properties[1].value[0] == .5f && properties[2].textureIndex == 0 && properties[2].value.Length == 0 && properties[2].scaleOffset[2] == .25f, "Nested material JSON values/binding lost.");
             Check(jsonManifest.rootToWorld.Length == 16 && jsonManifest.rootToWorld[15] == 1 && jsonManifest.cameraPosition[2] == -10 && jsonManifest.cameraRotation[3] == 1 && jsonManifest.fov == 60 && jsonManifest.near == .1f && jsonManifest.far == 100 && jsonManifest.lighting.direction[2] == 1 && jsonManifest.lighting.color[3] == 1 && jsonManifest.lighting.ambientMode == 3, "Root/camera/lighting JSON fields lost.");
+            ResidentMaterialManifest original = Manifest();
+            original.originalMaterials = new[] { new ResidentMaterialAsset { id = "original-material", shader = original.family, queue = 2000, properties = new[] {
+                new ResidentMaterialProperty { name = "_TemperatureColor", kind = 0, textureIndex = -1, value = new float[] { 1,0,0,0 }, scaleOffset = new float[0] },
+                new ResidentMaterialProperty { name = "_SpecTint", kind = 3, textureIndex = -1, value = new float[] { .05f }, scaleOffset = new float[0] },
+                new ResidentMaterialProperty { name = "_SpecMap", kind = 4, textureIndex = 0, value = new float[0], scaleOffset = new float[] { 1,1,0,0 } } } } };
+            ResidentMaterialManifest originalRoundtrip = JsonSerializer.Deserialize<ResidentMaterialManifest>(ReportJson.Encode(original), new JsonSerializerOptions { IncludeFields = true });
+            ResidentMaterialFormat.ValidateManifest(originalRoundtrip, geometry);
+            Check(originalRoundtrip.originalMaterials.Length == originalRoundtrip.materials.Length && originalRoundtrip.originalMaterials[0].shader == original.family && originalRoundtrip.originalMaterials[0].properties[0].value[3] == 0 && originalRoundtrip.originalMaterials[0].properties[1].value[0] == .05f && originalRoundtrip.originalMaterials[0].properties[2].textureIndex == 0, "Exact original material JSON table lost.");
+            original.originalMaterials = new ResidentMaterialAsset[0];
+            Reject(() => ResidentMaterialFormat.ValidateManifest(original, geometry), "Original material cardinality mismatch admitted.");
+            original.originalMaterials = new ResidentMaterialAsset[] { null };
+            Reject(() => ResidentMaterialFormat.ValidateManifest(original, geometry), "Absent original material silently inferred.");
+            original.originalMaterials = originalRoundtrip.originalMaterials;
+            original.originalMaterials[0].shader = original.materials[0].shader;
+            Reject(() => ResidentMaterialFormat.ValidateManifest(original, geometry), "Prepared shader substituted for original.");
+            original.originalMaterials[0].shader = original.family;
+            original.originalMaterials[0].properties[2].textureIndex = original.textures.Length;
+            Reject(() => ResidentMaterialFormat.ValidateManifest(original, geometry), "Original texture reference outside payload table admitted.");
+            original.originalMaterials[0].properties[2].textureIndex = 0;
+            original.originalMaterials[0].queue = 5001;
+            Reject(() => ResidentMaterialFormat.ValidateManifest(original, geometry), "Original queue outside bounds admitted.");
+            original.originalMaterials[0].queue = 2000;
+            original.originalMaterials[0].properties[1].name = "_TemperatureColor";
+            Reject(() => ResidentMaterialFormat.ValidateManifest(original, geometry), "Duplicate original property admitted.");
+            ResidentMaterialManifest withGlobals = Manifest();
+            var capturedGlobals = new System.Collections.Generic.List<ResidentMaterialProperty>();
+            foreach (string name in new[] { "_SpecularAmbientBoostDiffuse", "_SpecularAmbientBoostEmissive", "_UnderwaterFogFactor", "_UnderwaterMaxAlbedoFog", "_UnderwaterAlbedoDistanceScalar", "_UnderwaterMaxAlphaFog", "_UnderwaterMinAlphaFogDistance", "_UnderwaterAlphaDistanceScalar" })
+                capturedGlobals.Add(new ResidentMaterialProperty { name = name, kind = 2, textureIndex = -1, value = new[] { .25f }, scaleOffset = new float[0] });
+            foreach (string name in new[] { "_UnderwaterFogColor", "_LocalCameraPos", "_LocalCameraDir" })
+                capturedGlobals.Add(new ResidentMaterialProperty { name = name, kind = 1, textureIndex = -1, value = new float[] { 1,2,3,4 }, scaleOffset = new float[0] });
+            withGlobals.shaderGlobals = capturedGlobals.ToArray();
+            ResidentMaterialManifest globalsRoundtrip = JsonSerializer.Deserialize<ResidentMaterialManifest>(ReportJson.Encode(withGlobals), new JsonSerializerOptions { IncludeFields = true });
+            ResidentMaterialFormat.ValidateManifest(globalsRoundtrip, geometry);
+            Check(globalsRoundtrip.shaderGlobals.Length == 11 && globalsRoundtrip.shaderGlobals[10].name == "_LocalCameraDir" && globalsRoundtrip.shaderGlobals[10].value[3] == 4, "Captured stock globals lost on roundtrip.");
+            withGlobals.shaderGlobals[0].name = "_UnknownGlobal";
+            Reject(() => ResidentMaterialFormat.ValidateManifest(withGlobals, geometry), "Unadmitted stock global accepted.");
+            withGlobals.shaderGlobals[0].name = "_SpecularAmbientBoostDiffuse";
+            withGlobals.shaderGlobals[0].kind = 1;
+            Reject(() => ResidentMaterialFormat.ValidateManifest(withGlobals, geometry), "Wrong stock global type accepted.");
+            withGlobals.shaderGlobals[0].kind = 2;
+            withGlobals.shaderGlobals[0].value[0] = float.NaN;
+            Reject(() => ResidentMaterialFormat.ValidateManifest(withGlobals, geometry), "Nonfinite stock global accepted.");
+            ResidentMaterialManifest bitGlobals = JsonSerializer.Deserialize<ResidentMaterialManifest>(ReportJson.Encode(globalsRoundtrip), new JsonSerializerOptions { IncludeFields = true });
+            foreach (ResidentMaterialProperty global in bitGlobals.shaderGlobals)
+            {
+                global.valueBits = System.Array.ConvertAll(global.value, number => BitConverter.ToInt32(BitConverter.GetBytes(number), 0)); global.value = new float[0];
+            }
+            bitGlobals.shaderGlobals[4].valueBits[0] = unchecked((int)0x7f800000);
+            bitGlobals.shaderGlobals[7].valueBits[0] = unchecked((int)0xff800000);
+            ResidentMaterialManifest bitRoundtrip = JsonSerializer.Deserialize<ResidentMaterialManifest>(ReportJson.Encode(bitGlobals), new JsonSerializerOptions { IncludeFields = true });
+            ResidentMaterialFormat.ValidateManifest(bitRoundtrip, geometry);
+            Check(bitRoundtrip.shaderGlobals[4].valueBits[0] == unchecked((int)0x7f800000) && bitRoundtrip.shaderGlobals[7].valueBits[0] == unchecked((int)0xff800000) && bitRoundtrip.shaderGlobals[4].value.Length == 0, "Raw underwater infinities changed on JSON roundtrip.");
+            bitRoundtrip.shaderGlobals[9].valueBits[3] = unchecked((int)0x7f800000);
+            ResidentMaterialFormat.ValidateManifest(bitRoundtrip, geometry);
+            Check(bitRoundtrip.shaderGlobals[9].valueBits[3] == unchecked((int)0x7f800000), "Actual unused LocalCameraPos W infinity rejected/changed.");
+            bitRoundtrip.shaderGlobals[9].valueBits[0] = unchecked((int)0x7f800000);
+            Reject(() => ResidentMaterialFormat.ValidateManifest(bitRoundtrip, geometry), "Consumed LocalCameraPos XYZ infinity admitted.");
+            bitGlobals.shaderGlobals[4].valueBits[0] = unchecked((int)0x7fc00000);
+            Reject(() => ResidentMaterialFormat.ValidateManifest(bitGlobals, geometry), "Raw NaN global admitted.");
+            bitGlobals.shaderGlobals[4].valueBits[0] = unchecked((int)0x7f800000);
+            bitGlobals.shaderGlobals[0].valueBits[0] = unchecked((int)0x7f800000);
+            Reject(() => ResidentMaterialFormat.ValidateManifest(bitGlobals, geometry), "Infinity outside underwater distance scalar admitted.");
+            bitGlobals.shaderGlobals[0].valueBits[0] = 0;
+            bitGlobals.shaderGlobals[4].value = new[] { 0f };
+            Reject(() => ResidentMaterialFormat.ValidateManifest(bitGlobals, geometry), "Dual shader-global encodings admitted.");
+            bitGlobals.shaderGlobals[4].value = new float[0];
+            bitGlobals.shaderGlobals[8].valueBits = new[] { 0 };
+            Reject(() => ResidentMaterialFormat.ValidateManifest(bitGlobals, geometry), "Wrong raw vector bit shape admitted.");
+            ResidentMaterialManifest materialBits = Manifest(); materialBits.materials[0].properties[0].valueBits = new[] { 0,0,0,0 };
+            Reject(() => ResidentMaterialFormat.ValidateManifest(materialBits, geometry), "Raw shader-global encoding accepted in material property.");
             ResidentMaterialFormat.WriteGeometry(geometryPath, geometry); ResidentMaterialFormat.WriteSnapshot(statePath, snapshot);
             byte[] meshBytes = File.ReadAllBytes(geometryPath), stateBytes = File.ReadAllBytes(statePath);
             // Fixed analytic wire offsets are independent of the codec's read implementation.

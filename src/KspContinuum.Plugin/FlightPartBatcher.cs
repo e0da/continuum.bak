@@ -14,8 +14,8 @@ namespace KspContinuum
         [Serializable] internal sealed class Report
         {
             public string schema = "continuum-flight-part-batch/v1", runId, vesselId, status, reason, shaderName, shaderSource, bundleSha256;
-            public string fidelity = "Original research shader, not stock shader equivalence. Albedo, normal, specular/emissive maps, stock temperature/highlight inputs retained under bounded opaque recipe; stock underwater fog, spec-map channel mapping and exact lighting require image qualification.";
-            public string recipe = "Stock Kerbin ocean fixture above sea level; single-submesh positive-determinant MeshRenderer; stock KSP/Specular or KSP/Emissive/Bumped Specular (Mapped), no keywords, opaque opacity1, white burn, ambient multiplier1. Declared material bindings frozen; known stock MPB temperature/rim/emissive sampled each frame. Black base temperature/rim/emission RGB admitted with finite alpha retained in fingerprints (emission alpha unused). MPB opacity0 interpreted as absent only under initial opaque stock recipe: Unity2019 cannot distinguish absent from an explicit zero. Arbitrary unenumerable mod MPB inputs unsupported; not qualified for opacity transitions.";
+            public string fidelity = "Mapped-only uses reconstructed StandardSpecular GGX with stock AG normals, RGB specularity, smoothness, burn/ambient/underwater globals and alpha-weighted thermal/rim/emission. Native original-shader images qualify declared fixture states separately; exact reflection, shadow, opacity override and gameplay coverage remain gates. Other families retain their previous research shader.";
+            public string recipe = "Stock Kerbin ocean fixture above sea level; single-submesh positive-determinant MeshRenderer; stock KSP/Specular or KSP/Emissive/Bumped Specular (Mapped), no keywords, opaque opacity1, white burn, ambient multiplier1. Declared material bindings frozen; known stock MPB temperature/rim/emissive sampled each frame. Black base temperature/rim/emission RGB admitted with finite alpha retained in fingerprints (mapped emission is alpha weighted). MPB opacity0 interpreted as absent only under initial opaque stock recipe: Unity2019 cannot distinguish absent from an explicit zero. Arbitrary unenumerable mod MPB inputs unsupported; not qualified for opacity transitions.";
             public string shadowContract = "Main flight cameras only; stock FX cameras unchanged. DrawMeshInstanced requests original shadowCasting/receiveShadows settings, but source suppression versus shadow scheduling requires native image qualification.";
             public string probeContract = "Off retained; BlendProbes interpolated at original probeAnchor or renderer bounds center and supplied as per-instance SH/occlusion. Proxy/custom probes excluded. Reflection probe and exact stock lighting behavior remain shader fidelity gates.";
             public int processId, eligibleRenderers, fallbackRenderers, packets, cameraInvocations, drawSubmissions, restoredOriginals, faults, releasedMaterials;
@@ -32,6 +32,14 @@ namespace KspContinuum
             public float minBaseEmissionAlpha, maxBaseEmissionAlpha;
             public double preparationMilliseconds;
             public string cleanupStatus = "not-started";
+            public string family, mode;
+            public long updateCalls, probeCalls, mainCameraTicks, restorationTicks;
+            public long propertyBlockTicks, probeTicks, matrixBoundsTicks;
+            public int suppressedRenderers;
+            public long captureStartTicks, captureEndTicks, windowPublicationTicks, windowMainCameraTicks, windowRestorationTicks, windowPropertyBlockCaptures, windowProbeCalls, windowUpdateCalls;
+            public long windowPropertyBlockTicks, windowProbeTicks, windowMatrixBoundsTicks;
+            public int captureStartFrame, captureEndFrame;
+            public string timingScope = "Capture-boundary cumulative deltas; mainCameraTicks includes publication and overlapping retained pose work. Restoration separate. No GPU duration; do not sum nested scopes.";
         }
         sealed class Source
         {
@@ -68,7 +76,9 @@ namespace KspContinuum
         readonly Dictionary<Material,Binding> bindings = new Dictionary<Material,Binding>();
         readonly MaterialPropertyBlock observed = new MaterialPropertyBlock();
         Vessel vessel; Camera cameraLease; AssetBundle bundle; Shader shader; string directory;
-        bool retained;
+        bool retained, reference, mappedOnly;
+        long startPublication, startMain, startRestore, startBlocks, startProbes, startUpdates;
+        long startBlockTicks, startProbeTicks, startMatrixTicks;
         Report report; bool standard, faulted, finished, callbacks, modified, died, scene;
         Harmony opacityHook;
         int frame = -1;
@@ -86,6 +96,29 @@ namespace KspContinuum
         }
         public static Report Finish()
         { if (current == null) return null; FlightPartBatcher owner = current; current = null; owner.Cleanup(); return owner.report; }
+        public static void CaptureStart(long ticks)
+        {
+            if (current == null) return; var owner = current;
+            owner.report.captureStartTicks = ticks; owner.report.captureStartFrame = Time.frameCount;
+            owner.startPublication = owner.report.publicationTicks; owner.startMain = owner.report.mainCameraTicks;
+            owner.startRestore = owner.report.restorationTicks; owner.startBlocks = owner.report.propertyBlockCaptures;
+            owner.startProbes = owner.report.probeCalls; owner.startUpdates = owner.report.updateCalls;
+            owner.startBlockTicks = owner.report.propertyBlockTicks; owner.startProbeTicks = owner.report.probeTicks; owner.startMatrixTicks = owner.report.matrixBoundsTicks;
+        }
+        public static void CaptureEnd(long ticks)
+        {
+            if (current == null || current.report.captureStartTicks == 0 || current.report.captureEndTicks != 0) return; var owner = current;
+            owner.report.captureEndTicks = ticks; owner.report.captureEndFrame = Time.frameCount;
+            owner.report.windowPublicationTicks = owner.report.publicationTicks-owner.startPublication;
+            owner.report.windowMainCameraTicks = owner.report.mainCameraTicks-owner.startMain;
+            owner.report.windowRestorationTicks = owner.report.restorationTicks-owner.startRestore;
+            owner.report.windowPropertyBlockCaptures = owner.report.propertyBlockCaptures-owner.startBlocks;
+            owner.report.windowProbeCalls = owner.report.probeCalls-owner.startProbes;
+            owner.report.windowUpdateCalls = owner.report.updateCalls-owner.startUpdates;
+            owner.report.windowPropertyBlockTicks = owner.report.propertyBlockTicks-owner.startBlockTicks;
+            owner.report.windowProbeTicks = owner.report.probeTicks-owner.startProbeTicks;
+            owner.report.windowMatrixBoundsTicks = owner.report.matrixBoundsTicks-owner.startMatrixTicks;
+        }
         internal static void ExternalRenderFault(string reason) { if (current != null && current.retained) current.Fault("shared-FX: " + reason); }
         static string F(float x) { return x.ToString("R", CultureInfo.InvariantCulture); }
         static string V(Vector4 x) { return F(x.x)+","+F(x.y)+","+F(x.z)+","+F(x.w); }
@@ -159,7 +192,11 @@ namespace KspContinuum
         void Prepare()
         {
             Stopwatch timer = Stopwatch.StartNew();
+            reference = Flag("--continuum-flight-part-reference"); mappedOnly = Flag("--continuum-flight-part-mapped-only");
+            report.family = mappedOnly ? "KSP/Emissive/Bumped Specular (Mapped)" : "supported-specular-families";
+            report.mode = reference ? "reference" : "replacement";
             retained = RetainedRenderSources.Requested; report.retainedProvider = retained;
+            if (reference && retained) throw new InvalidOperationException("Reference part rendering excludes retained ownership.");
             if (retained) RetainedRenderSources.Begin();
             if (retained) report.recipe += " Retained provider: FX-covered sources retired independently of pose compilation. Rigid child locals checked each published frame; animation/Animator ancestry retains once-per-frame live source transforms. Sources outside owned FX coverage keep original main-camera batching leases. Original components retained for property-block writers. Unknown idempotent renderer-disable writes are outside stable visibility; FX proxy bones remain live.";
             if (retained && !FlightAeroBatcher.IsActive) throw new InvalidOperationException("Retained main renderer requires an active owned FX provider.");
@@ -170,7 +207,8 @@ namespace KspContinuum
             {
                 if (!Path.IsPathRooted(path) || !File.Exists(path)) throw new InvalidOperationException("Absolute shader bundle required.");
                 bundle = AssetBundle.LoadFromFile(path); if (bundle == null) throw new InvalidOperationException("Shader bundle failed to load.");
-                foreach (Shader item in bundle.LoadAllAssets<Shader>()) if (item.name == "Continuum/FlightPartSpecularInstanced") shader = item;
+                string requestedShader = mappedOnly ? "Continuum/FlightPartMappedInstanced" : "Continuum/FlightPartSpecularInstanced";
+                foreach (Shader item in bundle.LoadAllAssets<Shader>()) if (item.name == requestedShader) shader = item;
                 report.shaderSource = "custom-bundle"; report.bundleSha256 = ScaleCheckpointLoadState.HashFile(path);
             }
             else if (Flag("--continuum-flight-part-standard-fallback"))
@@ -191,6 +229,7 @@ namespace KspContinuum
                     var sourceRenderer = renderer as MeshRenderer; var filter = renderer.GetComponent<MeshFilter>();
                     Material[] materials = renderer.sharedMaterials; Mesh mesh = filter == null ? null : filter.sharedMesh;
                     Material material = materials.Length == 1 ? materials[0] : null;
+                    if (mappedOnly && (material == null || material.shader == null || material.shader.name != "KSP/Emissive/Bumped Specular (Mapped)")) continue;
                     bool covered = false; foreach (Camera camera in cameras) if ((camera.cullingMask & (1 << renderer.gameObject.layer)) != 0) covered=true;
                     if (sourceRenderer == null || mesh == null || mesh.subMeshCount != 1 || mesh.GetTopology(0) != MeshTopology.Triangles || material == null || material.shader == null ||
                         (material.shader.name != "KSP/Specular" && material.shader.name != "KSP/Emissive/Bumped Specular (Mapped)") ||
@@ -232,10 +271,13 @@ namespace KspContinuum
                     packet.ProbePositions = new Vector3[n]; packet.ProbeLighting = new SphericalHarmonicsL2[n]; packet.ProbeOcclusion = new Vector4[n];
                 }
             }
-            UpdateInputs(); CaptureResidentMaterialFixture(); Camera.onPreCull += PreCull; Camera.onPostRender += PostRender; callbacks = true;
+            UpdateInputs(); CaptureResidentMaterialFixture();
+            if (!reference) { Camera.onPreCull += PreCull; Camera.onPostRender += PostRender; callbacks = true; }
+            if (!reference) {
             var opacityMethod=AccessTools.Method(typeof(Part),"SetOpacity",new[] { typeof(float) });
             if(opacityMethod==null || Harmony.GetPatchInfo(opacityMethod)?.Owners.Count>0) throw new InvalidOperationException("Owned stock opacity boundary unavailable.");
             opacityHook=new Harmony(PatchOwner); opacityHook.Patch(opacityMethod,prefix:new HarmonyMethod(typeof(FlightPartBatcher),nameof(OpacityChanging)));
+            }
             GameEvents.onVesselWasModified.Add(Modified); modified = true; GameEvents.onPartDie.Add(Died); died = true;
             GameEvents.onGameSceneLoadRequested.Add(Scene); scene = true;
             if (retained) { RetainedRenderSources.RetireAll(); report.retiredRenderers = RetainedRenderSources.RetiredCount; }
@@ -254,7 +296,7 @@ namespace KspContinuum
                 if (packet.ProbeLighting == null || packet.ProbeOcclusion == null)
                     throw new InvalidDataException("Mapped fixture requires actual per-source SH and occlusion.");
                 observed.Clear(); source.Renderer.GetPropertyBlock(observed);
-                sources.Add(new ResidentMaterialFixtureCapture.Source { Mesh = source.Mesh, Material = packet.Material, Renderer = source.Renderer, Part = source.Owner,
+                sources.Add(new ResidentMaterialFixtureCapture.Source { Mesh = source.Mesh, Material = packet.Material, OriginalMaterial = source.Material, Renderer = source.Renderer, Part = source.Owner,
                     Matrix = packet.Matrices[i], Temperature = packet.Temperature[i], Rim = packet.Rim[i], Emission = packet.Emission[i],
                     Lighting = packet.ProbeLighting[i], Occlusion = packet.ProbeOcclusion[i], Falloff = packet.Falloff[i],
                     RawOpacity = observed.GetFloat(PropertyIDs._Opacity), EffectiveOpacity = packet.Opacity[i] });
@@ -269,9 +311,11 @@ namespace KspContinuum
                 { result.SetTexture(name, original.GetTexture(name)); result.SetTextureScale(name, original.GetTextureScale(name)); result.SetTextureOffset(name, original.GetTextureOffset(name)); }
             bool mapped = original.shader.name.EndsWith("(Mapped)",StringComparison.Ordinal);
             if (result.HasProperty("_Mapped")) result.SetFloat("_Mapped", mapped ? 1 : 0);
-            result.SetColor("_Color", original.HasProperty("_Color") ? original.GetColor("_Color") : Color.white);
+            if (result.HasProperty("_Color")) result.SetColor("_Color", original.HasProperty("_Color") ? original.GetColor("_Color") : Color.white);
             float tint = mapped ? original.GetFloat("_SpecTint") : 0;
-            result.SetColor("_SpecColor", mapped ? new Color(tint,tint,tint,1) : original.GetColor("_SpecColor"));
+            if (result.HasProperty("_SpecColor")) result.SetColor("_SpecColor", mapped ? new Color(tint,tint,tint,1) : original.GetColor("_SpecColor"));
+            foreach (string name in new[] { "_SpecTint", "_AmbientMultiplier" }) if (original.HasProperty(name) && result.HasProperty(name)) result.SetFloat(name, original.GetFloat(name));
+            if (original.HasProperty("_BurnColor") && result.HasProperty("_BurnColor")) result.SetColor("_BurnColor", original.GetColor("_BurnColor"));
             if (result.HasProperty("_Shininess")) result.SetFloat("_Shininess", original.GetFloat("_Shininess"));
             if (standard)
             {
@@ -286,6 +330,7 @@ namespace KspContinuum
         {
             if (frame == Time.frameCount) return; frame = Time.frameCount;
             long start = Stopwatch.GetTimestamp();
+            report.updateCalls++;
             CheckBindings();
             foreach (Packet packet in packets) for (int i=0;i<packet.Sources.Count;i++)
             {
@@ -294,7 +339,7 @@ namespace KspContinuum
                     source.Filter == null || source.Filter.sharedMesh != source.Mesh || renderer.sharedMaterials.Length != 1 || renderer.sharedMaterial != source.Material ||
                     renderer.gameObject.layer!=packet.Layer || renderer.shadowCastingMode!=packet.Shadows || renderer.receiveShadows!=packet.ReceiveShadows)
                     throw new InvalidOperationException("Source visibility/mesh/material changed: "+source.Identity);
-                observed.Clear(); renderer.GetPropertyBlock(observed);
+                long blockStart = Stopwatch.GetTimestamp(); observed.Clear(); renderer.GetPropertyBlock(observed);
                 report.propertyBlockCaptures++;
                 Color temperature = observed.GetColor(PhysicsGlobals.TemperaturePropertyID), rim = observed.GetColor(PropertyIDs._RimColor);
                 Color emission = observed.GetColor("_EmissiveColor"); float opacity = observed.GetFloat(PropertyIDs._Opacity), falloff = observed.GetFloat(PropertyIDs._RimFalloff);
@@ -302,6 +347,8 @@ namespace KspContinuum
                     throw new InvalidOperationException("Unsupported stock block values: "+source.Identity);
                 if (standard && (temperature.r != 0 || temperature.g != 0 || temperature.b != 0 || rim.r != 0 || rim.g != 0 || rim.b != 0 || emission.r != 0 || emission.g != 0 || emission.b != 0))
                     throw new InvalidOperationException("Standard diagnostic cannot preserve active heating/highlight/emission: "+source.Identity);
+                report.propertyBlockTicks += Stopwatch.GetTimestamp()-blockStart;
+                long matrixStart = Stopwatch.GetTimestamp();
                 Matrix4x4 matrix = source.Retained ? RetainedRenderSources.Pose(renderer) : renderer.transform.localToWorldMatrix;
                 for (int element=0;element<16;element++) if (!Finite(matrix[element])) throw new InvalidOperationException("Nonfinite source pose.");
                 if (matrix.determinant <= 0) throw new InvalidOperationException("Source determinant changed.");
@@ -309,6 +356,7 @@ namespace KspContinuum
                 packet.Falloff[i] = falloff; packet.Opacity[i] = 1;
                 if (renderer.lightProbeUsage != packet.Probes) throw new InvalidOperationException("Source probe usage changed.");
                 if (packet.ProbePositions != null) packet.ProbePositions[i] = renderer.probeAnchor == null ? (source.Retained ? RetainedRenderSources.Bounds(renderer).center : renderer.bounds.center) : renderer.probeAnchor.position;
+                report.matrixBoundsTicks += Stopwatch.GetTimestamp()-matrixStart;
             }
             foreach (Packet packet in packets)
             {
@@ -317,8 +365,11 @@ namespace KspContinuum
                     packet.Block.SetVectorArray("_EmissiveColor", packet.Emission); packet.Block.SetFloatArray("_RimFalloff", packet.Falloff); packet.Block.SetFloatArray("_Opacity", packet.Opacity);
                 }
                 if (packet.ProbePositions != null) {
+                    long probeStart = Stopwatch.GetTimestamp();
                     LightProbes.CalculateInterpolatedLightAndOcclusionProbes(packet.ProbePositions, packet.ProbeLighting, packet.ProbeOcclusion);
+                    report.probeCalls++;
                     packet.Block.CopySHCoefficientArraysFrom(packet.ProbeLighting); packet.Block.CopyProbeOcclusionArrayFrom(packet.ProbeOcclusion);
+                    report.probeTicks += Stopwatch.GetTimestamp()-probeStart;
                 }
             }
             report.publicationTicks += Stopwatch.GetTimestamp()-start;
@@ -327,6 +378,7 @@ namespace KspContinuum
         {
             if (cameraLease != null && cameraLease != camera) { Fault("Unclosed main camera lease."); return; }
             if (faulted || finished || !cameras.Contains(camera)) return;
+            long start = Stopwatch.GetTimestamp();
             try
             {
                 if (cameraLease != null || FlightGlobals.ActiveVessel != vessel || HighLogic.LoadedScene != GameScenes.FLIGHT || vessel.packed || vessel.mainBody==null || vessel.mainBody.bodyName!="Kerbin" || !vessel.mainBody.ocean || vessel.altitude <= 0)
@@ -336,7 +388,7 @@ namespace KspContinuum
                 {
                     if ((camera.cullingMask & (1 << packet.Layer)) == 0) continue;
                     foreach (Source source in packet.Sources) if (!source.Retained)
-                    { if (source.Renderer.forceRenderingOff) throw new InvalidOperationException("Source visibility changed before lease."); leased.Add(source.Renderer); source.Renderer.forceRenderingOff=true; }
+                    { if (source.Renderer.forceRenderingOff) throw new InvalidOperationException("Source visibility changed before lease."); leased.Add(source.Renderer); source.Renderer.forceRenderingOff=true; report.suppressedRenderers++; }
                     Graphics.DrawMeshInstanced(packet.Mesh, 0, packet.Material, packet.Matrices, packet.Matrices.Length, packet.Block,
                         packet.Shadows, packet.ReceiveShadows, packet.Layer, camera,
                         packet.Probes == LightProbeUsage.BlendProbes ? LightProbeUsage.CustomProvided : LightProbeUsage.Off);
@@ -345,6 +397,7 @@ namespace KspContinuum
                 report.cameraInvocations++;
             }
             catch (Exception error) { Fault("main-camera: "+error); }
+            finally { report.mainCameraTicks += Stopwatch.GetTimestamp()-start; }
         }
         void PostRender(Camera camera) { if (cameraLease == camera) Release(); }
         static void OpacityChanging(Part __instance,float opacity)
@@ -353,7 +406,7 @@ namespace KspContinuum
             if(owner!=null && !owner.faulted && __instance!=null && owner.parts.Contains(__instance.flightID) && opacity!=1)
                 owner.Fault("Stock opacity transition unsupported; part="+__instance.flightID+" requested="+F(opacity));
         }
-        void Release() { foreach (MeshRenderer renderer in leased) if (renderer != null) { renderer.forceRenderingOff=false; restored.Add(renderer.GetInstanceID()); } report.restoredOriginals=restored.Count; leased.Clear(); cameraLease=null; }
+        void Release() { if (leased.Count == 0 && cameraLease == null) return; long start = Stopwatch.GetTimestamp(); foreach (MeshRenderer renderer in leased) if (renderer != null) { renderer.forceRenderingOff=false; restored.Add(renderer.GetInstanceID()); } report.restoredOriginals=restored.Count; leased.Clear(); cameraLease=null; report.restorationTicks += Stopwatch.GetTimestamp()-start; }
         void Modified(Vessel changed) { if (changed==vessel) { if (vessel.parts.Count!=parts.Count) Fault("Topology changed."); else foreach (Part part in vessel.parts) if (part==null || !parts.Contains(part.flightID)) { Fault("Topology changed."); break; } } }
         void Died(Part part) { if (part!=null && parts.Contains(part.flightID)) Fault("Owned part died."); }
         void Scene(GameScenes next) { Fault("Scene change."); }

@@ -35,7 +35,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         public float[] flowDirection, cameraPosition, cameraRotation;
         public bool paused; public string[] shaders;
         public bool benchmarkActive; public string lastBenchmark,lastBenchmarkStatus,lastBenchmarkReason, pipelineMode = "full";
-        public string materialMode, materialDiagnostic, materialTopologyId, materialStateSha256, materialBundleSha256;
+        public string materialMode, materialDiagnostic, materialTopologyId, materialStateSha256, materialBundleSha256, materialOriginalBundleSha256;
         public long materialGeneration;
         public int materialInstances, materialMeshes, materialPackets, materialDrawCalls, materialSubmittedFrames, materialSnapshotPublications, materialOccupiedPixels;
         public bool materialPixelProof;
@@ -195,7 +195,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             case "setintensity": if(words.Length!=2) throw new InvalidDataException("setintensity value"); effect.x=Mathf.Clamp(Number(words[1]),0,10); break;
             case "setclock": if(words.Length!=2) throw new InvalidDataException("setclock seconds"); float nextClock=Number(words[1]); if(nextClock<0||nextClock>1000000) throw new InvalidDataException("Clock0..1000000."); clock=nextClock; break;
             case "rendermode": if(words.Length!=2||!(words[1]=="full"||words[1]=="geometry"||words[1]=="fields")||(resident!=null&&words[1]!="geometry")) throw new InvalidDataException("rendermode full|geometry|fields; resident material admits geometry only."); state.pipelineMode=words[1]; ribbonCommands?.Clear(); sceneCommands?.Clear(); break;
-            case "materialmode": if(resident==null||words.Length!=2) throw new InvalidDataException("Loaded material fixture and reference|instanced required."); resident.SetMode(words[1]); state.materialPixelProof=false; state.materialOccupiedPixels=0; break;
+            case "materialmode": if(resident==null||words.Length!=2) throw new InvalidDataException("Loaded material fixture and original|reference|instanced required."); resident.SetMode(words[1]); state.materialPixelProof=false; state.materialOccupiedPixels=0; break;
             case "materialdiagnostic": if(resident==null||words.Length!=2) throw new InvalidDataException("Loaded material fixture and off|defaults|single required."); resident.SetDiagnostic(words[1]); state.materialPixelProof=false; state.materialOccupiedPixels=0; break;
             case "snapshotreload": if(resident==null) throw new InvalidDataException("Loaded material fixture required."); resident.ReloadSnapshot(Absolute(text.Substring(words[0].Length).Trim())); geometryBounds=resident.Bounds; state.materialPixelProof=false; state.materialOccupiedPixels=0; break;
             case "benchmark": if(words.Length!=3) throw new InvalidDataException("benchmark warmupSeconds captureSeconds"); BeginBenchmark(Number(words[1]),Number(words[2])); break;
@@ -355,7 +355,8 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         {
             string bundlePath=Environment.GetEnvironmentVariable("CONTINUUM_RESIDENT_PART_BUNDLE");
             if(string.IsNullOrEmpty(bundlePath)) throw new InvalidDataException("CONTINUUM_RESIDENT_PART_BUNDLE required.");
-            var nextResident=new ResidentMaterialRuntime(path,Absolute(bundlePath));
+            string originalBundlePath=Environment.GetEnvironmentVariable("CONTINUUM_RESIDENT_ORIGINAL_BUNDLE");
+            var nextResident=new ResidentMaterialRuntime(path,Absolute(bundlePath),string.IsNullOrEmpty(originalBundlePath)?null:Absolute(originalBundlePath));
             try
             {
                 if(resident!=null) { nextResident.SetMode(resident.Mode); nextResident.SetDiagnostic(resident.Diagnostic); }
@@ -504,7 +505,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             state.cameraPosition=new[] {position.x,position.y,position.z}; state.cameraRotation=new[] {rotation.x,rotation.y,rotation.z,rotation.w};
         }
         state.flowDirection=new[] {direction.x,direction.y,direction.z}; state.intensity=effect.x; state.effectClock=clock;
-        if(resident!=null) { state.materialMode=resident.Mode; state.materialDiagnostic=resident.Diagnostic; state.materialTopologyId=resident.TopologyId; state.materialStateSha256=resident.StateSha256; state.materialBundleSha256=resident.BundleSha256; state.materialGeneration=resident.Generation; state.materialInstances=resident.InstanceCount; state.materialMeshes=resident.MeshCount; state.materialPackets=resident.PacketCount; state.materialDrawCalls=resident.DrawCalls; state.materialSubmittedFrames=resident.SubmittedFrames; state.materialSnapshotPublications=resident.SnapshotPublications; state.contract="Resident supported real-material fixture; original Continuum shader, no stock lighting/effect equivalence."; }
+        if(resident!=null) { state.materialMode=resident.Mode; state.materialDiagnostic=resident.Diagnostic; state.materialTopologyId=resident.TopologyId; state.materialStateSha256=resident.StateSha256; state.materialBundleSha256=resident.BundleSha256; state.materialOriginalBundleSha256=resident.OriginalBundleSha256; state.materialGeneration=resident.Generation; state.materialInstances=resident.InstanceCount; state.materialMeshes=resident.MeshCount; state.materialPackets=resident.PacketCount; state.materialDrawCalls=resident.DrawCalls; state.materialSubmittedFrames=resident.SubmittedFrames; state.materialSnapshotPublications=resident.SnapshotPublications; state.contract="Resident real-material fixture; optional shipped shader reference, native comparisons qualify only their captured dependencies."; }
         else { state.materialMode=null; state.materialDiagnostic=null; state.materialTopologyId=null; state.materialStateSha256=null; state.materialBundleSha256=null; state.materialGeneration=0; state.materialInstances=0; state.materialMeshes=0; state.materialPackets=0; state.materialDrawCalls=0; state.materialSubmittedFrames=0; state.materialSnapshotPublications=0; state.materialOccupiedPixels=0; state.materialPixelProof=false; state.contract="Frozen gray opaque fixture or labelled analytic geometry; isolated experimental fields, no stock appearance equivalence."; }
         string target=Path.Combine(output,"status.json"),temp=target+".tmp"; File.WriteAllText(temp,JsonUtility.ToJson(state,true)); if(File.Exists(target)) File.Replace(temp,target,null); else File.Move(temp,target);
     }

@@ -160,6 +160,7 @@ namespace KspContinuum
                 report.captureStartUtc = DateTime.UtcNow.ToString("o"); captureStartUt = Planetarium.GetUniversalTime();
                 ProfileFrame previous = Context();
                 report.clockFrequency=Stopwatch.Frequency; report.captureStartClockTimestamp=Stopwatch.GetTimestamp();
+                FlightPartBatcher.CaptureStart(report.captureStartClockTimestamp);
                 captureStartWall=clock.Elapsed.TotalSeconds; previous.boundaryWallSeconds=captureStartWall; capturedFixedCallbacks=fixedCallbacks;
                 Signal("capture-start", null);
                 captureActive=true;
@@ -198,6 +199,7 @@ namespace KspContinuum
                     if (completed < report.requestedFrames) previous = Context();
                 }
                 captureActive=false; report.captureEndClockTimestamp=Stopwatch.GetTimestamp();
+                FlightPartBatcher.CaptureEnd(report.captureEndClockTimestamp);
                 if(simulationSeconds > 0 && completed > 0)
                 {
                     ProfileFrame last = Context(true), first=report.frames[0];
@@ -392,6 +394,7 @@ namespace KspContinuum
                 if(report.captureStartClockTimestamp>0)
                 {
                     if(report.captureEndClockTimestamp==0) report.captureEndClockTimestamp=Stopwatch.GetTimestamp();
+                    FlightPartBatcher.CaptureEnd(report.captureEndClockTimestamp);
                     Signal("capture-end", report.completionReason);
                 }
                 callback(report);

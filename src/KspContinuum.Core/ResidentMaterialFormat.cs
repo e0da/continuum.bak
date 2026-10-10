@@ -11,7 +11,8 @@ namespace KspContinuum
         public string geometry, geometrySha256, state, stateSha256;
         public int processId; public float[] rootToWorld, cameraPosition, cameraRotation;
         public float fov, near, far; public ResidentLighting lighting;
-        public ResidentTextureAsset[] textures; public ResidentMaterialAsset[] materials; public ResidentInstanceAsset[] instances;
+        public ResidentMaterialProperty[] shaderGlobals;
+        public ResidentTextureAsset[] textures; public ResidentMaterialAsset[] materials, originalMaterials; public ResidentInstanceAsset[] instances;
     }
     [Serializable] public sealed class ResidentTextureAsset
     {
@@ -19,7 +20,7 @@ namespace KspContinuum
         public int width, height, format, graphicsFormat, mipCount, filter, wrap, aniso; public float mipBias; public bool linear;
     }
     [Serializable] public sealed class ResidentMaterialAsset { public string id, shader; public int queue; public ResidentMaterialProperty[] properties; }
-    [Serializable] public sealed class ResidentMaterialProperty { public string name; public int kind, textureIndex; public float[] value, scaleOffset; }
+    [Serializable] public sealed class ResidentMaterialProperty { public string name; public int kind, textureIndex; public float[] value, scaleOffset; public int[] valueBits; }
     [Serializable] public sealed class ResidentInstanceAsset { public string id; public int meshIndex, materialIndex, layer, shadowCasting; public bool receiveShadows; }
     [Serializable] public sealed class ResidentLighting
     {
@@ -163,6 +164,49 @@ namespace KspContinuum
                 Require(stream.Position == stream.Length, "Resident snapshot trailing bytes."); Snapshot(result); return result;
             }
         }
+        static void Materials(ResidentMaterialAsset[] materials, string shader, int textureCount)
+        {
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            foreach (ResidentMaterialAsset material in materials)
+            {
+                Require(material != null, "Resident material absent."); Text(material.id); Require(ids.Add(material.id), "Duplicate resident material identity."); Require(material.shader == shader, "Resident material shader differs."); Require(material.queue >= -1 && material.queue <= 5000 && material.properties != null && material.properties.Length <= 256, "Resident material property count/queue differs.");
+                var properties = new HashSet<string>(StringComparer.Ordinal);
+                foreach (ResidentMaterialProperty property in material.properties)
+                {
+                    Require(property != null, "Resident property absent."); Require(property.valueBits == null || property.valueBits.Length == 0, "Resident material property has shader-global bit encoding."); Text(property.name); Require(properties.Add(property.name), "Duplicate resident material property."); Require(property.kind >= 0 && property.kind <= 4, "Resident property kind differs.");
+                    if (property.kind == 4) { Array(property.value, 0); Array(property.scaleOffset, 4); Require(property.textureIndex >= -1 && property.textureIndex < textureCount, "Resident texture reference differs."); }
+                    else { Array(property.value, property.kind < 2 ? 4 : 1); Require(property.textureIndex == -1, "Resident numeric property has texture reference."); Require(property.scaleOffset == null || property.scaleOffset.Length == 0, "Resident numeric property has texture scale."); }
+                }
+            }
+        }
+        static void Globals(ResidentMaterialProperty[] globals)
+        {
+            if (globals == null) return;
+            string[] floats = { "_SpecularAmbientBoostDiffuse", "_SpecularAmbientBoostEmissive", "_UnderwaterFogFactor", "_UnderwaterMaxAlbedoFog", "_UnderwaterAlbedoDistanceScalar", "_UnderwaterMaxAlphaFog", "_UnderwaterMinAlphaFogDistance", "_UnderwaterAlphaDistanceScalar" };
+            string[] vectors = { "_UnderwaterFogColor", "_LocalCameraPos", "_LocalCameraDir" };
+            Require(globals.Length == floats.Length + vectors.Length, "Resident stock global count differs.");
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (ResidentMaterialProperty global in globals)
+            {
+                Require(global != null, "Resident stock global absent."); Text(global.name); Require(seen.Add(global.name), "Duplicate resident stock global.");
+                bool isFloat = System.Array.IndexOf(floats, global.name) >= 0, isVector = System.Array.IndexOf(vectors, global.name) >= 0;
+                Require(isFloat || isVector, "Resident stock global outside captured whitelist.");
+                Require(global.kind == (isFloat ? 2 : 1) && global.textureIndex == -1 && (global.scaleOffset == null || global.scaleOffset.Length == 0), "Resident stock global type/reference differs.");
+                int length = isFloat ? 1 : 4;
+                if (global.valueBits == null || global.valueBits.Length == 0) Array(global.value, length);
+                else
+                {
+                    Require(global.value != null && global.value.Length == 0 && global.valueBits.Length == length, "Resident stock global dual encoding/bit shape differs.");
+                    bool infinityAllowed = global.name == "_UnderwaterAlbedoDistanceScalar" || global.name == "_UnderwaterAlphaDistanceScalar";
+                    for (int component = 0; component < global.valueBits.Length; component++)
+                    {
+                        uint magnitude = (uint)global.valueBits[component] & 0x7fffffffu;
+                        bool unusedCameraW = global.name == "_LocalCameraPos" && component == 3;
+                        Require(magnitude <= 0x7f800000u && (magnitude != 0x7f800000u || infinityAllowed || unusedCameraW), "Resident stock global nonfinite bits outside admitted scope: " + global.name + " component=" + component);
+                    }
+                }
+            }
+        }
         public static void ValidateManifest(ResidentMaterialManifest manifest, ResidentGeometry geometry)
         {
             Require(manifest != null && manifest.schema == "continuum-resident-material-fixture/v2", "Resident manifest schema differs."); Geometry(geometry);
@@ -183,17 +227,14 @@ namespace KspContinuum
                 Require(texture != null, "Resident texture absent."); Text(texture.id); Require(ids.Add(texture.id), "Duplicate resident texture identity."); PathValue(texture.payload); Digest(texture.payloadSha256);
                 Require(texture.payloadLength > 0 && texture.payloadLength <= int.MaxValue && texture.width > 0 && texture.width <= 16384 && texture.height > 0 && texture.height <= 16384 && texture.mipCount > 0 && texture.mipCount <= 15 && texture.format >= 0 && texture.graphicsFormat >= 0 && texture.filter >= 0 && texture.filter <= 2 && texture.wrap >= 0 && texture.wrap <= 3 && texture.aniso >= 0 && texture.aniso <= 16, "Resident texture metadata outside bounds."); Scalar(texture.mipBias);
             }
-            ids.Clear();
-            foreach (ResidentMaterialAsset material in manifest.materials)
+            string preparedShader = manifest.materials[0] == null ? null : manifest.materials[0].shader;
+            Require(preparedShader == "Continuum/FlightPartSpecularInstanced" || preparedShader == "Continuum/FlightPartMappedInstanced", "Unsupported resident prepared shader.");
+            Globals(manifest.shaderGlobals);
+            Materials(manifest.materials, preparedShader, manifest.textures.Length);
+            if (manifest.originalMaterials != null)
             {
-                Require(material != null, "Resident material absent."); Text(material.id); Require(ids.Add(material.id), "Duplicate resident material identity."); Require(material.shader == "Continuum/FlightPartSpecularInstanced", "Resident prepared shader differs."); Require(material.queue >= -1 && material.queue <= 5000 && material.properties != null && material.properties.Length <= 256, "Resident material property count/queue differs.");
-                var properties = new HashSet<string>(StringComparer.Ordinal);
-                foreach (ResidentMaterialProperty property in material.properties)
-                {
-                    Require(property != null, "Resident property absent."); Text(property.name); Require(properties.Add(property.name), "Duplicate resident material property."); Require(property.kind >= 0 && property.kind <= 4, "Resident property kind differs.");
-                    if (property.kind == 4) { Array(property.value, 0); Array(property.scaleOffset, 4); Require(property.textureIndex >= -1 && property.textureIndex < manifest.textures.Length, "Resident texture reference differs."); }
-                    else { Array(property.value, property.kind < 2 ? 4 : 1); Require(property.textureIndex == -1, "Resident numeric property has texture reference."); Require(property.scaleOffset == null || property.scaleOffset.Length == 0, "Resident numeric property has texture scale."); }
-                }
+                Require(manifest.originalMaterials.Length == manifest.materials.Length, "Resident original material count/order differs.");
+                Materials(manifest.originalMaterials, manifest.family, manifest.textures.Length);
             }
             ids.Clear();
             foreach (ResidentInstanceAsset instance in manifest.instances)

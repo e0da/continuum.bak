@@ -16,7 +16,7 @@ public sealed class ResidentMaterialRuntime : IDisposable
         public int[] Sources; public Matrix4x4[] Matrices; public MaterialPropertyBlock Block;
     }
     public readonly ResidentMaterialManifest Manifest;
-    public readonly string ManifestPath, ManifestSha256, BundlePath, BundleSha256;
+    public readonly string ManifestPath, ManifestSha256, BundlePath, BundleSha256, OriginalBundlePath, OriginalBundleSha256;
     public string StatePath { get; private set; }
     public string StateSha256 { get; private set; }
     public string Mode { get; private set; } = "reference";
@@ -35,9 +35,10 @@ public sealed class ResidentMaterialRuntime : IDisposable
     public Bounds Bounds { get; private set; }
     public Matrix4x4 Root { get; private set; }
     readonly List<UnityEngine.Object> owned = new List<UnityEngine.Object>();
-    Mesh[] meshes; Texture2D[] textures; Material[] referenceMaterials, packetMaterials;
+    Mesh[] meshes; Texture2D[] textures; Material[] referenceMaterials, packetMaterials, originalMaterials;
     ResidentSnapshot snapshot; Matrix4x4[] matrices; MaterialPropertyBlock[] referenceBlocks, singleBlocks; Matrix4x4[][] singleMatrices; Packet[] packets;
-    ShaderLease shaderLease; GameObject lightObject; Camera activeCamera; int priorCameraMask; bool disposed, activated; int lastFrame = -1;
+    ShaderLease shaderLease, originalShaderLease; GameObject lightObject; Camera activeCamera; int priorCameraMask; bool disposed, activated; int lastFrame = -1;
+    ResidentMaterialProperty[] priorShaderGlobals;
     AmbientMode priorAmbient; Color priorSky, priorEquator, priorGround; float priorAmbientIntensity, priorShadowDistance; int priorShadowCascades;
     Vector3 priorPosition; Quaternion priorRotation; float priorFov, priorNear, priorFar;
     public static string Hash(string path) { using(var s=File.OpenRead(path)) using(var h=SHA256.Create()) return BitConverter.ToString(h.ComputeHash(s)).Replace("-", "").ToLowerInvariant(); }
@@ -52,10 +53,42 @@ public sealed class ResidentMaterialRuntime : IDisposable
     static Color C(float[] v) { return new Color(v[0],v[1],v[2],v[3]); }
     static Matrix4x4 M(float[] v) { var m=new Matrix4x4(); for(int r=0;r<4;r++) for(int c=0;c<4;c++) m[r,c]=v[r*4+c]; return m; }
     static Quaternion Q(float[] v) { return new Quaternion(v[0],v[1],v[2],v[3]); }
-    public ResidentMaterialRuntime(string path,string partBundlePath)
+    static float[] GlobalValues(ResidentMaterialProperty property)
+    {
+        if(property.valueBits==null||property.valueBits.Length==0) return property.value;
+        var values=new float[property.valueBits.Length]; for(int i=0;i<values.Length;i++) values[i]=BitConverter.ToSingle(BitConverter.GetBytes(property.valueBits[i]),0); return values;
+    }
+    static ShaderLease AcquireShader(string path,string digest,string name)
+    {
+        ShaderLease lease;
+        if(!shaderLeases.TryGetValue(digest,out lease))
+        {
+            var container=AssetBundle.LoadFromFile(path); if(container==null) throw new InvalidDataException("Shader bundle unavailable.");
+            try
+            {
+                Shader selected=null; foreach(Shader value in container.LoadAllAssets<Shader>()) if(value.name==name) { if(selected!=null) throw new InvalidDataException("Duplicate shader identity."); selected=value; }
+                if(selected==null||!selected.isSupported) throw new InvalidDataException("Required shader unsupported: "+name);
+                lease=new ShaderLease {Bundle=container,Shader=selected}; shaderLeases.Add(digest,lease);
+            }
+            catch { container.Unload(true); throw; }
+        }
+        if(lease.Shader.name!=name) throw new InvalidDataException("Shared shader lease identity differs.");
+        lease.References++; return lease;
+    }
+    void ApplyProperties(Material material,ResidentMaterialAsset asset)
+    {
+        foreach(var p in asset.properties)
+        {
+            if(!material.HasProperty(p.name)) throw new InvalidDataException("Captured shader property unavailable: "+p.name);
+            if(p.kind==0) material.SetColor(p.name,C(p.value)); else if(p.kind==1) material.SetVector(p.name,V(p.value)); else if(p.kind==2||p.kind==3) material.SetFloat(p.name,p.value[0]);
+            else if(p.kind==4) { material.SetTexture(p.name,p.textureIndex<0?null:textures[p.textureIndex]); material.SetTextureScale(p.name,new Vector2(p.scaleOffset[0],p.scaleOffset[1])); material.SetTextureOffset(p.name,new Vector2(p.scaleOffset[2],p.scaleOffset[3])); }
+        }
+    }
+    public ResidentMaterialRuntime(string path,string partBundlePath,string originalBundlePath=null)
     {
         if(!Path.IsPathRooted(path)||!Path.IsPathRooted(partBundlePath)) throw new InvalidDataException("Absolute fixture and part bundle required.");
         ManifestPath=Path.GetFullPath(path); BundlePath=Path.GetFullPath(partBundlePath); ManifestSha256=Hash(ManifestPath); BundleSha256=Hash(BundlePath);
+        if(!string.IsNullOrEmpty(originalBundlePath)) { if(!Path.IsPathRooted(originalBundlePath)) throw new InvalidDataException("Absolute original shader bundle required."); OriginalBundlePath=Path.GetFullPath(originalBundlePath); OriginalBundleSha256=Hash(OriginalBundlePath); }
         try
         {
             if(new FileInfo(ManifestPath).Length>1048576) throw new InvalidDataException("Fixture manifest bound.");
@@ -68,14 +101,7 @@ public sealed class ResidentMaterialRuntime : IDisposable
             Vector3 x=Root.GetColumn(0),y=Root.GetColumn(1),z=Root.GetColumn(2);
             if(Mathf.Abs(x.sqrMagnitude-1)>.0001f||Mathf.Abs(y.sqrMagnitude-1)>.0001f||Mathf.Abs(z.sqrMagnitude-1)>.0001f||Mathf.Abs(Vector3.Dot(x,y))>.0001f||Mathf.Abs(Vector3.Dot(x,z))>.0001f||Mathf.Abs(Vector3.Dot(y,z))>.0001f)
                 throw new InvalidDataException("Rigid world orientation required for camera/light basis.");
-            if(!shaderLeases.TryGetValue(BundleSha256,out shaderLease))
-            {
-                var nextBundle=AssetBundle.LoadFromFile(BundlePath); if(nextBundle==null) throw new InvalidDataException("Part shader bundle unavailable.");
-                Shader selected=null; foreach(Shader s in nextBundle.LoadAllAssets<Shader>()) if(s.name=="Continuum/FlightPartSpecularInstanced") selected=s;
-                if(selected==null||!selected.isSupported) { nextBundle.Unload(true); throw new InvalidDataException("Part shader unsupported."); }
-                shaderLease=new ShaderLease {Bundle=nextBundle,Shader=selected}; shaderLeases.Add(BundleSha256,shaderLease);
-            }
-            shaderLease.References++; Shader shader=shaderLease.Shader;
+            shaderLease=AcquireShader(BundlePath,BundleSha256,Manifest.materials[0].shader); Shader shader=shaderLease.Shader;
             if(shader==null||!shader.isSupported||!SystemInfo.supportsInstancing) throw new InvalidDataException("Supported resident shader/instancing required.");
             meshes=new Mesh[geometry.meshes.Length];
             for(int j=0;j<meshes.Length;j++)
@@ -99,13 +125,14 @@ public sealed class ResidentMaterialRuntime : IDisposable
             for(int i=0;i<referenceMaterials.Length;i++)
             {
                 var material=new Material(shader) {enableInstancing=false,renderQueue=Manifest.materials[i].queue}; owned.Add(material);
-                foreach(var p in Manifest.materials[i].properties)
-                {
-                    if(!material.HasProperty(p.name)) throw new InvalidDataException("Captured shader property unavailable: "+p.name);
-                    if(p.kind==0) material.SetColor(p.name,C(p.value)); else if(p.kind==1) material.SetVector(p.name,V(p.value)); else if(p.kind==2||p.kind==3) material.SetFloat(p.name,p.value[0]);
-                    else if(p.kind==4) { material.SetTexture(p.name,p.textureIndex<0?null:textures[p.textureIndex]); material.SetTextureScale(p.name,new Vector2(p.scaleOffset[0],p.scaleOffset[1])); material.SetTextureOffset(p.name,new Vector2(p.scaleOffset[2],p.scaleOffset[3])); }
-                }
+                ApplyProperties(material,Manifest.materials[i]);
                 referenceMaterials[i]=material; var packet=new Material(material) {enableInstancing=true}; owned.Add(packet); packetMaterials[i]=packet;
+            }
+            if(OriginalBundlePath!=null)
+            {
+                if(Manifest.originalMaterials==null) throw new InvalidDataException("Actual original material bindings required.");
+                originalShaderLease=AcquireShader(OriginalBundlePath,OriginalBundleSha256,Manifest.family); originalMaterials=new Material[Manifest.originalMaterials.Length];
+                for(int i=0;i<originalMaterials.Length;i++) { var material=new Material(originalShaderLease.Shader) {enableInstancing=false,renderQueue=Manifest.originalMaterials[i].queue}; owned.Add(material); ApplyProperties(material,Manifest.originalMaterials[i]); originalMaterials[i]=material; }
             }
             var groups=new Dictionary<string,List<int>>(); var list=new List<Packet>();
             for(int i=0;i<Manifest.instances.Length;i++)
@@ -126,7 +153,7 @@ public sealed class ResidentMaterialRuntime : IDisposable
             if(forward.sqrMagnitude<.000001f) throw new InvalidDataException("Directional light vector absent.");
             lightObject=new GameObject("Resident captured directional light"); lightObject.SetActive(false); var light=lightObject.AddComponent<Light>(); light.type=LightType.Directional;
             light.transform.rotation=Quaternion.LookRotation(forward,Mathf.Abs(Vector3.Dot(forward.normalized,Vector3.up))>.99f?Vector3.right:Vector3.up); light.color=C(l.color); light.intensity=l.intensity; light.shadows=(LightShadows)l.shadows; light.shadowStrength=l.shadowStrength; light.cullingMask=LayerMask;
-            if(Hash(ManifestPath)!=ManifestSha256||Hash(BundlePath)!=BundleSha256||Hash(geometryPath)!=Manifest.geometrySha256) throw new InvalidDataException("Fixture changed during construction.");
+            if(Hash(ManifestPath)!=ManifestSha256||Hash(BundlePath)!=BundleSha256||Hash(geometryPath)!=Manifest.geometrySha256||(OriginalBundlePath!=null&&Hash(OriginalBundlePath)!=OriginalBundleSha256)) throw new InvalidDataException("Fixture changed during construction.");
         }
         catch { Dispose(); throw; }
     }
@@ -136,6 +163,16 @@ public sealed class ResidentMaterialRuntime : IDisposable
         priorAmbient=RenderSettings.ambientMode; priorSky=RenderSettings.ambientSkyColor; priorEquator=RenderSettings.ambientEquatorColor; priorGround=RenderSettings.ambientGroundColor; priorAmbientIntensity=RenderSettings.ambientIntensity; priorShadowDistance=QualitySettings.shadowDistance; priorShadowCascades=QualitySettings.shadowCascades;
         activeCamera=camera; priorCameraMask=camera.cullingMask; priorPosition=camera.transform.position; priorRotation=camera.transform.rotation; priorFov=camera.fieldOfView; priorNear=camera.nearClipPlane; priorFar=camera.farClipPlane;
         activated=true; camera.cullingMask=LayerMask; var l=Manifest.lighting;
+        if(Manifest.shaderGlobals!=null)
+        {
+            priorShaderGlobals=new ResidentMaterialProperty[Manifest.shaderGlobals.Length];
+            for(int i=0;i<Manifest.shaderGlobals.Length;i++)
+            {
+                var p=Manifest.shaderGlobals[i];
+                priorShaderGlobals[i]=new ResidentMaterialProperty {name=p.name,kind=p.kind,value=p.kind==2?new[] {Shader.GetGlobalFloat(p.name)}:new[] {Shader.GetGlobalVector(p.name).x,Shader.GetGlobalVector(p.name).y,Shader.GetGlobalVector(p.name).z,Shader.GetGlobalVector(p.name).w}};
+                float[] values=GlobalValues(p); if(p.kind==2) Shader.SetGlobalFloat(p.name,values[0]); else Shader.SetGlobalVector(p.name,V(values));
+            }
+        }
         RenderSettings.ambientMode=(AmbientMode)l.ambientMode; RenderSettings.ambientSkyColor=C(l.ambientSky); RenderSettings.ambientEquatorColor=C(l.ambientEquator); RenderSettings.ambientGroundColor=C(l.ambientGround); RenderSettings.ambientIntensity=l.ambientIntensity; QualitySettings.shadowDistance=l.shadowDistance; QualitySettings.shadowCascades=l.shadowCascades;
         lightObject.SetActive(true);
         if(applyCamera) { camera.transform.SetPositionAndRotation(Root.MultiplyPoint3x4(new Vector3(Manifest.cameraPosition[0],Manifest.cameraPosition[1],Manifest.cameraPosition[2])),Quaternion.LookRotation(Root.GetColumn(2),Root.GetColumn(1))*Q(Manifest.cameraRotation)); camera.fieldOfView=Manifest.fov; camera.nearClipPlane=Manifest.near; camera.farClipPlane=Manifest.far; }
@@ -143,13 +180,15 @@ public sealed class ResidentMaterialRuntime : IDisposable
     public void TransferActivationTo(ResidentMaterialRuntime next)
     {
         if(!activated||!next.activated||activeCamera!=next.activeCamera) throw new InvalidOperationException("Activation transfer requires the same admitted camera.");
+        if((priorShaderGlobals==null)!=(next.priorShaderGlobals==null)) throw new InvalidOperationException("Shader global ownership differs between fixture generations.");
+        next.priorShaderGlobals=priorShaderGlobals;
         next.priorCameraMask=priorCameraMask; next.priorPosition=priorPosition; next.priorRotation=priorRotation; next.priorFov=priorFov; next.priorNear=priorNear; next.priorFar=priorFar;
         next.priorAmbient=priorAmbient; next.priorSky=priorSky; next.priorEquator=priorEquator; next.priorGround=priorGround; next.priorAmbientIntensity=priorAmbientIntensity; next.priorShadowDistance=priorShadowDistance; next.priorShadowCascades=priorShadowCascades;
         activated=false;
     }
-    public void SetMode(string value) { if(value!="reference"&&value!="instanced") throw new InvalidDataException("Material mode reference|instanced."); Mode=value; }
+    public void SetMode(string value) { if(value!="original"&&value!="reference"&&value!="instanced") throw new InvalidDataException("Material mode original|reference|instanced."); if(value=="original"&&originalMaterials==null) throw new InvalidDataException("Loaded original shader and bindings required."); Mode=value; }
     public void SetDiagnostic(string value) { if(value!="off"&&value!="defaults"&&value!="single") throw new InvalidDataException("Material diagnostic off|defaults|single."); Diagnostic=value; }
-    public void ValidateLoadedFiles() { if(Hash(ManifestPath)!=ManifestSha256||Hash(StatePath)!=StateSha256||Hash(BundlePath)!=BundleSha256) throw new InvalidDataException("Resident loaded provenance files changed."); }
+    public void ValidateLoadedFiles() { if(Hash(ManifestPath)!=ManifestSha256||Hash(StatePath)!=StateSha256||Hash(BundlePath)!=BundleSha256||(OriginalBundlePath!=null&&Hash(OriginalBundlePath)!=OriginalBundleSha256)) throw new InvalidDataException("Resident loaded provenance files changed."); }
     public void ReloadSnapshot(string path)
     {
         if(!Path.IsPathRooted(path)) throw new InvalidDataException("Absolute snapshot required."); string before=Hash(path); var next=ResidentMaterialFormat.ReadSnapshot(path); ResidentMaterialFormat.ValidateSnapshot(Manifest,next);
@@ -186,7 +225,7 @@ public sealed class ResidentMaterialRuntime : IDisposable
     public void Submit(Camera camera)
     {
         if(disposed||!activated||lastFrame==Time.frameCount) return; lastFrame=Time.frameCount;
-        if(Mode=="reference") for(int i=0;i<Manifest.instances.Length;i++) { var a=Manifest.instances[i]; Graphics.DrawMesh(meshes[a.meshIndex],matrices[i],referenceMaterials[a.materialIndex],a.layer,camera,0,referenceBlocks[i],(ShadowCastingMode)a.shadowCasting,a.receiveShadows,null,LightProbeUsage.CustomProvided,null); DrawCalls++; }
+        if(Mode=="reference"||Mode=="original") for(int i=0;i<Manifest.instances.Length;i++) { var a=Manifest.instances[i]; Graphics.DrawMesh(meshes[a.meshIndex],matrices[i],(Mode=="original"?originalMaterials:referenceMaterials)[a.materialIndex],a.layer,camera,0,referenceBlocks[i],(ShadowCastingMode)a.shadowCasting,a.receiveShadows,null,LightProbeUsage.CustomProvided,null); DrawCalls++; }
         else if(Diagnostic=="single") for(int i=0;i<Manifest.instances.Length;i++) { var a=Manifest.instances[i]; Graphics.DrawMeshInstanced(meshes[a.meshIndex],0,packetMaterials[a.materialIndex],singleMatrices[i],1,singleBlocks[i],(ShadowCastingMode)a.shadowCasting,a.receiveShadows,a.layer,camera,LightProbeUsage.CustomProvided,null); DrawCalls++; }
         else foreach(var p in packets) { Graphics.DrawMeshInstanced(meshes[p.Mesh],0,packetMaterials[p.Material],p.Matrices,p.Matrices.Length,Diagnostic=="defaults"?null:p.Block,(ShadowCastingMode)p.Shadow,p.Receive,p.Layer,camera,Diagnostic=="defaults"?LightProbeUsage.Off:LightProbeUsage.CustomProvided,null); DrawCalls++; }
         SubmittedFrames++;
@@ -194,8 +233,9 @@ public sealed class ResidentMaterialRuntime : IDisposable
     public void Dispose()
     {
         if(disposed) return; disposed=true; if(lightObject!=null) { lightObject.SetActive(false); UnityEngine.Object.Destroy(lightObject); }
-        if(activated) { if(activeCamera!=null) { activeCamera.cullingMask=priorCameraMask; activeCamera.transform.SetPositionAndRotation(priorPosition,priorRotation); activeCamera.fieldOfView=priorFov; activeCamera.nearClipPlane=priorNear; activeCamera.farClipPlane=priorFar; } RenderSettings.ambientMode=priorAmbient; RenderSettings.ambientSkyColor=priorSky; RenderSettings.ambientEquatorColor=priorEquator; RenderSettings.ambientGroundColor=priorGround; RenderSettings.ambientIntensity=priorAmbientIntensity; QualitySettings.shadowDistance=priorShadowDistance; QualitySettings.shadowCascades=priorShadowCascades; }
+        if(activated) { if(priorShaderGlobals!=null) foreach(var p in priorShaderGlobals) { if(p.kind==2) Shader.SetGlobalFloat(p.name,p.value[0]); else Shader.SetGlobalVector(p.name,V(p.value)); } if(activeCamera!=null) { activeCamera.cullingMask=priorCameraMask; activeCamera.transform.SetPositionAndRotation(priorPosition,priorRotation); activeCamera.fieldOfView=priorFov; activeCamera.nearClipPlane=priorNear; activeCamera.farClipPlane=priorFar; } RenderSettings.ambientMode=priorAmbient; RenderSettings.ambientSkyColor=priorSky; RenderSettings.ambientEquatorColor=priorEquator; RenderSettings.ambientGroundColor=priorGround; RenderSettings.ambientIntensity=priorAmbientIntensity; QualitySettings.shadowDistance=priorShadowDistance; QualitySettings.shadowCascades=priorShadowCascades; }
         foreach(var value in owned) if(value!=null) UnityEngine.Object.Destroy(value);
         if(shaderLease!=null&&--shaderLease.References==0) { shaderLeases.Remove(BundleSha256); shaderLease.Bundle.Unload(true); }
+        if(originalShaderLease!=null&&--originalShaderLease.References==0) { shaderLeases.Remove(OriginalBundleSha256); originalShaderLease.Bundle.Unload(true); }
     }
 }
