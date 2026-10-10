@@ -707,6 +707,22 @@ pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_ownership_requires_explicit_counter_evidence() {
+        let complete = json!({"eligibleRenderers":9,"retiredRenderers":7,"restoredRetiredRenderers":7,
+            "rigidRetainedSources":4,"dynamicRetainedSources":3,"sharedPartPoseSnapshots":20,
+            "dynamicPoseSnapshots":15,"animationCullingLeases":2,"restoredAnimationCullingLeases":2,
+            "maxInitialRecoveredPositionErrorMeters":0.0001});
+        assert!(validate_retained_part_batch(&complete).is_ok());
+        let mut missing_leases = complete.clone();
+        missing_leases.as_object_mut().unwrap().remove("animationCullingLeases");
+        missing_leases.as_object_mut().unwrap().remove("restoredAnimationCullingLeases");
+        assert!(validate_retained_part_batch(&missing_leases).is_err());
+        let mut unpublished_dynamic = complete;
+        unpublished_dynamic["dynamicPoseSnapshots"] = json!(0);
+        assert!(validate_retained_part_batch(&unpublished_dynamic).is_err());
+    }
     #[test]
     fn part_replacement_requires_observed_draws_and_declared_shader() {
         let options = BTreeMap::from([
@@ -1451,12 +1467,7 @@ fn validate_part_batch(request: &Request, batch: &Value, run_id: &str, pid: u32,
     if batch["retainedProvider"].as_bool().unwrap_or(false) != request.part_retained {
         return Err("retained renderer treatment differs from declared request".into());
     }
-    if request.part_retained && (batch["retiredRenderers"] != batch["eligibleRenderers"]
-        || batch["restoredRetiredRenderers"] != batch["retiredRenderers"]
-        || batch["sharedPartPoseSnapshots"].as_u64().unwrap_or(0) == 0
-        || !batch["maxInitialRecoveredPositionErrorMeters"].as_f64().is_some_and(|v| v.is_finite() && (0.0..=0.005).contains(&v))) {
-        return Err("retained renderer ownership or shared pose publication incomplete".into());
-    }
+    if request.part_retained { validate_retained_part_batch(batch)?; }
     match batch["shaderSource"].as_str() {
         Some("custom-bundle") => {
             let bundle = request.part_shader_bundle.as_ref().ok_or("undeclared custom part shader bundle")?;
@@ -1466,6 +1477,27 @@ fn validate_part_batch(request: &Request, batch: &Value, run_id: &str, pid: u32,
         },
         Some("shipped-standard-diagnostic") if request.part_standard_fallback => {},
         _ => return Err("part shader source absent or fallback undeclared".into()),
+    }
+    Ok(())
+}
+fn validate_retained_part_batch(batch: &Value) -> Result<()> {
+    let count = |key: &str| batch[key].as_u64().ok_or_else(|| format!("retained renderer counter missing or invalid: {key}"));
+    let retired = count("retiredRenderers")?;
+    let restored = count("restoredRetiredRenderers")?;
+    let eligible = count("eligibleRenderers")?;
+    let rigid = count("rigidRetainedSources")?;
+    let dynamic = count("dynamicRetainedSources")?;
+    let rigid_publications = count("sharedPartPoseSnapshots")?;
+    let dynamic_publications = count("dynamicPoseSnapshots")?;
+    let leases = count("animationCullingLeases")?;
+    let restored_leases = count("restoredAnimationCullingLeases")?;
+    if retired == 0 || retired > eligible || restored != retired
+        || rigid.checked_add(dynamic) != Some(retired)
+        || (rigid > 0 && rigid_publications == 0)
+        || (dynamic > 0 && dynamic_publications == 0)
+        || leases != restored_leases
+        || !batch["maxInitialRecoveredPositionErrorMeters"].as_f64().is_some_and(|v| v.is_finite() && (0.0..=0.005).contains(&v)) {
+        return Err("retained renderer ownership or shared pose publication incomplete".into());
     }
     Ok(())
 }
