@@ -21,6 +21,7 @@ namespace KspContinuum
         static Action<PSystemSetup, PQS, Transform> originalForce;
         int shortened, stockFallbacks, presentationWaits, terrainPolls, terrainRays, fixedBarriers, terrainWaits;
         bool exported;
+        bool quitting;
         public sealed class Frame
         {
             public PQS Sphere;
@@ -169,7 +170,7 @@ namespace KspContinuum
             Debug.Log(Marker + "status=observed shortenedPlacementWaits=" + shortened + " stockPlacementWaits=" + stockFallbacks + " presentationWaits=" + presentationWaits + " terrainWaits=" + terrainWaits + " terrainPolls=" + terrainPolls + " terrainRays=" + terrainRays + " fixedBarriers=" + fixedBarriers);
         }
         void Cleanup() { harmony?.UnpatchAll(Owner); harmony = null; frames.Clear(); }
-        public void OnApplicationQuit() { if (active == this) { Export(); Cleanup(); } }
-        public void OnDestroy() { if (active == this) { Export(); Cleanup(); active = null; } }
+        public void OnApplicationQuit() { if (active == this) { quitting = true; Export(); StartupDeferredTerrain.Shutdown(true); Cleanup(); } }
+        public void OnDestroy() { if (active == this) { Export(); StartupDeferredTerrain.Shutdown(quitting); Cleanup(); active = null; } }
     }
 }

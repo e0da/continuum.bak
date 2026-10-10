@@ -168,5 +168,19 @@ namespace KspContinuum
             harmony?.UnpatchAll(Owner); harmony = null;
             pending.Clear();
         }
+        internal static void Shutdown(bool processQuitting)
+        {
+            if (harmony == null) return;
+            Observe();
+            int discarded = pending.Count;
+            if (!processQuitting && discarded != 0)
+            {
+                failures++;
+                Debug.LogError(Marker + "status=owner-destroyed pending=" + discarded + " policy=fail-closed-process-exit debt=not-materialized");
+                Application.Quit(2);
+            }
+            Debug.Log(Marker + "status=" + (processQuitting ? "process-shutdown" : "owner-cleanup") + " discardedPending=" + discarded + " materializedDuringShutdown=0");
+            AbortInstallation();
+        }
     }
 }
