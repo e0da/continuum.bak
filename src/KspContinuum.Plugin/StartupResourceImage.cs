@@ -98,8 +98,7 @@ namespace KspContinuum
                 if (directory == root || directory.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
                     throw new InvalidOperationException("Resource image must be outside installation.");
                 Assembly assembly = typeof(GameDatabase).Assembly;
-                if (assembly.ManifestModule.ModuleVersionId != new Guid("10657063-2fc3-43a7-84fa-d39e75e877bf") || Digest(assembly.Location) != AssemblySha)
-                    throw new InvalidOperationException("Pinned game differs.");
+                StartupPinnedGameIdentity.Require(assembly);
                 rawBytes = typeof(Texture2D).GetMethods(BindingFlags.Public | BindingFlags.Instance).Single(method => method.Name == "GetRawTextureData" && !method.IsGenericMethod && method.GetParameters().Length == 0);
                 graphicsFormat = AccessTools.PropertyGetter(typeof(Texture), "graphicsFormat");
                 Type formatUtility = typeof(Texture2D).Assembly.GetType("UnityEngine.Experimental.Rendering.GraphicsFormatUtility", false);
