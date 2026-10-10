@@ -168,8 +168,10 @@ pub fn matrix() -> Value {
             }
         }
     }
-    json!({"schema":"continuum-lab-experiment/v1","cases":cases,"screening":{"repetitions":3,"simulatedSeconds":10},
-        "confirmation":{"pairedRepetitions":6,"simulatedSeconds":30,"order":"alternating"},"qualification":"planned-unbound"})
+    json!({"schema":"continuum-lab-experiment/v1","cases":cases,"screening":{"repetitions":2,"simulatedSeconds":10,
+        "stopWhen":"observations-agree-enough-to-choose-next-action"},
+        "confirmation":{"repetitionPolicy":"only-for-a-specific-ambiguity-or-qualification-decision",
+        "simulatedSeconds":30,"order":"alternating-when-paired"},"qualification":"planned-unbound"})
 }
 pub fn startup_screen(baseline: &[(Value, Value)], candidate: &[(Value, Value)]) -> Result<Value> {
     if baseline.len() != 3 || candidate.len() != 3 {
