@@ -20,8 +20,10 @@ namespace KspContinuum
             internal LaunchSite Site;
             internal Vector3 LocalPosition;
             internal bool Completing;
+            internal bool Publishing;
         }
         static readonly Dictionary<LaunchSite, Obligation> pending = new Dictionary<LaunchSite, Obligation>();
+        static readonly HashSet<PQS> fulfilling = new HashSet<PQS>();
         static Action<PSystemSetup, PQS, Transform> force;
         static Func<bool> registering;
         static Harmony harmony;
@@ -85,7 +87,7 @@ namespace KspContinuum
         static bool OrientPrefix(object __instance)
         {
             Obligation obligation = pending.Values.FirstOrDefault(o => ReferenceEquals(o.Site.pqsCity, __instance) || ReferenceEquals(o.Site.pqsCity2, __instance));
-            if (obligation == null || obligation.Completing) return true;
+            if (obligation == null || fulfilling.Contains(obligation.Sphere)) return true;
             if (registering()) return false;
             Complete(obligation, "orientation-consumer");
             return true;
@@ -93,7 +95,12 @@ namespace KspContinuum
         static void SitePrefix(LaunchSite __instance)
         {
             Obligation obligation;
-            if (!registering() && pending.TryGetValue(__instance, out obligation)) Complete(obligation, "site-geometry-consumer");
+            if (!registering() && pending.TryGetValue(__instance, out obligation))
+            {
+                if (obligation.Completing && !obligation.Publishing)
+                    throw new InvalidOperationException("Deferred site consumed before shared-sphere placement publication: " + __instance.name);
+                if (!obligation.Publishing) Complete(obligation, "site-geometry-consumer");
+            }
         }
         static void SpawnPrefix(LaunchSite.SpawnPoint __instance)
         {
@@ -106,26 +113,41 @@ namespace KspContinuum
         }
         static void Complete(Obligation obligation, string consumer)
         {
-            if (obligation.Completing) return;
-            obligation.Completing = true;
+            if (fulfilling.Contains(obligation.Sphere)) return;
+            Obligation[] batch = pending.Values.Where(o => o.Sphere == obligation.Sphere).ToArray();
+            if (batch.Length == 0) return;
+            fulfilling.Add(obligation.Sphere);
+            foreach (Obligation item in batch) item.Completing = true;
             long start = Stopwatch.GetTimestamp();
             GameObject temporary = null;
             Transform previous = null;
             bool capturedTarget = false, failed = false;
             try
             {
-                if (obligation.Setup == null || obligation.Sphere == null || obligation.Site == null || !obligation.Site.IsSetup ||
-                    (obligation.Site.pqsCity == null && obligation.Site.pqsCity2 == null))
-                    throw new InvalidOperationException("Deferred site lost its original owners.");
+                foreach (Obligation item in batch)
+                    if (item.Setup == null || item.Setup != obligation.Setup || item.Sphere == null || item.Site == null || !item.Site.IsSetup ||
+                        (item.Site.pqsCity == null && item.Site.pqsCity2 == null))
+                        throw new InvalidOperationException("Deferred site lost its original owners.");
                 previous = obligation.Sphere.target; capturedTarget = true;
                 temporary = new GameObject("ContinuumDeferredSite_" + obligation.Site.name);
                 temporary.transform.SetParent(obligation.Sphere.transform);
                 temporary.transform.localPosition = obligation.LocalPosition;
+                obligation.Sphere.SetTarget(temporary.transform);
                 force(obligation.Setup, obligation.Sphere, temporary.transform);
-                if (obligation.Site.pqsCity != null) obligation.Site.pqsCity.Orientate(); else obligation.Site.pqsCity2.Orientate();
-                obligation.Site.SetSpawnPointsLatLonAlt();
-                pending.Remove(obligation.Site); materialized++;
-                Debug.Log(Marker + "site=" + obligation.Site.name + " status=materialized consumer=" + consumer + " qualification=analytic-placement-no-mobile-footprint-proof");
+                foreach (Obligation item in batch)
+                {
+                    temporary.transform.localPosition = item.LocalPosition;
+                    item.Sphere.SetTarget(temporary.transform);
+                    if (item.Site.pqsCity != null) item.Site.pqsCity.Orientate(); else item.Site.pqsCity2.Orientate();
+                    item.Publishing = true;
+                    try { item.Site.SetSpawnPointsLatLonAlt(); }
+                    finally { item.Publishing = false; }
+                }
+                foreach (Obligation item in batch)
+                {
+                    pending.Remove(item.Site); materialized++;
+                    Debug.Log(Marker + "site=" + item.Site.name + " status=materialized consumer=" + consumer + " forceScope=one-per-shared-sphere qualification=analytic-placement-no-mobile-footprint-proof");
+                }
             }
             catch (Exception error)
             {
@@ -137,7 +159,6 @@ namespace KspContinuum
             finally
             {
                 completionTicks += Stopwatch.GetTimestamp() - start;
-                obligation.Completing = false;
                 try
                 {
                     if (capturedTarget)
@@ -153,7 +174,12 @@ namespace KspContinuum
                     Application.Quit(2);
                     if (!failed) throw;
                 }
-                finally { if (temporary != null) UnityEngine.Object.Destroy(temporary); Observe("fulfillment"); }
+                finally
+                {
+                    foreach (Obligation item in batch) { item.Completing = false; item.Publishing = false; }
+                    fulfilling.Remove(obligation.Sphere);
+                    if (temporary != null) UnityEngine.Object.Destroy(temporary); Observe("fulfillment");
+                }
             }
         }
         internal static void Observe(string phase)
@@ -167,6 +193,7 @@ namespace KspContinuum
         {
             harmony?.UnpatchAll(Owner); harmony = null;
             pending.Clear();
+            fulfilling.Clear();
         }
         internal static void Shutdown(bool processQuitting)
         {
