@@ -21,6 +21,7 @@ namespace KspContinuum
         static Action<PSystemSetup, PQS, Transform> originalForce;
         int shortened, stockFallbacks, presentationWaits, terrainPolls, terrainRays, fixedBarriers, terrainWaits;
         bool exported;
+        bool quitting;
         public sealed class Frame
         {
             public PQS Sphere;
@@ -57,12 +58,13 @@ namespace KspContinuum
                     throw new InvalidOperationException("Launch-site state differs.");
                 active = this; harmony = new Harmony(Owner);
                 originalForce = (Action<PSystemSetup, PQS, Transform>)Delegate.CreateDelegate(typeof(Action<PSystemSetup, PQS, Transform>), force);
+                StartupDeferredTerrain.Install(originalForce, () => current != null);
                 harmony.Patch(move, prefix: new HarmonyMethod(typeof(StartupReadiness), nameof(MovePrefix)), postfix: new HarmonyMethod(typeof(StartupReadiness), nameof(MovePostfix)),
                     finalizer: new HarmonyMethod(typeof(StartupReadiness), nameof(MoveFinalizer)), transpiler: new HarmonyMethod(typeof(StartupReadiness), nameof(LaunchTranspile)));
                 harmony.Patch(display, transpiler: new HarmonyMethod(typeof(StartupReadiness), nameof(DisplayTranspile)));
                 Debug.Log(Marker + "status=installed scope=static-site-terrain-collider-readiness-and-presentation deadline=stock-scaled-2s raycastPolicy=intended-pqs-layer15-after-one-fixed-barrier mobilePolicy=stock-wait");
             }
-            catch (Exception error) { Cleanup(); Debug.LogError(Marker + "status=rejected reason=" + error.Message); Application.Quit(2); }
+            catch (Exception error) { StartupDeferredTerrain.AbortInstallation(); Cleanup(); Debug.LogError(Marker + "status=rejected reason=" + error.Message); Application.Quit(2); }
         }
         static void MovePrefix(object __instance, out MoveState __state)
         {
@@ -78,6 +80,9 @@ namespace KspContinuum
             Frame frame;
             if (!active.frames.TryGetValue(iterator, out frame)) { frame = new Frame(); active.frames.Add(iterator, frame); }
             frame.Sphere = sphere; frame.Target = target; frame.ForceCompleted = false; frame.CallerObserved = true;
+            LaunchSite site = active.siteField.GetValue(iterator) as LaunchSite;
+            if (StartupDeferredTerrain.Defer(setup, sphere, target, site)) return;
+            StartupDeferredTerrain.BeforeStockForce(sphere);
             originalForce(setup, sphere, target);
             frame.ForceCompleted = true;
         }
@@ -113,6 +118,7 @@ namespace KspContinuum
             PQS sphere = active.sphereField.GetValue(iterator) as PQS;
             GameObject temporary = active.temporaryField.GetValue(iterator) as GameObject;
             LaunchSite site = active.siteField.GetValue(iterator) as LaunchSite;
+            if (StartupDeferredTerrain.IsPending(site)) return null;
             Frame frame;
             bool framePresent = active.frames.TryGetValue(iterator, out frame);
             bool sitePresent = site != null, spherePresent = sphere != null, temporaryPresent = temporary != null;
@@ -157,13 +163,14 @@ namespace KspContinuum
         static object PresentationWait(float seconds) { active.presentationWaits++; return null; }
         public static void ObserveForMenu() { if (active != null) { active.Export(); active.Cleanup(); } }
         public void Update() { if (active == this && !exported && HighLogic.LoadedScene == GameScenes.MAINMENU) { Export(); Cleanup(); } }
-        void Export()
+        void Export(string phase = "menu")
         {
             if (exported) return; exported = true;
+            StartupDeferredTerrain.Observe(phase);
             Debug.Log(Marker + "status=observed shortenedPlacementWaits=" + shortened + " stockPlacementWaits=" + stockFallbacks + " presentationWaits=" + presentationWaits + " terrainWaits=" + terrainWaits + " terrainPolls=" + terrainPolls + " terrainRays=" + terrainRays + " fixedBarriers=" + fixedBarriers);
         }
         void Cleanup() { harmony?.UnpatchAll(Owner); harmony = null; frames.Clear(); }
-        public void OnApplicationQuit() { if (active == this) { Export(); Cleanup(); } }
-        public void OnDestroy() { if (active == this) { Export(); Cleanup(); active = null; } }
+        public void OnApplicationQuit() { if (active == this) { quitting = true; Export("shutdown"); StartupDeferredTerrain.Shutdown(true); Cleanup(); } }
+        public void OnDestroy() { if (active == this) { Export("shutdown"); StartupDeferredTerrain.Shutdown(quitting); Cleanup(); active = null; } }
     }
 }
