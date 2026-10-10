@@ -18,6 +18,7 @@ namespace KspContinuum
         readonly Dictionary<object, Frame> frames = new Dictionary<object, Frame>();
         Harmony harmony;
         FieldInfo sphereField, temporaryField, siteField;
+        static Action<PSystemSetup, PQS, Transform> originalForce;
         int shortened, stockFallbacks, presentationWaits, terrainPolls, terrainRays, fixedBarriers, terrainWaits;
         bool exported;
         public sealed class Frame
@@ -25,6 +26,7 @@ namespace KspContinuum
             public PQS Sphere;
             public Transform Target;
             public bool ForceCompleted;
+            public bool CallerObserved;
         }
         public struct MoveState { public Frame Previous; }
 
@@ -54,7 +56,7 @@ namespace KspContinuum
                 if (sphereField?.FieldType != typeof(PQS) || temporaryField?.FieldType != typeof(GameObject) || siteField?.FieldType != typeof(LaunchSite))
                     throw new InvalidOperationException("Launch-site state differs.");
                 active = this; harmony = new Harmony(Owner);
-                harmony.Patch(force, prefix: new HarmonyMethod(typeof(StartupReadiness), nameof(ForcePrefix)), finalizer: new HarmonyMethod(typeof(StartupReadiness), nameof(ForceFinalizer)));
+                originalForce = (Action<PSystemSetup, PQS, Transform>)Delegate.CreateDelegate(typeof(Action<PSystemSetup, PQS, Transform>), force);
                 harmony.Patch(move, prefix: new HarmonyMethod(typeof(StartupReadiness), nameof(MovePrefix)), postfix: new HarmonyMethod(typeof(StartupReadiness), nameof(MovePostfix)),
                     finalizer: new HarmonyMethod(typeof(StartupReadiness), nameof(MoveFinalizer)), transpiler: new HarmonyMethod(typeof(StartupReadiness), nameof(LaunchTranspile)));
                 harmony.Patch(display, transpiler: new HarmonyMethod(typeof(StartupReadiness), nameof(DisplayTranspile)));
@@ -71,20 +73,29 @@ namespace KspContinuum
         }
         static void MovePostfix(object __instance, bool __result) { if (!__result && active != null) active.frames.Remove(__instance); }
         static Exception MoveFinalizer(MoveState __state, Exception __exception) { current = __state.Previous; return __exception; }
-        static void ForcePrefix(PQS pqsIn, Transform target, out Frame __state)
+        static void ForceAtCaller(PSystemSetup setup, PQS sphere, Transform target, object iterator)
         {
-            __state = current;
-            if (__state == null) return;
-            __state.Sphere = pqsIn; __state.Target = target; __state.ForceCompleted = false;
-        }
-        static Exception ForceFinalizer(Frame __state, Exception __exception)
-        {
-            if (__state != null) __state.ForceCompleted = __exception == null;
-            return __exception;
+            Frame frame;
+            if (!active.frames.TryGetValue(iterator, out frame)) { frame = new Frame(); active.frames.Add(iterator, frame); }
+            frame.Sphere = sphere; frame.Target = target; frame.ForceCompleted = false; frame.CallerObserved = true;
+            originalForce(setup, sphere, target);
+            frame.ForceCompleted = true;
         }
         static IEnumerable<CodeInstruction> LaunchTranspile(IEnumerable<CodeInstruction> source)
         {
             var body = source.ToList(); ConstructorInfo wait = typeof(WaitForSeconds).GetConstructor(new[] { typeof(float) });
+            MethodInfo force = AccessTools.DeclaredMethod(typeof(PSystemSetup), "ForceInitPQS", new[] { typeof(PQS), typeof(Transform) });
+            int[] forceLocations = body.Select((instruction, index) => new { instruction, index })
+                .Where(x => (x.instruction.opcode == OpCodes.Call || x.instruction.opcode == OpCodes.Callvirt) && Equals(x.instruction.operand, force))
+                .Select(x => x.index).ToArray();
+            if (forceLocations.Length != 2) throw new InvalidOperationException("Launch-site force call pattern differs.");
+            foreach (int at in forceLocations.Reverse())
+            {
+                var instance = new CodeInstruction(OpCodes.Ldarg_0);
+                instance.labels.AddRange(body[at].labels); instance.blocks.AddRange(body[at].blocks);
+                body[at] = instance;
+                body.Insert(at + 1, new CodeInstruction(OpCodes.Call, AccessTools.DeclaredMethod(typeof(StartupReadiness), nameof(ForceAtCaller))));
+            }
             int[] locations = body.Select((instruction, index) => new { instruction, index }).Where(x => x.instruction.opcode == OpCodes.Newobj && Equals(x.instruction.operand, wait)).Select(x => x.index).ToArray();
             if (locations.Length != 2 || locations.Any(i => i < 1 || body[i - 1].opcode != OpCodes.Ldc_R4 || !Equals(body[i - 1].operand, 2f)))
                 throw new InvalidOperationException("Launch-site wait pattern differs.");
@@ -103,12 +114,23 @@ namespace KspContinuum
             GameObject temporary = active.temporaryField.GetValue(iterator) as GameObject;
             LaunchSite site = active.siteField.GetValue(iterator) as LaunchSite;
             Frame frame;
-            bool context = site != null && sphere != null && temporary != null && active.frames.TryGetValue(iterator, out frame) &&
-                frame.ForceCompleted && ReferenceEquals(frame.Sphere, sphere) && frame.Target == temporary.transform && sphere.target == temporary.transform;
+            bool framePresent = active.frames.TryGetValue(iterator, out frame);
+            bool sitePresent = site != null, spherePresent = sphere != null, temporaryPresent = temporary != null;
+            bool callerObserved = framePresent && frame.CallerObserved;
+            bool forceCompleted = framePresent && frame.ForceCompleted;
+            bool sphereMatches = framePresent && spherePresent && ReferenceEquals(frame.Sphere, sphere);
+            bool targetMatches = framePresent && temporaryPresent && frame.Target == temporary.transform;
+            bool sphereTargetMatches = spherePresent && temporaryPresent && sphere.target == temporary.transform;
+            bool context = sitePresent && spherePresent && temporaryPresent && callerObserved && forceCompleted && sphereMatches && targetMatches && sphereTargetMatches;
             if (!context)
             {
                 active.stockFallbacks++;
-                Debug.Log(Marker + "site=" + (site == null ? "unknown" : site.launchSiteName) + " decision=stock-wait reason=force-context-unresolved");
+                Debug.Log(Marker + "site=" + (site == null ? "unknown" : site.launchSiteName) + " decision=stock-wait reason=force-context-unresolved" +
+                    " sitePresent=" + sitePresent + " spherePresent=" + spherePresent + " temporaryPresent=" + temporaryPresent +
+                    " framePresent=" + framePresent + " callerObserved=" + callerObserved + " forceCompleted=" + forceCompleted +
+                    " sphereMatches=" + sphereMatches + " targetMatches=" + targetMatches + " sphereTargetMatches=" + sphereTargetMatches +
+                    " currentFrameMatches=" + (framePresent && ReferenceEquals(current, frame)) +
+                    " bodyTransformPresent=" + (spherePresent && sphere.PQSModCBTransform != null));
                 return new WaitForSeconds(seconds);
             }
             active.terrainWaits++;
