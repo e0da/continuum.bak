@@ -18,14 +18,13 @@ namespace KspContinuum
         readonly Dictionary<object, Frame> frames = new Dictionary<object, Frame>();
         Harmony harmony;
         FieldInfo sphereField, temporaryField, siteField;
-        int shortened, stockFallbacks, presentationWaits;
+        int shortened, stockFallbacks, presentationWaits, terrainPolls, terrainRays, fixedBarriers, terrainWaits;
         bool exported;
         public sealed class Frame
         {
             public PQS Sphere;
             public Transform Target;
-            public bool Ready;
-            public void OnReady(PQS sphere) { if (ReferenceEquals(sphere, Sphere)) Ready = true; }
+            public bool ForceCompleted;
         }
         public struct MoveState { public Frame Previous; }
 
@@ -46,7 +45,8 @@ namespace KspContinuum
                 MethodInfo move = iterator == null ? null : AccessTools.DeclaredMethod(iterator, "MoveNext");
                 MethodInfo display = screen == null ? null : AccessTools.DeclaredMethod(screen, "MoveNext");
                 MethodInfo force = AccessTools.DeclaredMethod(typeof(PSystemSetup), "ForceInitPQS", new[] { typeof(PQS), typeof(Transform) });
-                if (move == null || display == null || force == null || new[] { move, display, force }.Any(m => Harmony.GetPatchInfo(m)?.Owners.Count > 0))
+                if (move == null || move.MetadataToken != 100705880 || display == null || display.MetadataToken != 100705074 ||
+                    force == null || force.MetadataToken != 100670696 || new[] { move, display, force }.Any(m => Harmony.GetPatchInfo(m)?.Owners.Count > 0))
                     throw new InvalidOperationException("Startup boundary differs or already patched.");
                 sphereField = AccessTools.DeclaredField(iterator, "<sphere>5__6");
                 temporaryField = AccessTools.DeclaredField(iterator, "<tempObject>5__7");
@@ -58,7 +58,7 @@ namespace KspContinuum
                 harmony.Patch(move, prefix: new HarmonyMethod(typeof(StartupReadiness), nameof(MovePrefix)), postfix: new HarmonyMethod(typeof(StartupReadiness), nameof(MovePostfix)),
                     finalizer: new HarmonyMethod(typeof(StartupReadiness), nameof(MoveFinalizer)), transpiler: new HarmonyMethod(typeof(StartupReadiness), nameof(LaunchTranspile)));
                 harmony.Patch(display, transpiler: new HarmonyMethod(typeof(StartupReadiness), nameof(DisplayTranspile)));
-                Debug.Log(Marker + "status=installed scope=analytic-placement-and-presentation raycastPolicy=stock-wait");
+                Debug.Log(Marker + "status=installed scope=static-site-terrain-collider-readiness-and-presentation deadline=stock-scaled-2s raycastPolicy=intended-pqs-layer15-after-one-fixed-barrier mobilePolicy=stock-wait");
             }
             catch (Exception error) { Cleanup(); Debug.LogError(Marker + "status=rejected reason=" + error.Message); Application.Quit(2); }
         }
@@ -75,12 +75,11 @@ namespace KspContinuum
         {
             __state = current;
             if (__state == null) return;
-            __state.Sphere = pqsIn; __state.Target = target; __state.Ready = false;
-            pqsIn.OnReady.Add(__state.OnReady);
+            __state.Sphere = pqsIn; __state.Target = target; __state.ForceCompleted = false;
         }
         static Exception ForceFinalizer(Frame __state, Exception __exception)
         {
-            if (__state != null && __state.Sphere != null) __state.Sphere.OnReady.Remove(__state.OnReady);
+            if (__state != null) __state.ForceCompleted = __exception == null;
             return __exception;
         }
         static IEnumerable<CodeInstruction> LaunchTranspile(IEnumerable<CodeInstruction> source)
@@ -104,13 +103,25 @@ namespace KspContinuum
             GameObject temporary = active.temporaryField.GetValue(iterator) as GameObject;
             LaunchSite site = active.siteField.GetValue(iterator) as LaunchSite;
             Frame frame;
-            bool analytic = site != null && site.positionMobileLaunchPad == null &&
-                (site.pqsCity != null && site.pqsCity.GetType() == typeof(PQSCity) || site.pqsCity2 != null && site.pqsCity2.GetType() == typeof(PQSCity2) && !site.pqsCity2.raycastSurface && !site.pqsCity2.setOnWaterSurface);
-            bool ready = analytic && sphere != null && temporary != null && active.frames.TryGetValue(iterator, out frame) &&
-                frame.Ready && ReferenceEquals(frame.Sphere, sphere) && frame.Target == temporary.transform && sphere.target == temporary.transform && sphere.isStarted && sphere.isAlive;
-            if (ready) active.shortened++; else active.stockFallbacks++;
-            Debug.Log(Marker + "site=" + (site == null ? "unknown" : site.launchSiteName) + " decision=" + (ready ? "analytic-ready" : "stock-wait") + " qualification=placement-not-collider-or-flight-equivalence");
-            return ready ? null : (object)new WaitForSeconds(seconds);
+            bool context = site != null && sphere != null && temporary != null && active.frames.TryGetValue(iterator, out frame) &&
+                frame.ForceCompleted && ReferenceEquals(frame.Sphere, sphere) && frame.Target == temporary.transform && sphere.target == temporary.transform;
+            if (!context)
+            {
+                active.stockFallbacks++;
+                Debug.Log(Marker + "site=" + (site == null ? "unknown" : site.launchSiteName) + " decision=stock-wait reason=force-context-unresolved");
+                return new WaitForSeconds(seconds);
+            }
+            active.terrainWaits++;
+            return StartupTerrainReadiness.Create(sphere, temporary.transform, site, seconds, active.TerrainResult);
+        }
+        void TerrainResult(StartupTerrainReadiness.Result result)
+        {
+            if (result.ColliderReady) shortened++; else stockFallbacks++;
+            terrainPolls += result.Polls; terrainRays += result.Rays; fixedBarriers += result.FixedBarriers;
+            Debug.Log(Marker + "site=" + result.Site + " body=" + result.Body + " decision=" + result.Decision + " reason=" + result.Reason +
+                " scaledElapsedSeconds=" + result.ElapsedSeconds.ToString("R", System.Globalization.CultureInfo.InvariantCulture) +
+                " polls=" + result.Polls + " rays=" + result.Rays + " fixedBarriers=" + result.FixedBarriers +
+                " qualification=static-site-collider-boundary-not-mobile-footprint-or-flight-equivalence");
         }
         static IEnumerable<CodeInstruction> DisplayTranspile(IEnumerable<CodeInstruction> source)
         {
@@ -127,7 +138,7 @@ namespace KspContinuum
         void Export()
         {
             if (exported) return; exported = true;
-            Debug.Log(Marker + "status=observed shortenedPlacementWaits=" + shortened + " stockPlacementWaits=" + stockFallbacks + " presentationWaits=" + presentationWaits);
+            Debug.Log(Marker + "status=observed shortenedPlacementWaits=" + shortened + " stockPlacementWaits=" + stockFallbacks + " presentationWaits=" + presentationWaits + " terrainWaits=" + terrainWaits + " terrainPolls=" + terrainPolls + " terrainRays=" + terrainRays + " fixedBarriers=" + fixedBarriers);
         }
         void Cleanup() { harmony?.UnpatchAll(Owner); harmony = null; frames.Clear(); }
         public void OnApplicationQuit() { if (active == this) { Export(); Cleanup(); } }
