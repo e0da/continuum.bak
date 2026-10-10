@@ -32,6 +32,10 @@ The completed texture extension now prepares all 1,644 rows, including the five 
 
 ## Retained vessel rendering
 
+The shared launch contract now resolves the existing startup and flight controls into one typed selection, then freezes actual required binaries, settings, checkpoint and prepared metadata. `resolve` and `run --launch-profile` share that envelope; replay reconstructs its required inputs and rejects drift or hidden overrides. This replaces the runner's positional startup interface while retaining legacy CLI compatibility and detailed provider reports.
+
+The first shared asset-generation lifecycle connects catalog metadata, cooked texture restoration and prepared DLC. Its location-independent digest binds selected metadata and the frozen texture producer separately from the current helper. Provider content checks still establish admission; actual publication coverage establishes readiness. Menu/shutdown receipts bind those outcomes to the exact launch profile, run and process. Recording failure is contained outside provider ownership and marks evidence degraded. This remains scoped prepared-startup coverage, rather than a complete asset store, capability scheduler or crash-recovery supervisor.
+
 Build a vessel rendering service around shared immutable assets, stable instance IDs and contiguous changing pose/thermal/highlight state. Construct its topology once per vessel generation. Read each physical part pose once, update supported animated roots, and publish one snapshot for main view, shadows and effects.
 
 The service must take rendering ownership for admitted sources. The corrected prototype now disables 267 admitted originals throughout the flight, while preserving all 279 sources in 37 main-view packets. It publishes 69 rigid and 198 dynamic source poses, shares bounds with FX consumers, and owns 163 animation culling settings so disabling renderers does not suspend their animations. Twelve main-view sources outside owned FX coverage retain their original camera leases. Components remain for property-block writers; the native transform/bone graph and per-frame material/property polling remain.

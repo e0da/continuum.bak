@@ -5,6 +5,8 @@ use std::{collections::BTreeMap, fs, io::Read, path::Path};
 pub mod admission;
 pub mod flight;
 pub mod gpu_timing;
+pub mod launch;
+pub mod profile;
 pub mod recovery;
 pub mod startup;
 

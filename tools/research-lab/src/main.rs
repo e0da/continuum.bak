@@ -52,11 +52,12 @@ fn run() -> Result<()> {
             "--project",
             "--project-sha256",
         ],
-        "run" => &[
+        "run" | "resolve" => &[
             "--instance",
             "--reservation",
             "--output",
             "--timeout-seconds",
+            "--launch-profile",
             "--startup-unlimited",
             "--startup-profile",
             "--startup-reuse-bundle-data",
@@ -311,149 +312,46 @@ fn run() -> Result<()> {
                 "proof":admission.proof,"files":admission.files,"sourceSha256":source_hashes,"scope":"no-game-launch-content-admission"}),
             )?;
         }
-        "run" => smoke(
-            Path::new(get("--instance")?),
-            Path::new(get("--reservation")?),
-            output,
-            options
-                .get("--timeout-seconds")
-                .map(|s| s.parse::<u64>())
-                .transpose()
-                .map_err(|e| e.to_string())?
-                .unwrap_or(300),
-            match options.get("--startup-unlimited").map(String::as_str) {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-unlimited must be true or false".into()),
-            },
-            match options.get("--startup-profile").map(String::as_str) {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-profile must be true or false".into()),
-            },
-            match options
-                .get("--startup-reuse-bundle-data")
-                .map(String::as_str)
+        "resolve" | "run" => {
+            let frozen = options
+                .get("--launch-profile")
+                .map(|path| continuum_research_lab::profile::FrozenLaunch::load(Path::new(path)))
+                .transpose()?;
+            if frozen.is_some()
+                && options.keys().any(|key| {
+                    ![
+                        "--instance",
+                        "--reservation",
+                        "--output",
+                        "--launch-profile",
+                    ]
+                    .contains(&key.as_str())
+                })
             {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-reuse-bundle-data must be true or false".into()),
-            },
-            match options.get("--startup-file-bundles").map(String::as_str) {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-file-bundles must be true or false".into()),
-            },
-            match options.get("--startup-build-cache").map(String::as_str) {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-build-cache must be true or false".into()),
-            },
-            options.get("--startup-cache").map(String::as_str),
-            match options.get("--startup-cached-bundles").map(String::as_str) {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-cached-bundles must be true or false".into()),
-            },
-            match options
-                .get("--startup-native-admission")
-                .map(String::as_str)
-            {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-native-admission must be true or false".into()),
-            },
-            match options.get("--graphics-api").map(String::as_str) {
-                None | Some("current") => "current",
-                Some("metal") => "metal",
-                _ => return Err("graphics-api must be current or metal".into()),
-            },
-            match options
-                .get("--startup-prepared-bundles")
-                .map(String::as_str)
-            {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-prepared-bundles must be true or false".into()),
-            },
-            match options.get("--startup-catalog-mode").map(String::as_str) {
-                None | Some("none") => "none",
-                Some("prepare") => "prepare",
-                Some("prepare-minimal") => "prepare-minimal",
-                Some("reuse") => "reuse",
-                _ => {
-                    return Err(
-                        "startup-catalog-mode must be none, prepare, prepare-minimal, or reuse"
-                            .into(),
-                    )
+                return Err("frozen launch cannot share selection override switches".into());
+            }
+            let selection = match &frozen {
+                Some(profile) => profile.selection.clone(),
+                None => continuum_research_lab::launch::ResolvedLaunch::parse(&options)?,
+            };
+            let instance = Path::new(get("--instance")?);
+            if operation == "resolve" {
+                let profile =
+                    continuum_research_lab::profile::FrozenLaunch::capture(instance, &selection)?;
+                if let Some(expected) = &frozen {
+                    profile.require_matches(expected)?;
                 }
-            },
-            options.get("--startup-catalog").map(String::as_str),
-            match options
-                .get("--startup-texture-prefetch")
-                .map(String::as_str)
-            {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-texture-prefetch must be true or false".into()),
-            },
-            match options.get("--startup-texture-observe").map(String::as_str) {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-texture-observe must be true or false".into()),
-            },
-            match options.get("--startup-dds-mapped").map(String::as_str) {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-dds-mapped must be true or false".into()),
-            },
-            match options.get("--startup-audio-prefetch").map(String::as_str) {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-audio-prefetch must be true or false".into()),
-            },
-            match options.get("--startup-readiness").map(String::as_str) {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-readiness must be true or false".into()),
-            },
-            match options.get("--startup-deferred-terrain").map(String::as_str) {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-deferred-terrain must be true or false".into()),
-            },
-            match options.get("--startup-site-proof").map(String::as_str) {
-                None => None,
-                Some("Desert_Airfield") => Some("Desert_Airfield"),
-                _ => return Err("startup-site-proof supports Desert_Airfield".into()),
-            },
-            match options
-                .get("--startup-resource-image-mode")
-                .map(String::as_str)
-            {
-                None | Some("none") => "none",
-                Some("prepare") => "prepare",
-                Some("reuse") => "reuse",
-                _ => {
-                    return Err(
-                        "startup-resource-image-mode must be none, prepare, or reuse".into(),
-                    )
-                }
-            },
-            options.get("--startup-resource-image").map(String::as_str),
-            match options.get("--startup-work-scheduler").map(String::as_str) {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-work-scheduler must be true or false".into()),
-            },
-            options.get("--native-asset-installation").map(Path::new),
-            continuum_research_lab::flight::Request::parse(&options)?,
-            match options.get("--startup-world-timing").map(String::as_str) {
-                None | Some("false") => false,
-                Some("true") => true,
-                _ => return Err("startup-world-timing must be true or false".into()),
-            },
-        )?,
+                write_new(output, &profile)?;
+            } else {
+                smoke(
+                    instance,
+                    Path::new(get("--reservation")?),
+                    output,
+                    &selection,
+                    frozen.as_ref(),
+                )?;
+            }
+        }
         "compare" => {
             if let Some(path) = options.get("--startup-screen") {
                 if options.contains_key("--baseline")
@@ -637,6 +535,13 @@ fn managed(arguments: &[&str]) -> Result<Value> {
     serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
 }
 struct Lease(PathBuf);
+fn path_argument(path: Option<&Path>) -> Result<Option<&str>> {
+    path.map(|path| {
+        path.to_str()
+            .ok_or_else(|| "non-UTF8 launch path".to_string())
+    })
+    .transpose()
+}
 impl Drop for Lease {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
@@ -646,62 +551,42 @@ fn smoke(
     instance: &Path,
     reservation: &Path,
     output: &Path,
-    timeout: u64,
-    startup_unlimited: bool,
-    startup_profile: bool,
-    startup_reuse_bundle_data: bool,
-    startup_file_bundles: bool,
-    startup_build_cache: bool,
-    startup_cache: Option<&str>,
-    startup_cached_bundles: bool,
-    startup_native_admission: bool,
-    graphics_api: &str,
-    startup_prepared_bundles: bool,
-    startup_catalog_mode: &str,
-    startup_catalog: Option<&str>,
-    startup_texture_prefetch: bool,
-    startup_texture_observe: bool,
-    startup_dds_mapped: bool,
-    startup_audio_prefetch: bool,
-    startup_readiness: bool,
-    startup_deferred_terrain: bool,
-    startup_site_proof: Option<&str>,
-    startup_resource_image_mode: &str,
-    startup_resource_image: Option<&str>,
-    startup_work_scheduler: bool,
-    native_asset_installation: Option<&Path>,
-    flight: Option<continuum_research_lab::flight::Request>,
-    startup_world_timing: bool,
+    selection: &continuum_research_lab::launch::ResolvedLaunch,
+    expected_profile: Option<&continuum_research_lab::profile::FrozenLaunch>,
 ) -> Result<()> {
     let admission_started = Instant::now();
-    if startup_deferred_terrain && !startup_readiness {
-        return Err("deferred terrain requires startup-readiness".into());
-    }
-    if (startup_resource_image_mode != "none") != startup_resource_image.is_some() {
-        return Err("resource image mode requires one private image path".into());
-    }
-    if let Some(path) = startup_resource_image {
-        if !Path::new(path).is_absolute() {
-            return Err("resource image path must be absolute".into());
-        }
-    }
-    if startup_resource_image_mode != "none" && (startup_texture_prefetch || startup_dds_mapped) {
-        return Err("resource image replaces the texture loader; select it independently of texture seam probes".into());
-    }
+    selection.validate()?;
+    let selection_sha = selection.identity_sha256()?;
+    let s = &selection.startup;
+    let timeout = selection.timeout_seconds;
+    let startup_unlimited = s.unlimited;
+    let startup_profile = selection.diagnostics.profile;
+    let startup_reuse_bundle_data = s.reuse_bundle_data;
+    let startup_file_bundles = s.file_bundles;
+    let startup_build_cache = s.build_cache;
+    let startup_cache = path_argument(s.cache.as_deref())?;
+    let startup_cached_bundles = s.cached_bundles;
+    let startup_native_admission = s.native_admission;
+    let graphics_api = selection.graphics_api.as_str();
+    let startup_prepared_bundles = s.prepared_bundles;
+    let startup_catalog_mode = s.catalog_mode.as_str();
+    let startup_catalog = path_argument(s.catalog.as_deref())?;
+    let startup_texture_prefetch = s.texture_prefetch;
+    let startup_texture_observe = selection.diagnostics.texture_observe;
+    let startup_dds_mapped = s.dds_mapped;
+    let startup_audio_prefetch = s.audio_prefetch;
+    let startup_readiness = s.readiness;
+    let startup_deferred_terrain = s.deferred_terrain;
+    let startup_site_proof = selection.diagnostics.site_proof.as_deref();
+    let startup_resource_image_mode = s.resource_image_mode.as_str();
+    let startup_resource_image = path_argument(s.resource_image.as_deref())?;
+    let startup_work_scheduler = s.work_scheduler;
+    let native_asset_installation = selection.native_asset_installation.as_deref();
+    let flight = &selection.flight;
+    let startup_world_timing = selection.diagnostics.world_timing;
     let catalog_preparation = startup_catalog_mode.starts_with("prepare");
-    if flight.is_some()
-        && (startup_build_cache || catalog_preparation || startup_resource_image_mode == "prepare")
-    {
-        return Err("flight capture cannot share a resource preparation run".into());
-    }
-    if (startup_catalog_mode != "none") != startup_catalog.is_some() {
-        return Err("catalog prepare/reuse requires one private catalog path".into());
-    }
     let catalog_before = match startup_catalog {
         Some(path) => {
-            if !Path::new(path).is_absolute() {
-                return Err("catalog path must be absolute".into());
-            }
             if startup_catalog_mode == "reuse" {
                 Some(hash(Path::new(path))?)
             } else if Path::new(path).exists() {
@@ -712,26 +597,6 @@ fn smoke(
         }
         None => None,
     };
-    if (startup_build_cache || startup_cached_bundles) && startup_cache.is_none() {
-        return Err("cache preparation requires a private --startup-cache directory".into());
-    }
-    if startup_build_cache && startup_cached_bundles {
-        return Err("cache preparation and cached loading require separate runs".into());
-    }
-    if startup_native_admission && !startup_cached_bundles {
-        return Err("native admission requires cached bundle loading".into());
-    }
-    if startup_prepared_bundles && !(startup_cached_bundles && startup_native_admission) {
-        return Err("prepared bundle loading requires cached bundles and native admission".into());
-    }
-    if let Some(path) = startup_cache {
-        if !Path::new(path).is_absolute() {
-            return Err("startup cache requires an absolute private path".into());
-        }
-    }
-    if timeout == 0 || timeout > 1800 {
-        return Err("timeout must be 1..1800 seconds".into());
-    }
     if output.exists() {
         return Err("run output already exists".into());
     }
@@ -836,6 +701,15 @@ fn smoke(
     } else {
         None
     };
+    let resolved_profile =
+        continuum_research_lab::profile::FrozenLaunch::capture(&instance, selection)?;
+    if let Some(expected) = expected_profile {
+        resolved_profile.require_matches(expected)?;
+    }
+    let resolved_profile_path = output.join("resolved-launch.json");
+    write_new(&resolved_profile_path, &resolved_profile)?;
+    let resolved_profile_sha = hash(&resolved_profile_path)?;
+    let asset_generation_sha = resolved_profile.asset_generation.identity()?;
     let observer_directory = instance.join("GameData/KspContinuum/PluginData");
     let started = Instant::now();
     let admission_seconds = admission_started.elapsed().as_secs_f64();
@@ -855,6 +729,12 @@ fn smoke(
         ])
         .arg(&log_path)
         .arg(format!("--continuum-research-run={run_id}"))
+        .arg(format!(
+            "--continuum-launch-profile-sha256={resolved_profile_sha}"
+        ))
+        .arg(format!(
+            "--continuum-asset-generation-sha256={asset_generation_sha}"
+        ))
         .args(if startup_world_timing {
             vec!["--continuum-startup-world-timing"]
         } else {
@@ -900,7 +780,11 @@ fn smoke(
         } else {
             vec![]
         })
-        .args(startup_site_proof.map(|site| vec![format!("--continuum-startup-site-proof={site}")]).unwrap_or_default())
+        .args(
+            startup_site_proof
+                .map(|site| vec![format!("--continuum-startup-site-proof={site}")])
+                .unwrap_or_default(),
+        )
         .args(if startup_resource_image_mode != "none" {
             vec![
                 format!("--continuum-startup-resource-image-mode={startup_resource_image_mode}"),
@@ -1028,7 +912,9 @@ fn smoke(
     } else {
         None
     };
-    let source_unchanged = hash(&assembly)? == assembly_hash
+    let source_unchanged = resolved_profile.unchanged()
+        && hash(&resolved_profile_path)? == resolved_profile_sha
+        && hash(&assembly)? == assembly_hash
         && native_assets
             .as_ref()
             .map(|assets| assets.unchanged())
@@ -1109,8 +995,14 @@ fn smoke(
                 &report,
             )?;
             if let Some(library) = &request.gpu_timing_library {
-                summary["gpuTiming"] = continuum_research_lab::gpu_timing::retain_summary(output, &run_id, child.id(), library,
-                    flight_inputs.as_ref().ok_or("GPU flight inputs absent")?, &report)?;
+                summary["gpuTiming"] = continuum_research_lab::gpu_timing::retain_summary(
+                    output,
+                    &run_id,
+                    child.id(),
+                    library,
+                    flight_inputs.as_ref().ok_or("GPU flight inputs absent")?,
+                    &report,
+                )?;
             }
             for (name, key) in [
                 ("diagnostic-controls.json", "diagnosticControls"),
@@ -1161,8 +1053,16 @@ fn smoke(
         let mut retained = json!({});
         type Recover = fn(&Path, &str, u32, &Path) -> Result<()>;
         let recoveries: [(&str, &str, Recover); 2] = [
-            ("aero-batch.json", "aeroBatch", continuum_research_lab::flight::recover_failed_aero_batch),
-            ("part-batch.json", "partBatch", continuum_research_lab::flight::recover_failed_part_batch),
+            (
+                "aero-batch.json",
+                "aeroBatch",
+                continuum_research_lab::flight::recover_failed_aero_batch,
+            ),
+            (
+                "part-batch.json",
+                "partBatch",
+                continuum_research_lab::flight::recover_failed_part_batch,
+            ),
         ];
         for (name, key, recover) in recoveries {
             let path = output.join(name);
@@ -1173,12 +1073,21 @@ fn smoke(
             }
             if path.exists() {
                 match (hash(&path), read::<Value>(&path)) {
-                    (Ok(digest), Ok(report)) => retained[key] = json!({"sha256":digest,"report":report}),
-                    _ => flight_recovery_error = Some(format!("retained failed {name} evidence unreadable")),
+                    (Ok(digest), Ok(report)) => {
+                        retained[key] = json!({"sha256":digest,"report":report})
+                    }
+                    _ => {
+                        flight_recovery_error =
+                            Some(format!("retained failed {name} evidence unreadable"))
+                    }
                 }
             }
         }
-        if retained.as_object().map(|value| !value.is_empty()).unwrap_or(false) {
+        if retained
+            .as_object()
+            .map(|value| !value.is_empty())
+            .unwrap_or(false)
+        {
             flight_failure_evidence = Some(retained);
         }
     }
@@ -1189,20 +1098,28 @@ fn smoke(
     let mut deferred_terrain_evidence = None;
     let mut deferred_terrain_error = None;
     if startup_deferred_terrain {
-        let result = fs::read_to_string(output.join("Player.log")).map_err(|error| error.to_string())
+        let result = fs::read_to_string(output.join("Player.log"))
+            .map_err(|error| error.to_string())
             .and_then(|log| continuum_research_lab::startup::deferred_terrain(&log));
         match result {
             Ok(evidence) => {
                 write_new(&output.join("startup-deferred-terrain.json"), &evidence)?;
                 deferred_terrain_evidence = Some(evidence);
-            },
+            }
             Err(error) => deferred_terrain_error = Some(error),
         }
     }
     let mut site_proof_evidence = None;
     let mut site_proof_error = None;
     if let Some(site) = startup_site_proof {
-        match continuum_research_lab::startup::retain_site_proof(&observer_directory, &run_id, child.id(), output, site, startup_deferred_terrain) {
+        match continuum_research_lab::startup::retain_site_proof(
+            &observer_directory,
+            &run_id,
+            child.id(),
+            output,
+            site,
+            startup_deferred_terrain,
+        ) {
             Ok(evidence) => site_proof_evidence = Some(evidence),
             Err(error) => site_proof_error = Some(error),
         }
@@ -1210,11 +1127,31 @@ fn smoke(
     if let Some(value) = &observation {
         write_new(&output.join("runtime-observation.json"), value)?;
     }
+    let (generation_evidence, generation_error) =
+        match continuum_research_lab::profile::retain_generation(
+            &observer_directory,
+            output,
+            &run_id,
+            child.id(),
+            &instance,
+            &resolved_profile_sha,
+            &asset_generation_sha,
+        ) {
+            Ok(evidence) => {
+                let error =
+                    continuum_research_lab::profile::validate_generation(&evidence, selection)
+                        .err();
+                (Some(evidence), error)
+            }
+            Err(error) => (None, Some(error)),
+        };
     write_new(
         &output.join("receipt.json"),
         &json!({"schema":"continuum-lab-process-smoke/v1","scope":if flight.is_some() {"timed-diagnostic-flight"} else if catalog_preparation {"asset-catalog-preparation-process"} else {"menu-native-boundary-process-smoke"},
         "startedUnixSeconds":stamp,"ownedPid":child.id(),"reservationSha256":hash(reservation)?,"assemblySha256":assembly_hash,"playerSha256":executable_hash,
         "sourceUnchanged":source_unchanged,"flightSourcesUnchanged":flight_sources_unchanged,
+        "resolvedLaunchSha256":resolved_profile_sha,"selectionSha256":selection_sha,
+        "assetGenerationSha256":asset_generation_sha,"assetGenerationEvidence":generation_evidence,"assetGenerationError":generation_error,
         "flightRequest":flight,"flightCapture":flight_summary,"flightCaptureError":flight_error,"flightEntry":flight_entry,
         "flightNativeSample":native_sample_receipt,"flightFailureEvidence":flight_failure_evidence,"flightRecoveryError":flight_recovery_error,
         "captureCpuRss":"not-collected-by-runner; external-owned-process-sampling-required","wallSeconds":started.elapsed().as_secs_f64(),"exitCode":status.code(),
@@ -1243,7 +1180,7 @@ fn smoke(
         "startupBuildCacheRequested":startup_build_cache,"startupCache":startup_cache,"bundleSha256":bundle_hashes,
         "startupCachedBundlesRequested":startup_cached_bundles,
         "startupNativeAdmissionRequested":startup_native_admission,"cacheAdmissionSha256":proof_hash,"cacheAdmissionFiles":admission.as_ref().map(|value|&value.files),
-        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none()&&deferred_terrain_error.is_none()&&site_proof_error.is_none() {"passed"} else {"failed"},
+        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none()&&deferred_terrain_error.is_none()&&site_proof_error.is_none()&&generation_error.is_none() {"passed"} else {"failed"},
         "qualification":if flight.is_some() {"diagnostic-window-only; behavior-and-gameplay-not-qualified"} else if catalog_preparation {"catalog-content-and-fresh-process-reuse-proof-required"} else {"process-exit-only-native-receipt-review-and-flight-proof-required"}}),
     )?;
     if timed_out
@@ -1253,6 +1190,7 @@ fn smoke(
         || flight_error.is_some()
         || deferred_terrain_error.is_some()
         || site_proof_error.is_some()
+        || generation_error.is_some()
     {
         return Err("owned process smoke failed; retained logs and receipt".into());
     }
