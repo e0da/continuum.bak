@@ -169,6 +169,11 @@ fn repository_root() -> Result<PathBuf> {
 }
 
 fn portable(root: &Path) -> Result {
+    checked(
+        root,
+        "dotnet",
+        &["build", "tools/KspContinuum.FlightFixture", "-c", "Release"],
+    )?;
     for project in DOTNET_TESTS {
         checked(
             root,

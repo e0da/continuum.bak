@@ -12,6 +12,8 @@ Build `tools/KspContinuum.Reconstruction` in Release and build `tools/research-l
 
 Every output path must be new. Examples use operator-supplied private paths.
 
+The offline [.NET flight fixture tool](../tools/KspContinuum.FlightFixture/README.md) creates a SHA-bound 256-part station checkpoint from the private 196-part source. It appends sixty physical stock girders at four clean free stack nodes, preserves original blocks and validates unique UIDs, reciprocal references and node alignment. Its generated receipt is a preparation proof; the flight consumer must establish actual bodies, joints, stability and performance. The existing portable lane builds this tool without reading a game installation.
+
 | Operation | Arguments | Actual capability |
 | --- | --- | --- |
 | `inventory` | `--instance INSTANCE --output NEW_JSON` | Hash every regular file; record symlinks without following them. |
@@ -98,6 +100,8 @@ Primary cells: 16/64/128/256/512 parts, Kerbin atmosphere/vacuum, low/baseline/h
 Start with two comparable fresh-process measurements and move on when they agree enough to choose the next action. Add repetitions only to resolve a concrete ambiguity or qualification decision; no fixed six-pair batch. Use ten simulated seconds for initial flight capture and longer windows when the selected behavior needs them. Compare uncapped/VSync-off diagnostic results separately from playable presentation. Follow-ups isolate powered flight, warp, resolution, settings, complexity and mod costs. The older three-run startup comparison command is retained for existing receipts, not the default experiment policy.
 
 Initial playable target through 256 parts: mean >=59.5 FPS, p95 <=20 ms, p99 <=33.3 ms, >=0.99x simulated time; representative mission, save/reload and one-hour operator play session. Retina is separate and 512 is a capacity frontier.
+
+A completed 256-part quiet-vacuum diagnostic observed 170 rigidbodies, 204 joints, 388 colliders, 86 physicsless parts and 645 modules. One normal-time capture measured 80.55 FPS over 10 simulated seconds; one 4x capture measured 70.44 FPS over 40 simulated seconds, both approximately ten wall seconds with full requested simulation rate and stable topology. Effective integration steps were 0.02 and 0.08 seconds, respectively. These are separate workload observations under the existing experimental main-view shader, not a speedup comparison or a playable milestone. Rendering remained the largest measured frame phase; native physics averaged about 1.65 ms per step. Excited structures, atmosphere at this topology, larger capacities and gameplay remain separate gates.
 
 Modern Unity research recovers matching-2019 assets/project structure before pinned Unity 6.3 LTS Mono/Built-in x64 and ARM64 comparisons. DOTS, Burst, layout, physics and rendering are separate treatments. Full native runtime or 60 FPS capability remains unqualified until complete live evidence exists.
 
