@@ -26,6 +26,7 @@ namespace KspContinuum
             public bool retainedProvider;
             public int retiredRenderers, restoredRetiredRenderers, sharedPartPoseSnapshots, sharedSourcePublications, rigidLocalChecks, materialBindingChecks, propertyBlockCaptures;
             public long sharedPoseTicks;
+            public double maxInitialRecoveredPositionErrorMeters;
             public float minBaseEmissionAlpha, maxBaseEmissionAlpha;
             public double preparationMilliseconds;
             public string cleanupStatus = "not-started";
@@ -156,6 +157,7 @@ namespace KspContinuum
         {
             Stopwatch timer = Stopwatch.StartNew();
             retained = RetainedRenderSources.Requested; report.retainedProvider = retained;
+            if (retained) RetainedRenderSources.Begin();
             if (retained) report.recipe += " Retained provider: only FX-covered rigid-child sources retired; exact child local transforms checked every published frame. Original renderer components retained for property-block writers. Unknown idempotent renderer-disable writes are outside the stable-visibility contract; FX proxy bone transforms remain live.";
             if (retained && !FlightAeroBatcher.IsActive) throw new InvalidOperationException("Retained main renderer requires an active owned FX provider.");
             if (vessel == null || !vessel.loaded || vessel.packed || vessel.mainBody==null || vessel.mainBody.bodyName!="Kerbin" || !vessel.mainBody.ocean || vessel.altitude <= 0 || !SystemInfo.supportsInstancing)
@@ -355,6 +357,7 @@ namespace KspContinuum
         {
             if (retained) { report.restoredRetiredRenderers = RetainedRenderSources.RestoredCount; report.sharedPartPoseSnapshots = RetainedRenderSources.PoseSnapshots;
                 report.sharedSourcePublications = RetainedRenderSources.SourcePublications; report.rigidLocalChecks = RetainedRenderSources.LocalChecks; report.sharedPoseTicks = RetainedRenderSources.CaptureTicks; }
+            if (retained) report.maxInitialRecoveredPositionErrorMeters = RetainedRenderSources.MaxInitialRecoveredPositionErrorMeters;
             report.restoredOriginals = restored.Count + (retained ? RetainedRenderSources.RestoredCount : 0);
             File.WriteAllText(Path.Combine(directory,"part-batch.json"), ReportJson.Encode(report));
         }

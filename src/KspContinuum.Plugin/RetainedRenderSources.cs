@@ -27,7 +27,15 @@ namespace KspContinuum
         static int frame = -1;
         internal static int RetiredCount, RestoredCount, PoseSnapshots, SourcePublications, LocalChecks;
         internal static long CaptureTicks;
+        internal static double MaxInitialRecoveredPositionErrorMeters;
         internal static bool Requested { get { return Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-flight-part-retained") >= 0; } }
+        internal static void Begin()
+        {
+            if (sources.Count != 0) throw new InvalidOperationException("Retained render ownership already exists.");
+            guards.Clear(); poses.Clear(); frame = -1;
+            RetiredCount = RestoredCount = PoseSnapshots = SourcePublications = LocalChecks = 0;
+            CaptureTicks = 0; MaxInitialRecoveredPositionErrorMeters = 0;
+        }
         internal static bool Register(MeshRenderer renderer, Part part, Mesh mesh)
         {
             if (!Requested || renderer == null || part == null || mesh == null || !FlightAeroBatcher.Covers(renderer)) return false;
@@ -47,6 +55,21 @@ namespace KspContinuum
         }
         internal static void RetireAll()
         {
+            foreach (Source source in sources.Values)
+            {
+                if (source.Renderer == null || source.Part == null) throw new InvalidOperationException("Source lost before geometry admission.");
+                Matrix4x4 original = source.Renderer.transform.localToWorldMatrix;
+                Matrix4x4 recovered = source.Part.transform.localToWorldMatrix * source.Local;
+                for (int corner = 0; corner < 8; corner++)
+                {
+                    Vector3 point = source.MeshBounds.center + Vector3.Scale(source.MeshBounds.extents,
+                        new Vector3((corner & 1) == 0 ? -1 : 1, (corner & 2) == 0 ? -1 : 1, (corner & 4) == 0 ? -1 : 1));
+                    double error = (original.MultiplyPoint3x4(point) - recovered.MultiplyPoint3x4(point)).magnitude;
+                    if (double.IsNaN(error) || double.IsInfinity(error)) throw new InvalidOperationException("Nonfinite recovered geometry witness.");
+                    MaxInitialRecoveredPositionErrorMeters = Math.Max(MaxInitialRecoveredPositionErrorMeters, error);
+                }
+            }
+            if (MaxInitialRecoveredPositionErrorMeters > 0.005) throw new InvalidOperationException("Recovered source geometry exceeds frozen 5mm positional gate.");
             foreach (Source source in sources.Values)
             {
                 if (source.Renderer == null || !source.Renderer.enabled || source.Renderer.forceRenderingOff) throw new InvalidOperationException("Source changed before retirement.");
