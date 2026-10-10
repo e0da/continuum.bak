@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fs, io::Read, path::Path};
+pub mod admission;
 pub mod recovery;
+pub mod startup;
 
 pub type Result<T> = std::result::Result<T, String>;
 

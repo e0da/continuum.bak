@@ -1,6 +1,8 @@
 using System.Reflection;
 using KspContinuum.Reconstruction;
 
+StartupCacheManifestReaderTests.Run();
+
 var directory = Path.Combine(Path.GetTempPath(), "continuum-reconstruction-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(directory);
 try

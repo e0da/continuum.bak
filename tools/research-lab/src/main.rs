@@ -35,6 +35,7 @@ fn run() -> Result<()> {
     }
     let allowed: &[&str] = match operation.as_str() {
         "inventory" => &["--instance", "--output"],
+        "startup-timeline" => &["--log", "--output"],
         "prepare" => &["--output", "--variant"],
         "index" => &["--assembly", "--ilspy", "--output", "--project"],
         "recompose" => &[
@@ -52,6 +53,13 @@ fn run() -> Result<()> {
             "--output",
             "--timeout-seconds",
             "--startup-unlimited",
+            "--startup-profile",
+            "--startup-reuse-bundle-data",
+            "--startup-file-bundles",
+            "--startup-build-cache",
+            "--startup-cache",
+            "--startup-cached-bundles",
+            "--startup-native-admission",
         ],
         "compare" => &[
             "--baseline",
@@ -223,6 +231,17 @@ fn run() -> Result<()> {
             }
             write_new(&output.join("receipt.json"), &managed(&command)?)?;
         }
+        "startup-timeline" => {
+            let path = Path::new(get("--log")?);
+            let source_hash = hash(path)?;
+            let log = fs::read_to_string(path).map_err(|e| e.to_string())?;
+            let mut report = continuum_research_lab::startup::timeline(&log)?;
+            if hash(path)? != source_hash {
+                return Err("log changed during analysis".into());
+            }
+            report["logSha256"] = json!(source_hash);
+            write_new(output, &report)?;
+        }
         "run" => smoke(
             Path::new(get("--instance")?),
             Path::new(get("--reservation")?),
@@ -237,6 +256,43 @@ fn run() -> Result<()> {
                 None | Some("false") => false,
                 Some("true") => true,
                 _ => return Err("startup-unlimited must be true or false".into()),
+            },
+            match options.get("--startup-profile").map(String::as_str) {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err("startup-profile must be true or false".into()),
+            },
+            match options
+                .get("--startup-reuse-bundle-data")
+                .map(String::as_str)
+            {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err("startup-reuse-bundle-data must be true or false".into()),
+            },
+            match options.get("--startup-file-bundles").map(String::as_str) {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err("startup-file-bundles must be true or false".into()),
+            },
+            match options.get("--startup-build-cache").map(String::as_str) {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err("startup-build-cache must be true or false".into()),
+            },
+            options.get("--startup-cache").map(String::as_str),
+            match options.get("--startup-cached-bundles").map(String::as_str) {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err("startup-cached-bundles must be true or false".into()),
+            },
+            match options
+                .get("--startup-native-admission")
+                .map(String::as_str)
+            {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err("startup-native-admission must be true or false".into()),
             },
         )?,
         "compare" => {
@@ -423,7 +479,29 @@ fn smoke(
     output: &Path,
     timeout: u64,
     startup_unlimited: bool,
+    startup_profile: bool,
+    startup_reuse_bundle_data: bool,
+    startup_file_bundles: bool,
+    startup_build_cache: bool,
+    startup_cache: Option<&str>,
+    startup_cached_bundles: bool,
+    startup_native_admission: bool,
 ) -> Result<()> {
+    let admission_started = Instant::now();
+    if (startup_build_cache || startup_cached_bundles) && startup_cache.is_none() {
+        return Err("cache preparation requires a private --startup-cache directory".into());
+    }
+    if startup_build_cache && startup_cached_bundles {
+        return Err("cache preparation and cached loading require separate runs".into());
+    }
+    if startup_native_admission && !startup_cached_bundles {
+        return Err("native admission requires cached bundle loading".into());
+    }
+    if let Some(path) = startup_cache {
+        if !Path::new(path).is_absolute() {
+            return Err("startup cache requires an absolute private path".into());
+        }
+    }
     if timeout == 0 || timeout > 1800 {
         return Err("timeout must be 1..1800 seconds".into());
     }
@@ -463,6 +541,7 @@ fn smoke(
     let assembly = instance.join("KSP.app/Contents/Resources/Data/Managed/Assembly-CSharp.dll");
     let assembly_hash = hash(&assembly)?;
     let executable_hash = hash(&executable)?;
+    let bundle_hashes = startup_bundle_hashes(&instance)?;
     fs::create_dir(output).map_err(|e| e.to_string())?;
     let stdout = fs::File::create(output.join("player-stdout.log")).map_err(|e| e.to_string())?;
     let stderr = fs::File::create(output.join("player-stderr.log")).map_err(|e| e.to_string())?;
@@ -475,8 +554,29 @@ fn smoke(
         .map_err(|e| e.to_string())?
         .join("Player.log");
     let run_id = format!("{}-{}", stamp, std::process::id());
+    let admission = if startup_native_admission {
+        Some(continuum_research_lab::admission::admit(
+            &instance,
+            Path::new(startup_cache.unwrap()),
+            &run_id,
+            &bundle_hashes,
+        )?)
+    } else {
+        None
+    };
+    let proof_path = output
+        .canonicalize()
+        .map_err(|e| e.to_string())?
+        .join("cache-admission.json");
+    let proof_hash = if let Some(admission) = &admission {
+        write_new(&proof_path, &admission.proof)?;
+        Some(hash(&proof_path)?)
+    } else {
+        None
+    };
     let observer_directory = instance.join("GameData/KspContinuum/PluginData");
     let started = Instant::now();
+    let admission_seconds = admission_started.elapsed().as_secs_f64();
     let mut child = Command::new(&executable)
         .current_dir(&instance)
         .args([
@@ -491,6 +591,41 @@ fn smoke(
         .arg(format!("--continuum-research-run={run_id}"))
         .args(if startup_unlimited {
             vec!["--continuum-startup-unlimited"]
+        } else {
+            vec![]
+        })
+        .args(if startup_profile {
+            vec!["--continuum-startup-profile"]
+        } else {
+            vec![]
+        })
+        .args(if startup_reuse_bundle_data {
+            vec!["--continuum-startup-reuse-bundle-data"]
+        } else {
+            vec![]
+        })
+        .args(if startup_file_bundles {
+            vec!["--continuum-startup-file-bundles"]
+        } else {
+            vec![]
+        })
+        .args(if startup_build_cache {
+            vec!["--continuum-startup-build-cache"]
+        } else {
+            vec![]
+        })
+        .args(startup_cache.map(|path| format!("--continuum-startup-cache={path}")))
+        .args(if startup_cached_bundles {
+            vec!["--continuum-startup-cached-bundles"]
+        } else {
+            vec![]
+        })
+        .args(if let Some(digest) = &proof_hash {
+            vec![
+                "--continuum-startup-native-admission".to_string(),
+                format!("--continuum-startup-admission={}", proof_path.display()),
+                format!("--continuum-startup-admission-sha256={digest}"),
+            ]
         } else {
             vec![]
         })
@@ -542,7 +677,20 @@ fn smoke(
         }
         thread::sleep(Duration::from_millis(100));
     };
-    let source_unchanged = hash(&assembly)? == assembly_hash;
+    let source_unchanged = hash(&assembly)? == assembly_hash
+        && startup_bundle_hashes(&instance)? == bundle_hashes
+        && admission
+            .as_ref()
+            .map(|value| value.unchanged())
+            .unwrap_or(true)
+        && proof_hash
+            .as_ref()
+            .map(|expected| {
+                hash(&proof_path)
+                    .map(|actual| actual == *expected)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(true);
     if let Some(value) = &observation {
         write_new(&output.join("runtime-observation.json"), value)?;
     }
@@ -552,7 +700,14 @@ fn smoke(
         "startedUnixSeconds":stamp,"ownedPid":child.id(),"reservationSha256":hash(reservation)?,"assemblySha256":assembly_hash,"playerSha256":executable_hash,
         "sourceUnchanged":source_unchanged,"wallSeconds":started.elapsed().as_secs_f64(),"exitCode":status.code(),
         "runId":run_id,"mainMenuStartObservedWallSeconds":menu_elapsed,"startupBoundary":"first-owned-addon-Start-in-main-menu","startupPollingResolutionSeconds":0.1,
+        "admissionWallSeconds":admission_seconds,"admissionPlusMenuSeconds":menu_elapsed.map(|seconds| seconds+admission_seconds),
         "startupUnlimitedRequested":startup_unlimited,
+        "startupProfileRequested":startup_profile,
+        "startupReuseBundleDataRequested":startup_reuse_bundle_data,
+        "startupFileBundlesRequested":startup_file_bundles,
+        "startupBuildCacheRequested":startup_build_cache,"startupCache":startup_cache,"bundleSha256":bundle_hashes,
+        "startupCachedBundlesRequested":startup_cached_bundles,
+        "startupNativeAdmissionRequested":startup_native_admission,"cacheAdmissionSha256":proof_hash,"cacheAdmissionFiles":admission.as_ref().map(|value|&value.files),
         "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged {"passed"} else {"failed"},
         "qualification":"process-exit-only-native-receipt-review-and-flight-proof-required"}),
     )?;
@@ -560,4 +715,19 @@ fn smoke(
         return Err("owned process smoke failed; retained logs and receipt".into());
     }
     Ok(())
+}
+
+fn startup_bundle_hashes(instance: &Path) -> Result<BTreeMap<String, String>> {
+    let mut hashes = BTreeMap::new();
+    for relative in [
+        "GameData/SquadExpansion/MakingHistory/AssetBundles/makinghistory_assets",
+        "GameData/SquadExpansion/MakingHistory/AssetBundles/makinghistory_scene",
+        "GameData/SquadExpansion/Serenity/AssetBundles/serenity_assets",
+    ] {
+        let path = instance.join(relative);
+        if path.exists() {
+            hashes.insert(relative.to_string(), hash(&path)?);
+        }
+    }
+    Ok(hashes)
 }

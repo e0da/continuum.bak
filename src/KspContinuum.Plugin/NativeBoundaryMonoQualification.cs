@@ -17,6 +17,7 @@ namespace KspContinuum
 
         public void Start()
         {
+            if (Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-startup-build-cache") >= 0) return;
             if (Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-native-boundary-bench") < 0) return;
             try
             {
