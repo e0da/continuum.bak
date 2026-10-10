@@ -17,6 +17,7 @@ namespace KspContinuum
             public string fidelity = "Original research shader, not stock shader equivalence. Albedo, normal, specular/emissive maps, stock temperature/highlight inputs retained under bounded opaque recipe; stock underwater fog, spec-map channel mapping and exact lighting require image qualification.";
             public string recipe = "Stock Kerbin ocean fixture above sea level; single-submesh positive-determinant MeshRenderer; stock KSP/Specular or KSP/Emissive/Bumped Specular (Mapped), no keywords, opaque opacity1, white burn, ambient multiplier1. Declared material bindings frozen; known stock MPB temperature/rim/emissive sampled each frame. Black base temperature/rim/emission RGB admitted with finite alpha retained in fingerprints (emission alpha unused). MPB opacity0 interpreted as absent only under initial opaque stock recipe: Unity2019 cannot distinguish absent from an explicit zero. Arbitrary unenumerable mod MPB inputs unsupported; not qualified for opacity transitions.";
             public string shadowContract = "Main flight cameras only; stock FX cameras unchanged. DrawMeshInstanced requests original shadowCasting/receiveShadows settings, but source suppression versus shadow scheduling requires native image qualification.";
+            public string probeContract = "Off retained; BlendProbes interpolated at original probeAnchor or renderer bounds center and supplied as per-instance SH/occlusion. Proxy/custom probes excluded. Reflection probe and exact stock lighting behavior remain shader fidelity gates.";
             public int processId, eligibleRenderers, fallbackRenderers, packets, cameraInvocations, drawSubmissions, restoredOriginals, faults, releasedMaterials;
             public bool releasedBundle;
             public long publicationTicks;
@@ -37,6 +38,8 @@ namespace KspContinuum
             public Matrix4x4[] Matrices; public Vector4[] Temperature, Rim, Emission; public float[] Falloff, Opacity;
             public MaterialPropertyBlock Block = new MaterialPropertyBlock(); public int Layer;
             public ShadowCastingMode Shadows; public bool ReceiveShadows;
+            public LightProbeUsage Probes;
+            public Vector3[] ProbePositions; public SphericalHarmonicsL2[] ProbeLighting; public Vector4[] ProbeOcclusion;
         }
         sealed class Binding
         {
@@ -125,7 +128,7 @@ namespace KspContinuum
             foreach(Binding binding in bindings.Values)
             {
                 Material material=binding.Material;
-                if(material==null || material.shader!=binding.Shader || material.renderQueue!=binding.Queue) throw new InvalidOperationException("Material/shader ownership changed.");
+                if(material==null || material.shader!=binding.Shader || material.renderQueue!=binding.Queue || material.shaderKeywords.Length != 0) throw new InvalidOperationException("Material/shader ownership changed.");
                 foreach(Value value in binding.Values)
                 {
                     bool match;
@@ -179,6 +182,7 @@ namespace KspContinuum
                         (material.shader.name != "KSP/Specular" && material.shader.name != "KSP/Emissive/Bumped Specular (Mapped)") ||
                         material.shaderKeywords.Length != 0 || material.GetTag("RenderType",false,"") != "Opaque" || material.GetFloat("_Opacity") != 1 ||
                         !covered || material.GetColor("_BurnColor") != Color.white || renderer.lightmapIndex >= 0 || renderer.realtimeLightmapIndex >= 0 || renderer.transform.localToWorldMatrix.determinant <= 0 ||
+                        (renderer.lightProbeUsage != LightProbeUsage.Off && renderer.lightProbeUsage != LightProbeUsage.BlendProbes) ||
                         !BlackRgb(material.GetColor("_TemperatureColor")) || !BlackRgb(material.GetColor("_RimColor")) ||
                         (material.HasProperty("_EmissiveColor") && !BlackRgb(material.GetColor("_EmissiveColor"))) ||
                         (material.HasProperty("_AmbientMultiplier") && material.GetFloat("_AmbientMultiplier") != 1))
@@ -194,11 +198,11 @@ namespace KspContinuum
                         report.admittedBlackEmissionBaseInputs++;
                     }
                     CaptureBinding(material);
-                    string key = mesh.GetInstanceID()+"/"+renderer.gameObject.layer+"/"+renderer.shadowCastingMode+"/"+renderer.receiveShadows+"/"+materialKey;
+                    string key = mesh.GetInstanceID()+"/"+renderer.gameObject.layer+"/"+renderer.shadowCastingMode+"/"+renderer.receiveShadows+"/"+renderer.lightProbeUsage+"/"+materialKey;
                     Packet packet;
                     if (!groups.TryGetValue(key, out packet) || packet.Sources.Count == 1023)
                     {
-                        packet = new Packet { Mesh = mesh, Material = Bind(material), Layer = renderer.gameObject.layer, Shadows=renderer.shadowCastingMode, ReceiveShadows=renderer.receiveShadows }; packets.Add(packet); groups[key] = packet;
+                        packet = new Packet { Mesh = mesh, Material = Bind(material), Layer = renderer.gameObject.layer, Shadows=renderer.shadowCastingMode, ReceiveShadows=renderer.receiveShadows, Probes=renderer.lightProbeUsage }; packets.Add(packet); groups[key] = packet;
                     }
                     packet.Sources.Add(new Source { Renderer = sourceRenderer, Filter=filter, Mesh = mesh, Material = material, Owner = owner, Key = materialKey, Identity = renderer.name+"#"+renderer.GetInstanceID() });
                     report.eligibleRenderers++;
@@ -209,6 +213,9 @@ namespace KspContinuum
             {
                 int n = packet.Sources.Count; packet.Matrices = new Matrix4x4[n]; packet.Temperature = new Vector4[n]; packet.Rim = new Vector4[n];
                 packet.Emission = new Vector4[n]; packet.Falloff = new float[n]; packet.Opacity = new float[n];
+                if (packet.Probes == LightProbeUsage.BlendProbes) {
+                    packet.ProbePositions = new Vector3[n]; packet.ProbeLighting = new SphericalHarmonicsL2[n]; packet.ProbeOcclusion = new Vector4[n];
+                }
             }
             UpdateInputs(); Camera.onPreCull += PreCull; Camera.onPostRender += PostRender; callbacks = true;
             var opacityMethod=AccessTools.Method(typeof(Part),"SetOpacity",new[] { typeof(float) });
@@ -249,7 +256,7 @@ namespace KspContinuum
             {
                 Source source = packet.Sources[i]; MeshRenderer renderer = source.Renderer;
                 if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy || renderer.forceRenderingOff ||
-                    source.Filter == null || source.Filter.sharedMesh != source.Mesh || renderer.sharedMaterial != source.Material ||
+                    source.Filter == null || source.Filter.sharedMesh != source.Mesh || renderer.sharedMaterials.Length != 1 || renderer.sharedMaterial != source.Material ||
                     renderer.gameObject.layer!=packet.Layer || renderer.shadowCastingMode!=packet.Shadows || renderer.receiveShadows!=packet.ReceiveShadows)
                     throw new InvalidOperationException("Source visibility/mesh/material changed: "+source.Identity);
                 observed.Clear(); renderer.GetPropertyBlock(observed);
@@ -264,11 +271,19 @@ namespace KspContinuum
                 if (matrix.determinant <= 0) throw new InvalidOperationException("Source determinant changed.");
                 packet.Matrices[i] = matrix; packet.Temperature[i] = temperature; packet.Rim[i] = rim; packet.Emission[i] = emission;
                 packet.Falloff[i] = falloff; packet.Opacity[i] = 1;
+                if (renderer.lightProbeUsage != packet.Probes) throw new InvalidOperationException("Source probe usage changed.");
+                if (packet.ProbePositions != null) packet.ProbePositions[i] = renderer.probeAnchor == null ? renderer.bounds.center : renderer.probeAnchor.position;
             }
-            foreach (Packet packet in packets) if (!standard)
+            foreach (Packet packet in packets)
             {
-                packet.Block.SetVectorArray("_TemperatureColor", packet.Temperature); packet.Block.SetVectorArray("_RimColor", packet.Rim);
-                packet.Block.SetVectorArray("_EmissiveColor", packet.Emission); packet.Block.SetFloatArray("_RimFalloff", packet.Falloff); packet.Block.SetFloatArray("_Opacity", packet.Opacity);
+                if (!standard) {
+                    packet.Block.SetVectorArray("_TemperatureColor", packet.Temperature); packet.Block.SetVectorArray("_RimColor", packet.Rim);
+                    packet.Block.SetVectorArray("_EmissiveColor", packet.Emission); packet.Block.SetFloatArray("_RimFalloff", packet.Falloff); packet.Block.SetFloatArray("_Opacity", packet.Opacity);
+                }
+                if (packet.ProbePositions != null) {
+                    LightProbes.CalculateInterpolatedLightAndOcclusionProbes(packet.ProbePositions, packet.ProbeLighting, packet.ProbeOcclusion);
+                    packet.Block.CopySHCoefficientArraysFrom(packet.ProbeLighting); packet.Block.CopyProbeOcclusionArrayFrom(packet.ProbeOcclusion);
+                }
             }
             report.publicationTicks += Stopwatch.GetTimestamp()-start;
         }
@@ -287,7 +302,8 @@ namespace KspContinuum
                     foreach (Source source in packet.Sources)
                     { if (source.Renderer.forceRenderingOff) throw new InvalidOperationException("Source visibility changed before lease."); leased.Add(source.Renderer); source.Renderer.forceRenderingOff=true; }
                     Graphics.DrawMeshInstanced(packet.Mesh, 0, packet.Material, packet.Matrices, packet.Matrices.Length, packet.Block,
-                        packet.Shadows, packet.ReceiveShadows, packet.Layer, camera, LightProbeUsage.Off);
+                        packet.Shadows, packet.ReceiveShadows, packet.Layer, camera,
+                        packet.Probes == LightProbeUsage.BlendProbes ? LightProbeUsage.CustomProvided : LightProbeUsage.Off);
                     report.drawSubmissions++;
                 }
                 report.cameraInvocations++;

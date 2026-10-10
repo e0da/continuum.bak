@@ -136,6 +136,11 @@ namespace KspContinuum
                 Fail(new InvalidOperationException("Aero batch runtime rejected: " + FlightAeroBatcher.FailureReason));
                 return;
             }
+            if (active && FlightPartBatcher.FailureReason != null)
+            {
+                Fail(new InvalidOperationException("Part batch runtime rejected: " + FlightPartBatcher.FailureReason));
+                return;
+            }
             if (!active || capturing) return;
             if (AtmosphericEntryPreparation.Requested && !AtmosphericEntryPreparation.Admitted)
             {
@@ -213,6 +218,9 @@ namespace KspContinuum
             FlightAeroBatcher.Report batch = FlightAeroBatcher.Start(FlightGlobals.ActiveVessel, directory, runId);
             if (batch != null && batch.status != "installed-experimental")
                 throw new InvalidOperationException("Aero batch preparation rejected: " + batch.reason);
+            FlightPartBatcher.Report parts = FlightPartBatcher.Start(FlightGlobals.ActiveVessel, directory, runId);
+            if (parts != null && parts.status != "installed-experimental")
+                throw new InvalidOperationException("Part batch preparation rejected: " + parts.reason);
             return new Probe(null,false,simulationSeconds,wallTimeout,simulationSeconds > 0 ? directory : null);
         }
         static double OptionalNumber(string[] arguments,string prefix,double fallback,double minimum,double maximum)
@@ -471,6 +479,8 @@ namespace KspContinuum
             try { if (probe != null) probe.Dispose(); } catch (Exception error) { Debug.LogException(error); code = 2; }
             probe = null;
             try { FlightAeroBatcher.Finish(); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
+            try { FlightPartBatcher.Finish(); }
             catch (Exception error) { Debug.LogException(error); code = 2; }
             try { FlightDiagnosticControls.Restore(); }
             catch (Exception error) { Debug.LogException(error); code = 2; }
