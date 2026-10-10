@@ -60,6 +60,10 @@ fn run() -> Result<()> {
             "--startup-cache",
             "--startup-cached-bundles",
             "--startup-native-admission",
+            "--graphics-api",
+            "--startup-prepared-bundles",
+            "--startup-catalog-mode",
+            "--startup-catalog",
         ],
         "compare" => &[
             "--baseline",
@@ -294,6 +298,32 @@ fn run() -> Result<()> {
                 Some("true") => true,
                 _ => return Err("startup-native-admission must be true or false".into()),
             },
+            match options.get("--graphics-api").map(String::as_str) {
+                None | Some("current") => "current",
+                Some("metal") => "metal",
+                _ => return Err("graphics-api must be current or metal".into()),
+            },
+            match options
+                .get("--startup-prepared-bundles")
+                .map(String::as_str)
+            {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err("startup-prepared-bundles must be true or false".into()),
+            },
+            match options.get("--startup-catalog-mode").map(String::as_str) {
+                None | Some("none") => "none",
+                Some("prepare") => "prepare",
+                Some("prepare-minimal") => "prepare-minimal",
+                Some("reuse") => "reuse",
+                _ => {
+                    return Err(
+                        "startup-catalog-mode must be none, prepare, prepare-minimal, or reuse"
+                            .into(),
+                    )
+                }
+            },
+            options.get("--startup-catalog").map(String::as_str),
         )?,
         "compare" => {
             if let Some(path) = options.get("--startup-screen") {
@@ -486,8 +516,31 @@ fn smoke(
     startup_cache: Option<&str>,
     startup_cached_bundles: bool,
     startup_native_admission: bool,
+    graphics_api: &str,
+    startup_prepared_bundles: bool,
+    startup_catalog_mode: &str,
+    startup_catalog: Option<&str>,
 ) -> Result<()> {
     let admission_started = Instant::now();
+    let catalog_preparation = startup_catalog_mode.starts_with("prepare");
+    if (startup_catalog_mode != "none") != startup_catalog.is_some() {
+        return Err("catalog prepare/reuse requires one private catalog path".into());
+    }
+    let catalog_before = match startup_catalog {
+        Some(path) => {
+            if !Path::new(path).is_absolute() {
+                return Err("catalog path must be absolute".into());
+            }
+            if startup_catalog_mode == "reuse" {
+                Some(hash(Path::new(path))?)
+            } else if Path::new(path).exists() {
+                return Err("catalog preparation output exists".into());
+            } else {
+                None
+            }
+        }
+        None => None,
+    };
     if (startup_build_cache || startup_cached_bundles) && startup_cache.is_none() {
         return Err("cache preparation requires a private --startup-cache directory".into());
     }
@@ -496,6 +549,9 @@ fn smoke(
     }
     if startup_native_admission && !startup_cached_bundles {
         return Err("native admission requires cached bundle loading".into());
+    }
+    if startup_prepared_bundles && !(startup_cached_bundles && startup_native_admission) {
+        return Err("prepared bundle loading requires cached bundles and native admission".into());
     }
     if let Some(path) = startup_cache {
         if !Path::new(path).is_absolute() {
@@ -589,6 +645,26 @@ fn smoke(
         ])
         .arg(&log_path)
         .arg(format!("--continuum-research-run={run_id}"))
+        .args(match startup_catalog_mode {
+            "prepare" => vec!["--continuum-startup-prepare-catalog"],
+            "prepare-minimal" => vec![
+                "--continuum-startup-prepare-catalog",
+                "--continuum-startup-metadata-only-prepare",
+            ],
+            "reuse" => vec!["--continuum-startup-cached-catalog"],
+            _ => vec![],
+        })
+        .args(startup_catalog.map(|path| format!("--continuum-startup-catalog={path}")))
+        .args(if graphics_api == "metal" {
+            vec!["-force-metal"]
+        } else {
+            vec![]
+        })
+        .args(if startup_prepared_bundles {
+            vec!["--continuum-startup-prepared-bundles"]
+        } else {
+            vec![]
+        })
         .args(if startup_unlimited {
             vec!["--continuum-startup-unlimited"]
         } else {
@@ -677,7 +753,25 @@ fn smoke(
         }
         thread::sleep(Duration::from_millis(100));
     };
+    let generated_catalog_hash = if catalog_preparation {
+        startup_catalog.and_then(|path| hash(Path::new(path)).ok())
+    } else {
+        None
+    };
     let source_unchanged = hash(&assembly)? == assembly_hash
+        && (!catalog_preparation || generated_catalog_hash.is_some())
+        && catalog_before
+            .as_ref()
+            .map(|expected| {
+                startup_catalog
+                    .map(|path| {
+                        hash(Path::new(path))
+                            .map(|actual| actual == *expected)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap_or(true)
         && startup_bundle_hashes(&instance)? == bundle_hashes
         && admission
             .as_ref()
@@ -696,12 +790,16 @@ fn smoke(
     }
     write_new(
         &output.join("receipt.json"),
-        &json!({"schema":"continuum-lab-process-smoke/v1","scope":"menu-native-boundary-process-smoke",
+        &json!({"schema":"continuum-lab-process-smoke/v1","scope":if catalog_preparation {"asset-catalog-preparation-process"} else {"menu-native-boundary-process-smoke"},
         "startedUnixSeconds":stamp,"ownedPid":child.id(),"reservationSha256":hash(reservation)?,"assemblySha256":assembly_hash,"playerSha256":executable_hash,
         "sourceUnchanged":source_unchanged,"wallSeconds":started.elapsed().as_secs_f64(),"exitCode":status.code(),
         "runId":run_id,"mainMenuStartObservedWallSeconds":menu_elapsed,"startupBoundary":"first-owned-addon-Start-in-main-menu","startupPollingResolutionSeconds":0.1,
         "admissionWallSeconds":admission_seconds,"admissionPlusMenuSeconds":menu_elapsed.map(|seconds| seconds+admission_seconds),
         "startupUnlimitedRequested":startup_unlimited,
+        "graphicsApiRequested":graphics_api,
+        "startupPreparedBundlesRequested":startup_prepared_bundles,
+        "startupCatalogModeRequested":startup_catalog_mode,"startupCatalog":startup_catalog,"startupCatalogSha256":catalog_before,
+        "generatedCatalogSha256":generated_catalog_hash,
         "startupProfileRequested":startup_profile,
         "startupReuseBundleDataRequested":startup_reuse_bundle_data,
         "startupFileBundlesRequested":startup_file_bundles,
@@ -709,7 +807,7 @@ fn smoke(
         "startupCachedBundlesRequested":startup_cached_bundles,
         "startupNativeAdmissionRequested":startup_native_admission,"cacheAdmissionSha256":proof_hash,"cacheAdmissionFiles":admission.as_ref().map(|value|&value.files),
         "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged {"passed"} else {"failed"},
-        "qualification":"process-exit-only-native-receipt-review-and-flight-proof-required"}),
+        "qualification":if catalog_preparation {"catalog-content-and-fresh-process-reuse-proof-required"} else {"process-exit-only-native-receipt-review-and-flight-proof-required"}}),
     )?;
     if timed_out || !status.success() || !source_unchanged {
         return Err("owned process smoke failed; retained logs and receipt".into());

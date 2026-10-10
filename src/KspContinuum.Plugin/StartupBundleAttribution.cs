@@ -26,8 +26,8 @@ namespace KspContinuum
         readonly Metric fileVerification = new Metric(), fileLoad = new Metric();
         Harmony harmony;
         MethodInfo target;
-        FieldInfo folderField, nameField;
-        bool requested, exported, installed, profiling, reuseData, fileBundles, cachedBundles, nativeAdmission;
+        FieldInfo folderField, nameField, bundleField, hashField, stateField;
+        bool requested, exported, installed, profiling, reuseData, fileBundles, cachedBundles, nativeAdmission, preparedBundles;
         long reusedReads, fileAttempts, fileSuccesses, fileFallbacks;
         string lastFallback = "none";
         string cacheRoot, cacheManifestSha;
@@ -51,7 +51,8 @@ namespace KspContinuum
             public string schema = null, runId = null, manifestSha256 = null, instanceRoot = null, cacheRoot = null, engine = null;
             public string makinghistory_assets_sourceSha256 = null, makinghistory_assets_derivedSha256 = null;
             public string makinghistory_scene_sourceSha256 = null, makinghistory_scene_derivedSha256 = null;
-            public string serenity_assets_sourceSha256 = null, serenity_assets_derivedSha256 = null;
+        public string serenity_assets_sourceSha256 = null, serenity_assets_derivedSha256 = null;
+            public string makinghistory_assets_sourceMd5 = null, makinghistory_scene_sourceMd5 = null, serenity_assets_sourceMd5 = null;
         }
 
         sealed class CacheFrame
@@ -90,13 +91,15 @@ namespace KspContinuum
             fileBundles = Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-startup-file-bundles") >= 0;
             cachedBundles = Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-startup-cached-bundles") >= 0;
             nativeAdmission = Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-startup-native-admission") >= 0;
-            requested = profiling || reuseData || fileBundles || cachedBundles || nativeAdmission;
+            preparedBundles = Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-startup-prepared-bundles") >= 0;
+            requested = profiling || reuseData || fileBundles || cachedBundles || nativeAdmission || preparedBundles;
             if (!requested) return;
             DontDestroyOnLoad(gameObject);
             try
             {
                 if (instance != null) throw new InvalidOperationException("Attribution owner already exists.");
                 if (nativeAdmission && !cachedBundles) throw new InvalidOperationException("Native admission requires the cached bundle candidate.");
+                if (preparedBundles && (!cachedBundles || !nativeAdmission)) throw new InvalidOperationException("Prepared bundles require native cache admission.");
                 if (cachedBundles && fileBundles) throw new InvalidOperationException("Select one bundle load candidate.");
                 if (cachedBundles) ReadCacheManifest();
                 if (nativeAdmission) ReadNativeAdmission();
@@ -110,8 +113,14 @@ namespace KspContinuum
                     throw new InvalidOperationException("Pinned bundle iterator differs.");
                 folderField = AccessTools.DeclaredField(iterator, "folderPath");
                 nameField = AccessTools.DeclaredField(iterator, "bundleName");
+                bundleField = AccessTools.DeclaredField(iterator, "<bundle>5__3");
+                hashField = AccessTools.DeclaredField(iterator, "<hash>5__2");
+                stateField = AccessTools.DeclaredField(iterator, "<>1__state");
                 if (folderField == null || nameField == null || folderField.FieldType != typeof(string) || nameField.FieldType != typeof(string))
                     throw new InvalidOperationException("Pinned bundle path fields differ.");
+                if (bundleField == null || hashField == null || stateField == null || bundleField.FieldType != typeof(AssetBundle) ||
+                    hashField.FieldType != typeof(byte[]) || stateField.FieldType != typeof(int))
+                    throw new InvalidOperationException("Pinned prepared bundle fields differ.");
                 Patches existing = Harmony.GetPatchInfo(target);
                 if (existing != null && existing.Owners.Count != 0)
                     throw new InvalidOperationException("Bundle iterator has an existing Harmony owner.");
@@ -135,7 +144,7 @@ namespace KspContinuum
             }
         }
 
-        static IEnumerable<CodeInstruction> Transpile(IEnumerable<CodeInstruction> instructions)
+        static IEnumerable<CodeInstruction> Transpile(IEnumerable<CodeInstruction> instructions, ILGenerator generator)
         {
             var result = instructions.ToList();
             MethodInfo dataMethod = AccessTools.PropertyGetter(typeof(DownloadHandler), "data");
@@ -149,6 +158,10 @@ namespace KspContinuum
                 for (int i = 0; i < originals.Length; i++)
                     if (originals[i] != null && instruction.Calls(originals[i])) actual[i]++;
             if (!actual.SequenceEqual(expected)) throw new InvalidOperationException("Pinned bundle call shape differs.");
+            if (instance != null && instance.preparedBundles)
+            {
+                StartupPreparedBundleBoundary.Inject(result, generator);
+            }
             foreach (CodeInstruction instruction in result)
                 for (int i = 0; i < originals.Length; i++)
                     if (instruction.Calls(originals[i]))
@@ -295,6 +308,64 @@ namespace KspContinuum
             if (instance != null && (instance.reuseData || instance.fileBundles || instance.cachedBundles))
             { __state.Current = new CacheFrame { Iterator = __instance }; cache = __state.Current; }
         }
+        static bool TryPreparedBundle(object iterator)
+        {
+            return instance != null && instance.preparedBundles && instance.PrepareBundle(iterator);
+        }
+        bool PrepareBundle(object iterator)
+        {
+            AssetBundle loaded = null; bool published = false, fieldsTouched = false;
+            try
+            {
+                string location = (string)folderField.GetValue(iterator) + (string)nameField.GetValue(iterator);
+                Uri uri;
+                if (!Uri.TryCreate(location, UriKind.Absolute, out uri) || !uri.IsFile || !string.IsNullOrEmpty(uri.Host)) return false;
+                string original = Path.GetFullPath(uri.LocalPath);
+                CacheEntry entry = cacheManifest.bundles.SingleOrDefault(item => Path.GetFullPath(item.originalPath) == original);
+                if (entry == null) return false;
+                fileAttempts++;
+                long started = Stopwatch.GetTimestamp(); bool verified = false;
+                string derived; long sourceLength, derivedLength; DateTime sourceModified, derivedModified;
+                try
+                {
+                    RequireNoSymlinks(original); derived = Path.GetFullPath(entry.derivedPath);
+                    if (!derived.StartsWith(cacheRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal)) throw new InvalidOperationException("Prepared cache containment differs.");
+                    RequireNoSymlinks(derived);
+                    var source = new FileInfo(original); var targetFile = new FileInfo(derived);
+                    sourceLength = source.Length; sourceModified = source.LastWriteTimeUtc;
+                    derivedLength = targetFile.Length; derivedModified = targetFile.LastWriteTimeUtc;
+                    if (sourceLength != entry.sourceLength || derivedLength != entry.derivedLength) throw new InvalidOperationException("Prepared file lengths differ.");
+                    verified = true;
+                }
+                finally { fileVerification.Add(started, 0, verified); }
+                long loading = Stopwatch.GetTimestamp(); bool succeeded = false;
+                try
+                {
+                    loaded = AssetBundle.LoadFromFile(derived);
+                    var sourceAfter = new FileInfo(original); var derivedAfter = new FileInfo(derived);
+                    if (loaded == null || sourceAfter.Length != sourceLength || sourceAfter.LastWriteTimeUtc != sourceModified ||
+                        derivedAfter.Length != derivedLength || derivedAfter.LastWriteTimeUtc != derivedModified)
+                        throw new InvalidOperationException("Prepared load failed or file changed.");
+                    succeeded = true;
+                }
+                finally { fileLoad.Add(loading, 0, succeeded); }
+                var originalMd5 = new byte[16];
+                for (int i = 0; i < originalMd5.Length; i++) originalMd5[i] = byte.Parse(entry.sourceMd5.Substring(i * 2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+                fieldsTouched = true;
+                hashField.SetValue(iterator, originalMd5); bundleField.SetValue(iterator, loaded); stateField.SetValue(iterator, -3);
+                published = true; fileSuccesses++; return true;
+            }
+            catch (Exception error)
+            {
+                if (fieldsTouched && !published)
+                {
+                    hashField.SetValue(iterator, null); bundleField.SetValue(iterator, null); stateField.SetValue(iterator, -1);
+                }
+                if (loaded != null && !published) loaded.Unload(true);
+                fileFallbacks++; lastFallback = error.GetType().Name + ":" + error.Message;
+                return false;
+            }
+        }
         static Exception MoveFinalizer(MoveState __state, Exception __exception)
         {
             if (__state.Current != null)
@@ -335,6 +406,7 @@ namespace KspContinuum
                 " fileFallbacks=" + fileFallbacks + " lastFallback=" + lastFallback +
                 " cachedBundles=" + cachedBundles + " cacheManifestSha256=" + cacheManifestSha +
                 " nativeAdmission=" + nativeAdmission + " admissionSha256=" + admissionSha +
+                " preparedBundles=" + preparedBundles +
                 " scope=managed-synchronous-calls excludes=awaiting-native-workers-and-startup-before-patch");
             UnityEngine.Debug.Log(Marker + data.Summary("download-data"));
             UnityEngine.Debug.Log(Marker + hash.Summary("md5"));
@@ -434,6 +506,12 @@ namespace KspContinuum
                 if (source == null || derived == null || (string)source.GetValue(proof) != entry.sourceSha256 ||
                     (string)derived.GetValue(proof) != entry.derivedSha256)
                     throw new InvalidOperationException("Admission bundle provenance differs.");
+                if (preparedBundles)
+                {
+                    FieldInfo md5 = typeof(CacheAdmission).GetField(name + "_sourceMd5");
+                    if (md5 == null || (string)md5.GetValue(proof) != entry.sourceMd5 || !IsDigest(entry.sourceMd5, 32))
+                        throw new InvalidOperationException("Prepared original MD5 admission differs.");
+                }
             }
         }
         static string Argument(string prefix)

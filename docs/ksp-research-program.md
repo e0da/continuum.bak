@@ -46,6 +46,18 @@ Adding `--startup-native-admission true` moves full source/derived hash verifica
 
 Recovery catalogs use schema `continuum-mod-recovery-catalog/v1`, frozen `profile_sha256` and `workload_sha256`, a stage-specific `failure_signature`, a `dependencies` map of mod IDs to required IDs, and a dependency-complete `verified_ring`. Supply `--failure-signature` for a failed diagnosis trial. The state machine verifies fallback and full group, then removes groups with their dependents until no smaller dependency-safe reproduced failure remains. A failed fallback, invalid trial, unrelated failure, stale result, changed catalog or exhausted budget cannot identify a culprit. Each next trial specifies its fallback ring. Results are operator declarations until a hashed process/crash adapter is attached.
 
+### Prepared startup boundaries
+
+`tools/bundle-audit` independently compares UnityFS decoded payload SHA256, lengths, and normalized archive nodes between originals and derived bundles. Run it outside timed workloads; keep its output private. Lossless bytes do not establish DLC scene or mission behavior.
+
+`run --startup-prepared-bundles true` requires cached bundles and native admission. Native admission verifies original MD5 in addition to SHA256 and binds it in the tiny proof. The guarded iterator branch skips original download/copies/hashing, then resumes original cleanup and asset/scene/bundle registration with the original source MD5. This leaves downstream original signature checks intact. Require three hits and zero fallback in the raw activation summary.
+
+`run --startup-catalog-mode prepare --startup-catalog ABSOLUTE_NEW_XML` captures original ordered bundle metadata and its compiled graph, saves a private catalog at metadata readiness, and quits before part/planet initialization. `prepare-minimal` additionally skips only root audio/texture/model enumeration during that preparation process. It preserves assembly/mod discovery and original catalog compilation; qualify its output against an original capture for the admitted profile. It is not a gameplay launch.
+
+`run --startup-catalog-mode reuse --startup-catalog ABSOLUTE_EXISTING_XML` verifies engine/assembly/recipe/blacklist/source inventory, rehydrates metadata, invokes original compilation/flattening, checks the compiled graph, then publishes readiness. Rejection restores state and uses original discovery. Heavy asset loading remains stock. Source inventory includes the plugin DLL; rebuilding it invalidates the catalog and needs a new preparation. These are private immutable-profile experiments, not a general lazy asset runtime.
+
+`run --graphics-api metal` is an explicit renderer probe; default `current` preserves selection. Receipts include requested selection and observed device information. The actual shipped player rejected Metal initialization because it was not built with the required shader support. Engine/shader reconstruction is needed for that path; backend symbols alone cannot establish player support.
+
 ## Receipt and experiment contracts
 
 `continuum-lab-flight/v1` requires run/case identity, fixture/protocol SHA-256, frozen configuration, variant factors, terminal status, complete frame intervals, requested/achieved simulated duration, requested rate, wall duration, stable topology, qualified observation, verified behavior and zero dropped samples. Frame intervals must bracket the wall duration. Configuration differences, partial simulation windows, self-comparison, unqualified evidence and undeclared treatment differences are rejected.
@@ -58,7 +70,7 @@ A single pair cannot establish a confidence interval or promote a replacement. N
 
 Primary cells: 16/64/128/256/512 parts, Kerbin atmosphere/vacuum, low/baseline/high graphics at 1920x1080, unpowered normal-time flight. Bind checkpoint, input timeline, camera, lighting, effective settings, timestep, topology and behavior contract before launching. Record rigidbodies, joints, colliders, physicsless parts, modules and loaded vessels.
 
-Screen three fresh processes for ten simulated seconds; confirm six alternating baseline/candidate pairs for thirty simulated seconds. Compare uncapped/VSync-off diagnostic results separately from playable presentation. Follow-ups isolate powered flight, warp, resolution, settings, complexity and mod costs.
+Start with two comparable fresh-process measurements and move on when they agree enough to choose the next action. Add repetitions only to resolve a concrete ambiguity or qualification decision; no fixed six-pair batch. Use ten simulated seconds for initial flight capture and longer windows when the selected behavior needs them. Compare uncapped/VSync-off diagnostic results separately from playable presentation. Follow-ups isolate powered flight, warp, resolution, settings, complexity and mod costs. The older three-run startup comparison command is retained for existing receipts, not the default experiment policy.
 
 Initial playable target through 256 parts: mean >=59.5 FPS, p95 <=20 ms, p99 <=33.3 ms, >=0.99x simulated time; representative mission, save/reload and one-hour operator play session. Retina is separate and 512 is a capacity frontier.
 

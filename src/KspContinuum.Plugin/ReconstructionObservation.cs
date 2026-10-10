@@ -21,7 +21,9 @@ namespace KspContinuum
                     observedUtc = DateTime.UtcNow.ToString("o"), gameVersion = version,
                     assemblySha256 = ScaleCheckpointLoadState.HashFile(typeof(Versioning).Assembly.Location),
                     engineRealtimeSeconds = Time.realtimeSinceStartup, screenWidth = Screen.width, screenHeight = Screen.height,
-                    vSyncCount = QualitySettings.vSyncCount, targetFrameRate = Application.targetFrameRate
+                    vSyncCount = QualitySettings.vSyncCount, targetFrameRate = Application.targetFrameRate,
+                    graphicsDeviceType = SystemInfo.graphicsDeviceType.ToString(),
+                    graphicsDeviceName = SystemInfo.graphicsDeviceName, graphicsDeviceVersion = SystemInfo.graphicsDeviceVersion
                 };
                 observation.startupUnlimitedRequested = StartupPresentationExperiment.Requested;
                 observation.startupPresentationRestored = StartupPresentationExperiment.Restored;
