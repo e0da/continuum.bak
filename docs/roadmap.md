@@ -1,8 +1,8 @@
 # Continuum direction and goal index
 
-Reviewed 2026-09-23. [Linear owns the live roadmap, milestones, priorities and issue state](https://linear.app/e0da/project/continuum-3e8d50ef8c85). Gimbal's native Rust runtime and Space Race game are the primary product path. This page preserves Continuum's KSP mechanics/performance experiments and their issue links while that plan is reconciled.
+Direction updated 2026-10-10 from the local research program. Continuum and Gimbal share the goal of supporting Kerbal-like, toy and realism experiences. Their runtime and repository boundaries remain open. This page preserves existing research questions and issue links; [Linear issue state](https://linear.app/e0da/project/continuum-3e8d50ef8c85) has not been reconciled by this documentation update.
 
-The KSP addon measures and experiments with host mechanics; its per-part callbacks and render loop need not constrain Gimbal's simulation architecture. Portable Continuum kernels and fixtures can inform Gimbal after qualification, but Gimbal does not depend on a Continuum runtime. KSP compatibility and Metal rendering remain optional research paths. [The boundary](continuum-gimbal-boundary.md) describes that relationship. `KspContinuum` remains the adapter namespace.
+The KSP addon measures and replaces host systems; its per-part callbacks and render loop need not constrain the eventual engine. Continuum may grow into a complete KSP/Unity replacement and support Gimbal capabilities. Findings and code can flow in either direction, with shared components or a merger selected when useful. [The provisional boundary](continuum-gimbal-boundary.md) preserves distinct experience contracts and explicit runtime ownership. `KspContinuum` remains the adapter namespace.
 
 Independent coasting at requested times and a bounded KSP presentation adapter remain useful lab experiments, not prerequisites for Gimbal. Any live adapter must avoid duplicate stock propagation; presentation smoothing must not feed back into integration. The first adapter may retain KSP's global universal time while owning one vessel trajectory; that would not establish independent global warp, background resource simulation or whole-game replacement. Measure kernel throughput, synchronization cost and complete game frame/tick cost separately.
 
@@ -27,7 +27,7 @@ Independent coasting at requested times and a bounded KSP presentation adapter r
 
 ## Continuum research lanes
 
-These lanes preserve specific KSP research questions and issue history; their order does not define Gimbal's critical path. One writer owns any live KSP instance. Portable work can continue when live qualification is blocked.
+These lanes preserve specific KSP research questions and issue history. Select work from the shared program's current evidence and desired capabilities. One writer owns any live KSP instance. Portable work can continue when live qualification is blocked.
 
 | Lane | Acceptance | Linear |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ These lanes preserve specific KSP research questions and issue history; their or
 
 The smallest useful KSP replacement may be managed C#; Rust/GPU integration remains a measured strategy. Structural graph classification can support later live dynamics before geometry baking, and live graph mutation follows dynamics ownership. These experiments can donate fixtures or algorithms to Gimbal without imposing KSP's host architecture on it.
 
-If the optional KSP replacement path advances, its milestone exits remain **useful live substitution**, **demonstrated game-performance improvement**, then **simulation beyond the camera**. [E0D-1875](https://linear.app/e0da/issue/E0D-1875) owns the KSP performance outcome: frozen workload/tolerances, stock/candidate repeats, median and tail timings, and honest negative results. More physics fidelity can be a separate opt-in benefit, but cannot be counted as stock speedup without a like-for-like comparison.
+The KSP replacement path includes **useful live substitution**, **demonstrated game-performance improvement**, **simulation beyond the camera**, and potentially **complete runtime replacement**. The [research program](ksp-research-program.md) defines independently qualified outcomes and the current repetition policy. [E0D-1875](https://linear.app/e0da/issue/E0D-1875) retains the historical KSP performance outcome: frozen workload/tolerances, matched comparisons, median and tail timings, and honest negative results. More physics fidelity can be a separate opt-in benefit, but cannot be counted as stock speedup without a like-for-like comparison.
 
 Performance is a design input for every replaceable system. Each strategy must make the whole path observable: capture, admission, packing or dirty refresh, transfer or ABI, compute, synchronization, validation, publication and total frame/tick cost. Reports retain workload and machine identity, behavioral error, allocation or transferred-byte evidence where measurable, median and tail latency, throughput and strategy choice. CPU scalar, CPU parallel, SIMD and GPU implementations compete only on workloads for which the entire measured path and precision contract are comparable.
 
@@ -57,12 +57,12 @@ Performance is a design input for every replaceable system. Each strategy must m
 | Compatibility | Stock feel first, explicit FAR/RO/MFI/KSPCF/KJR/Principia profiles, shared libraries and lifecycle cooperation; scoped multiplayer authority/warp integration. [Compatibility](compatibility.md), [integration map](integration-map.md), [aero behavior](aero-behavior.md); [E0D-1878](https://linear.app/e0da/issue/E0D-1878), Gimbal E0D-323/325. |
 | Our model space program | Deliberate mission/craft/save naming, daytime flat-site survey, probe carrier and reusable scouts, visible tests when useful, maintained linked multimedia chronicle, templates, useful plots including log scale. [Program](space-program.md), [chronicle](chronicle.md), [templates](wiki-templates.md); E0D-1877. Further Minmus targeting is parked; the carrier has not been built. |
 | Candidate representations | Semantic/voxel geometry, modal reduction, Jolt/Box3D comparison, small surrogates, Monte Carlo blast/risk/control, ASC/toy models. [Learned compute](learned-compute.md), [trajectories](trajectory-representations.md); [E0D-1879](https://linear.app/e0da/issue/E0D-1879). Field/N-body/Hilbert/phase experiments are optional research, not critical-path commitments. |
-| Gimbal primary path | Native Rust runtime and Space Race game progress in Gimbal independently of Continuum's KSP addon. User-supplied KSP content and supported-mod compatibility remain optional later work, with no arbitrary binary-plugin promise. [Boundary](continuum-gimbal-boundary.md); [E0D-1880](https://linear.app/e0da/issue/E0D-1880). |
+| Shared experience and runtime direction | Kerbal-like, Gimbal toy and realism experiences with explicit behavior/fidelity contracts. Continuum replacement work and Gimbal development can exchange findings and components; shared runtime or repository convergence remains open. Arbitrary binary plugins require qualification. [Boundary](continuum-gimbal-boundary.md); historical [E0D-1880](https://linear.app/e0da/issue/E0D-1880). |
 | Delivery | Rust systems/tooling, C# KSP integration, Elixir only for a concrete OTP need; minimal unavoidable native ABI. Owned actions/ops/stack runners, no Python or added scripting runtimes. [AGENTS](../AGENTS.md); [E0D-1881](https://linear.app/e0da/issue/E0D-1881). |
 
 ## Working changes from the retrospective
 
-- Keep Gimbal's native runtime and Space Race as the leading product outcome. Pursue KSP improvements when they answer a concrete integration or performance question.
+- Pursue the shared experience/runtime direction through measured complete-system replacements and useful playable checkpoints. Keep the repository boundary provisional; choose extraction or convergence from actual integration needs.
 - Maintain independent physics fronts; serialize shared game-state writes and integration only.
 - Keep one current goal map and update the owning issue and affected docs when a milestone changes. Do not accumulate contradictory “next” instructions.
 - Record measured failures and limitations alongside wins. Different precision, batching, transfer and rendering costs must remain visible in comparisons.

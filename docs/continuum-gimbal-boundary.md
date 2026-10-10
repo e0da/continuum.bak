@@ -1,65 +1,56 @@
-# Continuum and Gimbal boundary
+# Continuum and Gimbal: shared direction, provisional boundary
 
-**Decision:** Gimbal's native Rust runtime and Space Race game are the primary development path. Continuum remains a KSP mechanics/performance reference and integration lab. Its portable experiments may inform Gimbal, but Gimbal does not require a Continuum runtime. A future Gimbal KSP mode may target qualified compatibility with user-supplied content and supported mods; that work is optional.
+**Direction, updated 2026-10-10:** Continuum and Gimbal pursue a shared goal: a fast, expressive spaceflight and simulation foundation that can support a Kerbal-like experience alongside Gimbal's toy and realism experiences. Continuum's KSP replacement program is one development path toward that goal. It may grow into a replacement for both KSP's runtime systems and Unity, then support further Gimbal capabilities.
 
-This is a product and dependency boundary, not a claim that standalone KSP content loading or a complete replacement runtime exists today. `KspContinuum` remains the addon namespace.
+The repository split is provisional. Findings and original components can move in either direction; useful invariants may be extracted into shared components, and a repository or runtime merger remains available. None of these structures is selected in advance. The earlier fixed hierarchy of Gimbal as the primary path and Continuum as an optional reference lab is superseded.
 
-## Dependency direction
+This direction does not establish a working standalone runtime or compatibility with arbitrary mods. `KspContinuum` remains the existing addon namespace.
 
-```text
-KSP + Unity <── KspContinuum addon ──> captured fixtures and measurements
-                                             │ selected findings
-                                             ▼
-                              Gimbal native Rust runtime + Space Race
+## Experience contracts
 
-Optional later: user-supplied KSP content ──> qualified Gimbal KSP mode
-```
+The intended experiences can share mechanisms while choosing different behavior, fidelity and cost. Their exact supported workloads and acceptance tests are defined when a capability is selected.
 
-The arrows from Continuum to Gimbal carry evidence or explicitly selected code, not a runtime dependency. Gimbal owns its simulation architecture and game rules. The KSP addon may use host APIs, but host objects must stop at the boundary of any portable fixture. Optional KSP compatibility code may translate content into Gimbal concepts without defining the base game's runtime.
+| Experience | Contract to establish |
+| --- | --- |
+| Kerbal-like | Selected craft, flight, construction, staging, save/load and game behavior; stock/DLC/mod compatibility only for explicitly qualified profiles. |
+| Gimbal toy | Deliberate simplified rules, responsive interaction and readable behavior at a declared performance budget. Simplification is a product choice, not accidental numerical error. |
+| Gimbal realism | Declared physical models, numerical tolerances and supported regimes, with independent checks and measured complete-workload cost. |
 
-The arrow from the addon to captured fixtures is an evidence path, not shared runtime authority. During a live replacement experiment, the [one-writer and transactional publication rules](active-physics-takeover.md) still apply.
+A Kerbal-like experience need not require exact KSP compatibility. A compatibility claim needs its own oracle and scope. Realism and toy profiles need not use the same solver, timestep or game rules. Shared engine work must preserve these choices rather than forcing all experiences through one universal configuration.
 
-## Ownership placement
+## Current working placement
 
-| Owner | Belongs here | Does not belong here |
-| --- | --- | --- |
-| Continuum lab | KSP behavior captures, portable solver experiments, performance comparisons, and candidate time/frame/physics models | Ownership of Gimbal's native runtime or Space Race rules |
-| KSP adapter | KSP/Unity lifecycle observation; capture and translation of host state; provider and mod inventory; command-line and panel controls; guarded authority acquisition; publication, readback, rollback, and evidence export | General simulation policy, game progression, a second copy of engine state rules, or silent ownership of incumbent mod hooks |
-| Gimbal | Native Rust simulation/runtime architecture; Space Race rules; application lifecycle, rendering, interaction, saves, and user-facing history | Required dependency on Continuum or KSP host integration |
-| Optional Gimbal KSP compatibility | Import of legally user-supplied KSP assets and data; mapping parts, vessels, bodies, saves, and declared mod contracts into Gimbal concepts; KSP fidelity profiles | A promise that arbitrary plugins can run without qualification |
+| Home | Current responsibility |
+| --- | --- |
+| Continuum | The private KSP laboratory, reconstruction, measured system replacement, portable experiments and candidate runtime services. A useful KSP outcome can justify this work without an existing Gimbal consumer. |
+| KSP adapter | Host lifecycle, state translation, mod contracts, guarded authority acquisition, publication, readback and restoration. Unity/KSP objects remain adapter concerns. |
+| Gimbal | Its existing native application, simulation and experience development. Its workloads can challenge, reuse or replace Continuum designs. |
+| Shared components, when justified | A component with explicit ownership and a working consumer across the programs. Place it where development and integration are simplest; extraction is not a prerequisite for experimentation. |
 
-Portable findings should cross into Gimbal only when a concrete Gimbal workload benefits from them. A KSP-shaped input can exercise a portable experiment without making that shape part of Gimbal's runtime.
+Authored parts need not define compute rows, rigid bodies, render instances or asset residency. Definitions, committed gameplay state, solver state, disposable predictions, presentation views and history have distinct lifetimes. Each state domain has one authority, with explicit topology, coordinate-frame and time identities at transitions. The [one-writer and transactional publication rules](active-physics-takeover.md) apply during live substitution.
 
-## Role of the current KSP addon in optional KSP work
+These are candidate shared invariants, not a commitment to one data layout, scheduler or solver. Validate each against actual consumers. Keep complete costs of capture, conversion, synchronization and publication visible.
 
-The addon can support four jobs when KSP replacement or compatibility is pursued:
+## Replacement and convergence paths
 
-1. **Observe:** capture inputs, outputs, lifecycle order, topology changes, and end-to-end cost from pinned KSP configurations.
-2. **Compare:** run Continuum strategies in shadow mode against stock or a declared mod provider.
-3. **Substitute:** take authority over one bounded channel or vessel class only after the ownership contract is proved, then measure behavior and cost against the same checkpoint.
-4. **Export:** turn qualified traces and content mappings into portable fixtures that can run without KSP.
+The addon supports observation, comparison, substitution and fixture export. Whole managed reconstruction, modern Unity migration and an independent runtime are also available paths in the [research program](ksp-research-program.md). They can compete or supply components to one another.
 
-It is not Gimbal's architectural center. Harmony patches, Unity components, MFI integration, floating-origin handling, and KSP identifiers remain adapter concerns described by the [replacement](replacement.md), [state ownership](ksp-state-ownership.md), [integration](integration-map.md), and [compatibility](compatibility.md) documents.
+For each selected capability:
 
-KSP and supported mods remain behavioral oracles for any compatibility profile. Space Race may deliberately choose different physics or rules; that difference should be named rather than presented as KSP equivalence.
+1. Capture the incumbent behavior and cost, or define an independent oracle when the experience intentionally differs.
+2. Give the replacement owned inputs and state; establish its full behavior and performance contract.
+3. Run it in shadow mode or a disposable standalone slice, then transfer authority where live integration requires it.
+4. Qualify a usable checkpoint including the relevant controls, rendering, save/load and restoration behavior.
+5. Reuse findings or code where another experience benefits. Extract or merge when that resolves an actual ownership or integration problem.
 
-## Optional KSP compatibility ladder
+Subsystem independence is claimed only for behavior that runs without the incumbent. Complete KSP/Unity replacement requires a playable standalone slice and progressively broader coverage; removing one callback or assembly does not establish it. The current measured rendering replacement remains the next performance target. Long-term convergence does not require another launch or benchmark before continuing that work.
 
-These rungs apply only if KSP replacement or a Gimbal KSP mode is pursued. Gimbal's native Rust runtime and Space Race game can progress without passing them. Each KSP rung leaves the previous path runnable until its replacement has passed the stated comparison.
+Harmony patches, Unity components, MFI integration and incumbent mod hooks remain host integration concerns described by [replacement](replacement.md), [state ownership](ksp-state-ownership.md), [integration](integration-map.md) and [compatibility](compatibility.md). Their existing shapes do not define the eventual engine architecture.
 
-1. **Portable kernel:** a Continuum subsystem runs from owned data without KSP or Unity assemblies. Acceptance requires deterministic fixtures, explicit error bounds, and backend-independent contracts.
-2. **Captured oracle:** the addon captures the complete inputs and observable outputs needed for one bounded KSP behavior. Acceptance requires provenance, lifecycle identity, and replayable fixtures; missing channels remain explicit.
-3. **Shadow parity:** Continuum evaluates the captured behavior while KSP remains authoritative. Acceptance requires profile-specific tolerances for outcomes and invariants across representative workloads.
-4. **Live substitution:** the addon gives Continuum exclusive authority over that bounded behavior in a disposable KSP instance. Acceptance requires state agreement, lower or otherwise justified end-to-end cost, rejection of stale work, and verified restoration without mutating the source save.
-5. **Standalone compatibility slice:** If a Gimbal KSP mode is pursued, Gimbal loads the corresponding user-supplied content without KSP or Unity. Acceptance covers simulation, controls, rendering, save/load, and the declared compatibility profile together.
-6. **Expanding compatibility:** repeat by subsystem and mod profile. For a Gimbal KSP mode, claim independence from the KSP runtime only for content and behavior that passed standalone qualification.
+## Open questions
 
-The narrow live-performance experiment remains available at rung 4, but it is no longer a gate for Gimbal. The [adaptive-fidelity work](replacement.md#adaptive-fidelity-and-long-time-spans) and existing portable kernels can be evaluated against Gimbal workloads independently.
-
-## Explicit limits and open questions
-
-- KSP asset and data loading needs a documented user-supplied-content and redistribution boundary before distribution.
-- Binary KSP plugins cannot be assumed portable to Gimbal. Compatibility may require a declared data adapter, source-level port, or reimplementation against a future Gimbal mod API.
-- Any code transfer into Gimbal needs a concrete consumer and an explicit ownership decision; repository boundaries alone do not enforce independence.
-- Rendering, audio, UI, and content streaming contracts need their own decisions when a standalone vertical slice makes them immediate.
-- Exact KSP compatibility and an improved Gimbal physics profile are distinct acceptance targets and should produce distinct receipts.
+- Which state, asset, rendering, time and simulation contracts survive use by more than one experience?
+- Which capabilities are best developed by replacing KSP systems, extending Gimbal directly, or comparing both implementations?
+- Would shared components, a common runtime or a repository merger reduce actual integration cost? There is no decision yet.
+- Which binary mod contracts can be supported, and which require adapters, ports or replacement implementations?
+- What exact artifact could be shared? Reconstructed game code, assets and rebuilt distributions remain private; publication is a separate artifact-specific decision.

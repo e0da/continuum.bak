@@ -2,6 +2,8 @@
 
 Continuum supports local reconstruction and performance research. The milestones are a trustworthy lab, controlled managed reconstruction, faster playable KSP, private native modern-Unity KSP, and interchangeable subsystems. They are independently qualified capabilities; a full replacement runtime is an optional destination.
 
+Continuum and Gimbal share a longer-term goal: support Kerbal-like, toy and realism experiences. The [project boundary](continuum-gimbal-boundary.md) is provisional. Continuum may replace both KSP's runtime systems and Unity, then support further Gimbal capabilities; findings and original components may also move in the other direction. Shared components, a common runtime or a repository merger remain available without being prerequisites. Each experience retains its own behavior, fidelity and performance contract.
+
 The laboratory is C#/Rust. Game binaries, reconstructed source, assets, saves, profiles, raw reports and generated projects stay in private runtime storage. Potential plugins or owner-installation migration tooling receive a separate artifact-specific sharing decision.
 
 ## Available commands
