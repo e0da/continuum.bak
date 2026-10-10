@@ -86,6 +86,7 @@ namespace KspContinuum
             if (!applied) return;
             SeedCamera();
             if (!cameraSeeded) throw new InvalidOperationException("Flight camera was unavailable at capture admission.");
+            FlightCameraFreeze.Start(FlightGlobals.ActiveVessel);
             if (Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-flight-hide-vessel") >= 0)
             {
                 Vessel vessel = FlightGlobals.ActiveVessel;
@@ -102,6 +103,7 @@ namespace KspContinuum
                 if (argument.StartsWith("--continuum-research-run=", StringComparison.Ordinal))
                     runId = argument.Substring("--continuum-research-run=".Length);
             FlightRenderCensus.Record(FlightGlobals.ActiveVessel, directory, runId, hiddenRenderers);
+            FlightMaterialCensus.Record(FlightGlobals.ActiveVessel, directory, runId);
             var report = new FlightDiagnosticControlReport
             {
                 runId = runId, width = Screen.width, height = Screen.height,
@@ -117,6 +119,7 @@ namespace KspContinuum
                 aeroFxQuality = GameSettings.AERO_FX_QUALITY, originalAeroFxQuality = originalAeroQuality
             };
             RecordAeroState(report);
+            FlightCameraFreeze.Record(report);
             recorded = report;
             File.WriteAllText(Path.Combine(directory, "diagnostic-controls.json"), ReportJson.Encode(report));
         }
@@ -134,12 +137,16 @@ namespace KspContinuum
             recorded.cameraFieldOfView = FlightCamera.fetch == null ? float.NaN : FlightCamera.fetch.FieldOfView;
             recorded.aeroFxQuality = GameSettings.AERO_FX_QUALITY;
             RecordAeroState(recorded);
+            FlightCameraFreeze.Record(recorded);
             File.WriteAllText(Path.Combine(directory, "diagnostic-controls-end.json"), ReportJson.Encode(recorded));
+            if (FlightCameraFreeze.FailureReason != null || recorded.cameraObservedInvocations == 0)
+                throw new InvalidOperationException("Camera freeze was not observed intact: " + recorded.cameraFailure);
         }
 
         public static void Restore()
         {
             if (!applied) return;
+            FlightCameraFreeze.Stop();
             foreach (Renderer renderer in hiddenRenderers) if (renderer != null) renderer.enabled = true;
             hiddenRenderers.Clear();
             QualitySettings.vSyncCount = originalVSync;
@@ -197,7 +204,11 @@ namespace KspContinuum
     {
         public string schema = "continuum-flight-controls/v1", runId, renderer, colorSpace, aeroReplacementShader;
         public string phase = "capture-start";
-        public string cameraScope = "Seeded FREE camera at pitch 0.2, heading 0.3, distance 150m; camera input locked. Engine may still adjust for terrain and vessel motion.";
+        public string cameraScope = "Root-relative view and projection frozen throughout capture, with native camera pre-cull observations; input locked.";
+        public string cameraContract, cameraFailure;
+        public bool cameraFrozen;
+        public int cameraObservedInvocations;
+        public double cameraMaxPositionErrorMeters, cameraMaxAngleErrorDegrees;
         public int width, height, vSyncCount, targetFrameRate, antialiasing, shadowCascades, pixelLights,
             qualityLevel, masterTextureLimit, cameraMode, originalVSync, originalFrameRate, hiddenVesselRenderers,
             stillHiddenVesselRenderers, aeroFxQuality, originalAeroFxQuality, aeroFxInstances,

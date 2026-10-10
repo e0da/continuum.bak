@@ -607,6 +607,7 @@ pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> 
         "flight-view.json",
         "perturbation.json",
         "render-census.json",
+        "material-census.json",
     ] {
         let path = directory.join(name);
         if path.exists() {
@@ -643,6 +644,17 @@ pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn camera_contract_rejects_unobserved_or_drifting_views() {
+        let valid = json!({"cameraFrozen":true,"cameraContract":"continuum-root-relative-camera/v1: fixture",
+            "cameraFailure":null,"cameraDistance":50.0,"cameraFieldOfView":60.0,
+            "cameraObservedInvocations":10,"cameraMaxPositionErrorMeters":0.001,"cameraMaxAngleErrorDegrees":0.001});
+        assert!(validate_frozen_camera(&valid, true).is_ok());
+        let mut missing = valid.clone(); missing["cameraObservedInvocations"] = json!(0);
+        assert!(validate_frozen_camera(&missing, true).is_err());
+        let mut drift = valid.clone(); drift["cameraMaxPositionErrorMeters"] = json!(0.1);
+        assert!(validate_frozen_camera(&drift, true).is_err());
+    }
     #[test]
     fn interpolation_uses_whole_distribution_and_rejects_missing_values() {
         let result = distribution(vec![40.0, 10.0, 30.0, 20.0]).unwrap();
@@ -1047,6 +1059,25 @@ fn owned_ps(pid: u32) -> Value {
     }
 }
 
+fn validate_frozen_camera(controls: &Value, end: bool) -> Result<()> {
+    if controls["cameraFrozen"] != true
+        || !controls["cameraContract"].as_str().unwrap_or("").starts_with("continuum-root-relative-camera/v1:")
+        || !controls["cameraFailure"].is_null()
+        || controls["cameraDistance"].as_f64() != Some(50.0)
+        || controls["cameraFieldOfView"].as_f64() != Some(60.0)
+        || (end && controls["cameraObservedInvocations"].as_u64().unwrap_or(0) == 0)
+    {
+        return Err("frozen camera contract or observation absent".into());
+    }
+    for (field, limit) in [("cameraMaxPositionErrorMeters", 0.005), ("cameraMaxAngleErrorDegrees", 0.005)] {
+        let error = controls[field].as_f64().ok_or("camera pose error absent")?;
+        if !error.is_finite() || error < 0.0 || error > limit {
+            return Err(format!("frozen camera {field} outside tolerance"));
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_controls(
     request: &Request,
     run_id: &str,
@@ -1065,13 +1096,14 @@ pub fn validate_controls(
         {
             return Err("diagnostic control evidence identity or effective controls differ".into());
         }
+        validate_frozen_camera(&controls, false)?;
         if aero_treatment {
             if controls["phase"] != "capture-start" {
                 return Err("aero start control phase differs".into());
             }
             validate_aero_boundary(request, &controls)?;
         }
-    } else if request.perturbation != "quiet" || request.hide_vessel || aero_treatment {
+    } else {
         return Err("requested diagnostic control evidence absent".into());
     }
     let end_path = output.join("diagnostic-controls-end.json");
@@ -1083,6 +1115,7 @@ pub fn validate_controls(
         {
             return Err("end diagnostic control evidence identity differs".into());
         }
+        validate_frozen_camera(&end, true)?;
         if aero_treatment {
             validate_aero_boundary(request, &end)?;
         }
@@ -1099,7 +1132,7 @@ pub fn validate_controls(
                 return Err("vessel renderer suppression boundary witness incomplete".into());
             }
         }
-    } else if request.hide_vessel || aero_treatment {
+    } else {
         return Err("requested rendering treatment end witness absent".into());
     }
     let batch_path = output.join("aero-batch.json");

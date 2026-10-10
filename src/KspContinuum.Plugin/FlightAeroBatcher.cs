@@ -43,6 +43,7 @@ namespace KspContinuum
             public Transform Transform, Parent; public Vector3 LocalScale; public string Identity;
         }
         static FlightAeroBatcher current;
+        public static bool IsActive { get { return current != null; } }
         public static bool activeRequested { get { return Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-flight-aero-batch") >= 0; } }
         public static string FailureReason { get { return current != null && current.faulted ? current.report.reason : null; } }
         readonly List<Source> sources = new List<Source>();
@@ -60,6 +61,10 @@ namespace KspContinuum
         public static Report Start(Vessel vessel, string directory, string runId)
         {
             if (!activeRequested) return null;
+            return StartExplicit(vessel, directory, runId);
+        }
+        public static Report StartExplicit(Vessel vessel, string directory, string runId)
+        {
             if (current != null) throw new InvalidOperationException("Aero batch owner already exists.");
             current = new FlightAeroBatcher { vessel = vessel, directory = directory,
                 report = new Report { runId = runId, processId = Process.GetCurrentProcess().Id, status = "preparing",

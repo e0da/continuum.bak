@@ -68,6 +68,10 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.FlightAeroBatcher+Report" ||
                  type.FullName == "KspContinuum.FlightAeroBatcher+Fallback" ||
                  type.FullName == "KspContinuum.FlightAeroBatcher+CameraCount" ||
+                 type.FullName == "KspContinuum.FlightMaterialCensus+Report" ||
+                 type.FullName == "KspContinuum.FlightMaterialCensus+Row" ||
+                 type.FullName == "KspContinuum.FlightMaterialCensus+Property" ||
+                 type.FullName == "KspContinuum.FlightMaterialCensus+Group" ||
                  type.FullName == "KspContinuum.AtmosphericEntryPreparation+Report" ||
                  type.FullName == "KspContinuum.AtmosphericEntryPreparation+Sample" ||
                  type.FullName == "KspContinuum.StartupWorldTiming+Report" ||

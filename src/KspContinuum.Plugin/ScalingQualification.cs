@@ -126,6 +126,11 @@ namespace KspContinuum
 
         public void Update()
         {
+            if (active && FlightCameraFreeze.FailureReason != null)
+            {
+                Fail(new InvalidOperationException("Camera freeze rejected: " + FlightCameraFreeze.FailureReason));
+                return;
+            }
             if (active && FlightAeroBatcher.FailureReason != null)
             {
                 Fail(new InvalidOperationException("Aero batch runtime rejected: " + FlightAeroBatcher.FailureReason));
