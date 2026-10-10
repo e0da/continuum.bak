@@ -35,6 +35,7 @@ fn run() -> Result<()> {
     }
     let allowed: &[&str] = match operation.as_str() {
         "inventory" => &["--instance", "--output"],
+        "admit-cache" => &["--instance", "--startup-cache", "--output"],
         "startup-timeline" => &["--log", "--output"],
         "prepare" => &["--output", "--variant"],
         "index" => &["--assembly", "--ilspy", "--output", "--project"],
@@ -64,6 +65,9 @@ fn run() -> Result<()> {
             "--startup-prepared-bundles",
             "--startup-catalog-mode",
             "--startup-catalog",
+            "--startup-texture-prefetch",
+            "--startup-texture-observe",
+            "--startup-dds-mapped",
         ],
         "compare" => &[
             "--baseline",
@@ -246,6 +250,19 @@ fn run() -> Result<()> {
             report["logSha256"] = json!(source_hash);
             write_new(output, &report)?;
         }
+        "admit-cache" => {
+            let started = Instant::now();
+            let instance = Path::new(get("--instance")?).canonicalize().map_err(|e| e.to_string())?;
+            if read::<Value>(&instance.join("continuum-lab.local.json"))?["scope"] != "disposable-lab" {
+                return Err("disposable laboratory ownership required".into());
+            }
+            let source_hashes = startup_bundle_hashes(&instance)?;
+            let admission = continuum_research_lab::admission::admit(
+                &instance, Path::new(get("--startup-cache")?), "offline-admission-proof", &source_hashes,
+            )?;
+            write_new(output, &json!({"schema":"continuum-offline-cache-admission/v1", "wallSeconds":started.elapsed().as_secs_f64(),
+                "proof":admission.proof,"files":admission.files,"sourceSha256":source_hashes,"scope":"no-game-launch-content-admission"}))?;
+        }
         "run" => smoke(
             Path::new(get("--instance")?),
             Path::new(get("--reservation")?),
@@ -324,6 +341,21 @@ fn run() -> Result<()> {
                 }
             },
             options.get("--startup-catalog").map(String::as_str),
+            match options.get("--startup-texture-prefetch").map(String::as_str) {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err("startup-texture-prefetch must be true or false".into()),
+            },
+            match options.get("--startup-texture-observe").map(String::as_str) {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err("startup-texture-observe must be true or false".into()),
+            },
+            match options.get("--startup-dds-mapped").map(String::as_str) {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err("startup-dds-mapped must be true or false".into()),
+            },
         )?,
         "compare" => {
             if let Some(path) = options.get("--startup-screen") {
@@ -520,6 +552,9 @@ fn smoke(
     startup_prepared_bundles: bool,
     startup_catalog_mode: &str,
     startup_catalog: Option<&str>,
+    startup_texture_prefetch: bool,
+    startup_texture_observe: bool,
+    startup_dds_mapped: bool,
 ) -> Result<()> {
     let admission_started = Instant::now();
     let catalog_preparation = startup_catalog_mode.starts_with("prepare");
@@ -655,6 +690,21 @@ fn smoke(
             _ => vec![],
         })
         .args(startup_catalog.map(|path| format!("--continuum-startup-catalog={path}")))
+        .args(if startup_texture_prefetch {
+            vec!["--continuum-startup-texture-prefetch"]
+        } else {
+            vec![]
+        })
+        .args(if startup_texture_observe {
+            vec!["--continuum-startup-texture-observe"]
+        } else {
+            vec![]
+        })
+        .args(if startup_dds_mapped {
+            vec!["--continuum-startup-dds-mapped"]
+        } else {
+            vec![]
+        })
         .args(if graphics_api == "metal" {
             vec!["-force-metal"]
         } else {
@@ -798,6 +848,9 @@ fn smoke(
         "startupUnlimitedRequested":startup_unlimited,
         "graphicsApiRequested":graphics_api,
         "startupPreparedBundlesRequested":startup_prepared_bundles,
+        "startupTexturePrefetchRequested":startup_texture_prefetch,
+        "startupTextureObserveRequested":startup_texture_observe,
+        "startupDdsMappedRequested":startup_dds_mapped,
         "startupCatalogModeRequested":startup_catalog_mode,"startupCatalog":startup_catalog,"startupCatalogSha256":catalog_before,
         "generatedCatalogSha256":generated_catalog_hash,
         "startupProfileRequested":startup_profile,

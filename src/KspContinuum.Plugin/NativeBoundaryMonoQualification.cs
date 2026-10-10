@@ -21,6 +21,7 @@ namespace KspContinuum
             if (Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-native-boundary-bench") < 0) return;
             try
             {
+                StartupTexturePrefetch.ObserveForMenu();
                 NativeBoundaryMonoReport report = Run();
                 string directory = Path.Combine(KSPUtil.ApplicationRootPath, "GameData", "KspContinuum", "PluginData");
                 Directory.CreateDirectory(directory);

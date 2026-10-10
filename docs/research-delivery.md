@@ -42,6 +42,14 @@ Candidate routes include settings/scheduling/allocations and existing mod fixes;
 
 Freeze numerical tolerances before implementation. Validate loading, resource and force ownership, staging, docking, scene/topology changes, stale work, cancellation, save/reload and restoration. Use independent analytic checks or invariants. Start with two comparable measurements; when they agree enough to choose the next action, move on. Add repetitions only when variability or a specific qualification decision needs them. There is no mandatory six-pair confirmation batch. Keep startup-boundary evidence separate from playable behavior, and preserve inconclusive results when measurements cannot resolve the decision.
 
+## Texture loading experiment
+
+Keep request preparation separate from the stock serial texture conversion and publication owner. PNG/JPEG request prefetch must have a bounded window and memory reservation, avoid duplicate sends, drain already-completed waits, and abort/dispose its unconsumed work on cancellation. Preserve normal-map, flag mipmap, icon readability, compression and registration behavior. A completed request is not a completed texture.
+
+The independent DDS alternative retains stock header parsing, format selection and publication while replacing whole-file and payload arrays with a file-backed mapped upload. The mapping must remain alive through synchronous Unity upload and be released on every completion or exception. Restrict this experiment to an immutable disposable profile; concurrent truncation of mapped files is outside that contract. Retain a managed fallback when mapping is unavailable.
+
+Compare the same prepared catalog and DLC profile with each alternative separately. Include admission in launch cost, ordered texture metadata and load/error sequence, scoped loading costs, bounded ownership counters and cleanup. Metadata parity establishes the startup seam only; it does not qualify rendered pixels or gameplay. One baseline and one candidate can settle a clear result. Repeat only for a specific ambiguity.
+
 ## Infrastructure obligations
 
 Continuum owns the C#/Rust laboratory, integration adapters, comparisons and packaging. Reuse Actions portable/private checks; introduce desktop Unity builds separately from Android when an actual project exists. Ops owns admitted Forge sessions, editor/runtime installation and private storage. Stack records verified build/install paths after they exist. Inspect current repository state before extending these owners; do not duplicate their tooling or claim capabilities from planned configurations.
