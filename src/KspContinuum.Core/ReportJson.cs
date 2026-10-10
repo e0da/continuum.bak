@@ -59,6 +59,8 @@ namespace KspContinuum
             var type = value.GetType();
             bool pluginDiagnostic = type.Assembly == typeof(ReportJson).Assembly &&
                 (type.FullName == "KspContinuum.FlightDiagnosticControlReport" ||
+                 type.FullName == "KspContinuum.AssetGenerationReport" ||
+                 type.FullName == "KspContinuum.AssetGenerationCapability" ||
                  type.FullName == "KspContinuum.FlightRenderCensus+Report" ||
                  type.FullName == "KspContinuum.FlightRenderCensus+CameraRow" ||
                  type.FullName == "KspContinuum.FlightRenderCensus+ShaderRow" ||

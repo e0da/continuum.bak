@@ -146,11 +146,12 @@ namespace KspContinuum
             report.admitted = !identityFailed && report.capabilities.Length > 0 && report.capabilities.All(c => c.admissionPassed);
             report.ready = recordingFailures == 0 && report.capabilities.Length > 0 && report.capabilities.All(c => c.state == "ready");
             report.status = recordingFailures > 0 ? "degraded" : report.capabilities.Length == 0 ? "no-prepared-capabilities-requested" : report.ready ? "ready" : "degraded";
-            Debug.Log(Marker + JsonUtility.ToJson(report));
+            string json = ReportJson.Encode(report);
+            Debug.Log(Marker + json);
             string directory = Path.Combine(report.instanceRoot, "GameData", "KspContinuum", "PluginData");
             Directory.CreateDirectory(directory);
             string path = Path.Combine(directory, "asset-generation-" + report.processId + "-" + phase + ".json");
-            File.WriteAllText(path, JsonUtility.ToJson(report));
+            File.WriteAllText(path, json);
         }
         public void Update() { ObserveMenu(); }
         public void OnApplicationQuit() { try { Export("shutdown"); } catch (Exception error) { RecordingFailed(null, error); } }
