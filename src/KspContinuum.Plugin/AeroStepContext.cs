@@ -150,6 +150,19 @@ namespace KspContinuum
         static void Require(bool condition, string detail) { if (!condition) throw new InvalidOperationException(detail); }
         static int Bits(float value) { return new FloatBits { value = value }.bits; }
         static bool Finite(float value) { return !float.IsNaN(value) && !float.IsInfinity(value); }
+        static bool SameMethod(MethodBase left, MethodBase right)
+        {
+            if (left == null || right == null || !ReferenceEquals(left.Module.Assembly, right.Module.Assembly) ||
+                left.Module.ModuleVersionId != right.Module.ModuleVersionId || left.MetadataToken != right.MetadataToken || left.DeclaringType != right.DeclaringType ||
+                left.IsGenericMethod != right.IsGenericMethod) return false;
+            return !left.IsGenericMethod || left.GetGenericArguments().SequenceEqual(right.GetGenericArguments());
+        }
+        static bool SameBody(MethodBase left, MethodBase right)
+        {
+            if (!SameMethod(left, right)) return false;
+            MethodBody a = left.GetMethodBody(), b = right.GetMethodBody();
+            return a != null && b != null && ConvectionSparseKernel.Hash(a.GetILAsByteArray()) == ConvectionSparseKernel.Hash(b.GetILAsByteArray());
+        }
         static void QualifyPartType(Type type)
         {
             Require((type == typeof(Part) || type == typeof(CompoundPart)) && type.Module.ModuleVersionId == ConvectionSparseKernel.Mvid &&
@@ -157,7 +170,7 @@ namespace KspContinuum
             foreach (string property in new[] { "Rigidbody", "DragCubes", "ShieldedFromAirstream" })
             {
                 MethodInfo inherited = AccessTools.PropertyGetter(type, property), original = AccessTools.DeclaredPropertyGetter(typeof(Part), property);
-                Require(original != null && !original.IsVirtual && original.DeclaringType == typeof(Part) && Equals(inherited, original),
+                Require(original != null && !original.IsVirtual && original.DeclaringType == typeof(Part) && SameBody(inherited, original),
                     "Stock part accessor dispatch differs: " + type.FullName + "." + property);
             }
         }
@@ -191,8 +204,8 @@ namespace KspContinuum
                 Type type = providers[i].GetType();
                 if (providerTypes.Contains(type)) continue;
                 InterfaceMapping map = type.GetInterfaceMap(typeof(ILiftProvider));
-                int getter = Array.FindIndex(map.InterfaceMethods, method => Equals(method, InterfaceGetter));
-                Require(getter >= 0 && Equals(map.TargetMethods[getter], ProviderGetter), "Unsupported ILiftProvider.IsLifting dispatch target.");
+                int getter = Array.FindIndex(map.InterfaceMethods, method => SameMethod(method, InterfaceGetter));
+                Require(getter >= 0 && !ProviderGetter.IsVirtual && SameBody(map.TargetMethods[getter], ProviderGetter), "Unsupported ILiftProvider.IsLifting dispatch target.");
                 providerTypes.Add(type);
             }
             Report.boundParts = parts.Length;
@@ -210,7 +223,7 @@ namespace KspContinuum
                 if (!graph.Add(method)) continue;
                 Require(graph.Count <= MaxMethods && Harmony.GetPatchInfo(method)?.Owners.Any() != true, "Original aero callgraph is too broad or already owned.");
                 MethodBody body = method.GetMethodBody();
-                if (method.Module.Assembly != typeof(FlightIntegrator).Assembly || Equals(method, Fixed)) continue;
+                if (method.Module.Assembly != typeof(FlightIntegrator).Assembly || SameMethod(method, Fixed)) continue;
                 Require(method.Module.ModuleVersionId == ConvectionSparseKernel.Mvid && body != null && body.ExceptionHandlingClauses.Count == 0,
                     "Original reachable managed method identity/exception shape differs.");
                 ILGenerator generator;
@@ -221,7 +234,7 @@ namespace KspContinuum
                     if (instruction.opcode != OpCodes.Call && instruction.opcode != OpCodes.Callvirt && instruction.opcode != OpCodes.Newobj) continue;
                     MethodBase called = instruction.operand as MethodBase;
                     Require(called != null, "Unknown managed call target.");
-                    if (Equals(called, InterfaceGetter)) { pending.Push(ProviderGetter); continue; }
+                    if (SameMethod(called, InterfaceGetter)) { pending.Push(ProviderGetter); continue; }
                     Require(!called.DeclaringType.IsInterface, "Unsupported reachable interface callback.");
                     var virtualCall = called as MethodInfo;
                     Require(virtualCall == null || !virtualCall.IsVirtual || virtualCall.IsFinal || called.DeclaringType == typeof(FlightIntegrator) ||
@@ -232,26 +245,26 @@ namespace KspContinuum
             Report.methods = graph.OrderBy(method => method.Module.ModuleVersionId).ThenBy(method => method.MetadataToken).Select(method => new MethodRow {
                 declaringType = method.DeclaringType.FullName, method = method.Name, metadataToken = method.MetadataToken,
                 assemblyMvid = method.Module.ModuleVersionId.ToString("D"), ilSha256 = method.GetMethodBody() == null ? null : ConvectionSparseKernel.Hash(method.GetMethodBody().GetILAsByteArray()),
-                patched = Targets.Any(target => Equals(target, method)) }).ToArray();
+                patched = Targets.Any(target => SameMethod(target, method)) }).ToArray();
         }
         bool OwnedGraph()
         {
             foreach (MethodBase method in graph)
             {
-                int index = Array.FindIndex(Targets, target => Equals(target, method)); Patches info = Harmony.GetPatchInfo(method);
+                int index = Array.FindIndex(Targets, target => SameMethod(target, method)); Patches info = Harmony.GetPatchInfo(method);
                 if (index < 0) { if (info?.Owners.Any() == true) return false; continue; }
                 if (info == null || info.Owners.Any(owner => owner != Owner) || info.Transpilers.Count != 1 || info.Postfixes.Count != 0 ||
                     info.Prefixes.Count != (index == 0 ? 1 : 0) || info.Finalizers.Count != (index == 0 ? 1 : 0) ||
-                    !Equals(info.Transpilers[0].PatchMethod, AccessTools.DeclaredMethod(typeof(AeroStepContext), "Transform"))) return false;
-                if (index == 0 && (!Equals(info.Prefixes[0].PatchMethod, AccessTools.DeclaredMethod(typeof(AeroStepContext), "Prefix")) ||
-                    !Equals(info.Finalizers[0].PatchMethod, AccessTools.DeclaredMethod(typeof(AeroStepContext), "Finalizer")))) return false;
+                    !SameMethod(info.Transpilers[0].PatchMethod, AccessTools.DeclaredMethod(typeof(AeroStepContext), "Transform"))) return false;
+                if (index == 0 && (!SameMethod(info.Prefixes[0].PatchMethod, AccessTools.DeclaredMethod(typeof(AeroStepContext), "Prefix")) ||
+                    !SameMethod(info.Finalizers[0].PatchMethod, AccessTools.DeclaredMethod(typeof(AeroStepContext), "Finalizer")))) return false;
             }
             return true;
         }
         static int Role(CodeInstruction[] code, int index, MethodBase method)
         {
             if (!code[index].Calls(Evaluate)) return -1;
-            if (Equals(method, Surface))
+            if (SameMethod(method, Surface))
             {
                 Require(index >= 2 && code[index - 1].opcode == OpCodes.Ldarg_2 && code[index - 2].opcode == OpCodes.Ldfld, "Surface Mach operand shape differs.");
                 FieldInfo field = code[index - 2].operand as FieldInfo;
@@ -259,7 +272,7 @@ namespace KspContinuum
                 switch (field.Name) { case "dragCurveTail": return 0; case "dragCurveSurface": return 1; case "dragCurveTip": return 2; case "dragCurveMultiplier": return 3; }
                 throw new InvalidOperationException("Unknown surface Mach role.");
             }
-            if (Equals(method, Faces) && code[index - 1].opcode == OpCodes.Ldarg_2)
+            if (SameMethod(method, Faces) && code[index - 1].opcode == OpCodes.Ldarg_2)
             {
                 Require(index >= 2 && code[index - 2].opcode == OpCodes.Ldfld, "Six-face Mach operand shape differs.");
                 FieldInfo field = code[index - 2].operand as FieldInfo;
@@ -267,7 +280,7 @@ namespace KspContinuum
                 if (field.Name == "DragCurveCdPower") return 4;
                 Require(field.Name == "DragCurveMultiplier", "Unknown six-face Mach role."); return 3;
             }
-            if (Equals(method, Aero))
+            if (SameMethod(method, Aero))
             {
                 Require(index >= 4 && code[index - 1].opcode == OpCodes.Conv_R4 && code[index - 2].opcode == OpCodes.Ldfld &&
                     Equals(code[index - 2].operand, AccessTools.Field(typeof(FlightIntegrator), "mach")) && code[index - 3].opcode == OpCodes.Ldarg_0 &&
@@ -279,7 +292,7 @@ namespace KspContinuum
         static IEnumerable<CodeInstruction> Transform(IEnumerable<CodeInstruction> source, ILGenerator generator, MethodBase __originalMethod)
         {
             AeroStepContext owner = active; Require(owner != null, "Aero context patch owner missing.");
-            int target = Array.FindIndex(Targets, method => Equals(method, __originalMethod)); Require(target >= 0, "Unknown aero context patch identity.");
+            int target = Array.FindIndex(Targets, method => SameMethod(method, __originalMethod)); Require(target >= 0, "Unknown aero context patch identity.");
             var code = source.Select(item => new CodeInstruction(item)).ToArray();
             Require(code.Length == Instructions[target] && code.All(item => item.blocks.Count == 0), "Pinned aero context IL shape differs.");
             var result = new List<CodeInstruction>(); var roles = new List<int>(); int roots = 0;
