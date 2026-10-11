@@ -62,6 +62,9 @@ namespace KspContinuum
             public double settleSeconds;
             public string[] admissionFailures;
             public EngineRow[] shutdownEngines;
+            public string savedStartScene, loadedStartScene;
+            public bool loadedCompatible;
+            public MembershipRow[] loadedMemberships;
             public SnapshotRow before, after; public MembershipRow[] memberships; public EventRow[] events; public string[] screenshots;
         }
         sealed class CameraPose { public Camera camera; public Vector3 position; public Quaternion rotation; }
@@ -166,6 +169,8 @@ namespace KspContinuum
             savePath = Path.GetFullPath(Path.Combine(KSPUtil.ApplicationRootPath, "saves", ScaleCheckpointLoadState.Save, saveName + ".sfs"));
             if (File.Exists(savePath)) throw new InvalidOperationException("Disposable checkpoint already exists.");
             Game state = HighLogic.CurrentGame.Updated(GameScenes.FLIGHT);
+            state.startScene = GameScenes.FLIGHT;
+            report.savedStartScene = state.startScene.ToString();
             report.memberships = Memberships(state);
             string result = GamePersistence.SaveGame(state, saveName, ScaleCheckpointLoadState.Save, SaveMode.ABORT);
             if (result != saveName || !File.Exists(savePath)) throw new InvalidOperationException("Stock save did not publish the owned checkpoint.");
@@ -186,6 +191,9 @@ namespace KspContinuum
             if (lockOwned) { InputLockManager.RemoveControlLock(Lock); lockOwned = false; }
             if (ScaleCheckpointLoadState.HashFile(savePath) != report.savedSha256) throw new InvalidOperationException("Owned checkpoint changed before reload.");
             reloadedGame = GamePersistence.LoadGame(saveName, ScaleCheckpointLoadState.Save, true, true);
+            report.loadedCompatible = reloadedGame != null && reloadedGame.compatible;
+            report.loadedStartScene = reloadedGame == null ? null : reloadedGame.startScene.ToString();
+            report.loadedMemberships = reloadedGame == null || reloadedGame.flightState == null ? null : Memberships(reloadedGame);
             if (reloadedGame == null || !reloadedGame.compatible || reloadedGame.flightState == null || reloadedGame.startScene != GameScenes.FLIGHT || !SameMemberships(report.memberships, Memberships(reloadedGame)))
                 throw new InvalidOperationException("Reloaded game is incompatible or whole-game partition differs.");
             Record("reload-requested"); Export();

@@ -34,6 +34,10 @@ pub fn validate(r: &Value, run: &str, pid: u32, expected: u32, source: &str) -> 
     if !rows(r,"admissionFailures")?.is_empty() || !(0.0..=60.).contains(&number(r,"settleSeconds")?) {
         return Err("reload quiet admission or declared settling failed".into());
     }
+    if r["savedStartScene"]!="FLIGHT" || r["loadedStartScene"]!="FLIGHT" || r["loadedCompatible"]!=true
+        || rows(r,"memberships")?.is_empty() || r["memberships"]!=r["loadedMemberships"] {
+        return Err("reload saved scene or whole-game partition differs".into());
+    }
     let a = &r["before"]; let b = &r["after"];
     if a["vesselId"] != b["vesselId"] || a["bodyName"] != b["bodyName"] || a["bodyName"].as_str().is_none()
         || a["vesselId"].as_str().is_none_or(|s| s.len()!=36)
