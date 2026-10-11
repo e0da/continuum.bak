@@ -21,6 +21,7 @@ namespace KspContinuum
         static readonly MethodInfo Aero = AccessTools.DeclaredMethod(typeof(FlightIntegrator), "UpdateAerodynamics", new[] { typeof(Part) });
         static readonly MethodInfo Faces = AccessTools.DeclaredMethod(typeof(DragCubeList), "AddSurfaceDragDirection", new[] { typeof(Vector3), typeof(float), typeof(DragCubeList.CubeData).MakeByRefType() });
         static readonly MethodInfo Surface = AccessTools.DeclaredMethod(typeof(PhysicsGlobals), "DragCurveValue", new[] { typeof(PhysicsGlobals.SurfaceCurvesList), typeof(float), typeof(float) });
+        static readonly MethodInfo SetDrag = AccessTools.DeclaredMethod(typeof(DragCubeList), "SetDrag", new[] { typeof(Vector3), typeof(float) });
         static readonly MethodInfo Evaluate = AccessTools.DeclaredMethod(typeof(FloatCurve), "Evaluate", new[] { typeof(float) });
         static readonly MethodInfo ProviderGetter = AccessTools.PropertyGetter(typeof(ModuleLiftingSurface), "IsLifting");
         static readonly MethodInfo InterfaceGetter = AccessTools.PropertyGetter(typeof(ILiftProvider), "IsLifting");
@@ -56,21 +57,31 @@ namespace KspContinuum
             public string partOwnerScope = "Exact pinned Part or stock CompoundPart with inherited nonvirtual Part Rigidbody/DragCubes/ShieldedFromAirstream accessors; exact non-null DragCubeList. CompoundPart lifecycle/editor overrides are outside the retained Integrate callgraph. Custom subclasses and absent cube owners are unsupported.";
             public string timingScope = "Query windows charge original root elapsed plus complete context prefix/admission/reset/end bookkeeping; root contains lookup/first-use Evaluate/native force costs. Installation and first invocation retained separately. Verify is original-return same-state numerical proof; it records at most two captured roots and then runs stock. Compare alternates captured control-original/query roots with identical admission, slot, lookup, counter and window instrumentation and one original force fold per root; control hits evaluate and return original without verification comparisons/timers. Different adjacent physical states remain a confound, not a same-state complete-fold benchmark. No FPS claim.";
             public string compareScope = "Captured comparison sequence is fixed before root timing: even control-original, odd query. Pre-capture compare roots use control-original. Slot hits count initialized lookups on both arms; only query hits are memoized returns. Both arms charge complete context costs; no duplicate force fold. Independent prior verify witness is required for numerical qualification, not supplied by compare.";
+            public string dragScope = "Optional root-admitted complete six-face SetDrag donor with ephemeral face inputs, lazy six-role Mach table and per-call local role values. One reached original SetDrag callsite is replaced; SetDrag has no per-part Harmony patch. Complete temporary CubeData is published once in original part order. Two original-return qualification roots compare all 13 fields at unchanged donor tolerance before substitution. Query/compare require that qualification before capture. Qualification repeats only managed drag arithmetic, never native force publication. The whole root/native owner remains original; no root-wide native-force rollback claim.";
+            public bool dragTransactionRequested;
+            public double dragTolerance = AeroDragTransaction.Tolerance, dragMaximumRelativeError;
             public string fallbackScope = "Admission failure runs the entire original root without memoization. Unexpected in-root key/context or nonfinite result stops future reuse and marks this experiment invalid; no synthetic native-force rollback or all-or-none publication claim.";
             public string[] roleOrder = { "surface-tail", "surface", "surface-tip", "surface-multiplier-and-exposure", "cd-power", "body-lift-mach" };
             public int processId, boundParts, boundStockParts, boundCompoundParts, surfaceFieldToken, patchedMethods, shapeAdmissions, transpilerExecutions, cleanupRecompositions, staticCallsites, errors, originalExceptions, recursionStops, safetyStops, verificationMismatches, droppedWindows;
             public long clockFrequency = Stopwatch.Frequency, installationStartedTicks, installationEndedTicks, cleanupStartedTicks, cleanupEndedTicks;
             public long firstInvocationAdmissionTicks, firstInvocationRootTicks, firstInvocationContextCompleteTicks;
             public bool firstInvocationCaptured;
+            public string firstInvocationTreatment;
             public long calls, captureCalls, admittedRoots, captureAdmittedRoots, fallbacks, captureFallbacks, completedRoots, captureCompletedRoots, memoizedCalls, captureMemoizedCalls, originalEvaluations, verificationEvaluations;
             public long captureControlCompletedRoots, captureQueryCompletedRoots, captureControlOriginalEvaluations, captureQueryOriginalEvaluations;
+            public int staticSetDragCallsites, faceDirectionFieldToken, dragQualificationRoots;
+            public long captureVerificationEvaluations, dragQualificationCalls, dragQualificationContextTicks, dragOriginalCalls, dragCandidateCalls, dragVerifiedCalls;
+            public long captureOriginalSetDragCalls, captureCandidateSetDragCalls, captureVerifiedSetDragCalls;
+            public long dragWarmupWaitStartedTicks, dragWarmupWaitEndedTicks;
+            public long firstDragSubstitutionContextTicks;
+            public bool firstDragSubstitutionCaptured;
             public MethodRow[] methods = new MethodRow[0];
             public Window[] windows = new Window[0];
         }
         [Serializable] public sealed class MethodRow
         {
             public string declaringType, method, assemblyMvid, ilSha256;
-            public int metadataToken, instructionCount, shapeApplications, cleanupApplications;
+            public int metadataToken, instructionCount, shapeApplications, cleanupApplications, setDragCallsites;
             public bool patched;
             public int[] roles = new int[0];
         }
@@ -83,16 +94,22 @@ namespace KspContinuum
             public string treatment, fallback, mismatch;
             public long[] calls = new long[Roles], hits = new long[Roles], originalEvaluations = new long[Roles];
             public int[] firstValueBits = new int[Roles];
+            public int setDragCalls, originalSetDragCalls, candidateSetDragCalls, shadowSetDragCalls, verifiedSetDragCalls;
         }
-        sealed class Context
+        internal sealed class Context
         {
             internal AeroStepContext owner;
             internal FlightIntegrator integrator;
             internal Window window;
             internal bool eligible, verifying, comparing, control, captured;
+            internal bool dragQualifying;
+            internal bool firstDragSubstitution;
             internal long fixedStart, prefixTicks, rootStart, admissionTicks;
             internal bool firstInvocation;
             internal int inputBits, validMask, aeroEntries, faceEntries, surfaceEntries;
+            internal int setDragCalls, originalSetDragCalls, candidateSetDragCalls, shadowSetDragCalls, verifiedSetDragCalls;
+            internal float input;
+            internal FloatCurve directionCd, directionLift;
             internal readonly FloatCurve[] curves = new FloatCurve[Roles];
             internal readonly AnimationCurve[] native = new AnimationCurve[Roles];
             internal readonly float[] values = new float[Roles];
@@ -103,11 +120,15 @@ namespace KspContinuum
             [FieldOffset(0)] internal int bits;
         }
         public ReportData Report { get; private set; }
+        public bool ReadyForCapture { get { return !Report.dragTransactionRequested || Report.mode == "verify" || Report.dragQualificationRoots == 2; } }
+        public bool HasFault { get { return disabled || Report.errors != 0 || Report.safetyStops != 0 || Report.originalExceptions != 0; } }
+        public bool QualificationFailed { get { return HasFault; } }
 
         AeroStepContext(string mode, string runId, Func<bool> capturing)
         {
             this.capturing = capturing; vessel = FlightGlobals.ActiveVessel;
             Report = new ReportData { mode = mode, runId = runId, vesselId = vessel.id.ToString("D"), processId = Process.GetCurrentProcess().Id,
+                dragTransactionRequested = Environment.GetEnvironmentVariable("CONTINUUM_AERO_DRAG_TRANSACTION") == "1",
                 installationStartedTicks = Stopwatch.GetTimestamp() };
             epoch.owner = this;
             try
@@ -117,6 +138,11 @@ namespace KspContinuum
                 for (int i = 0; i < Targets.Length; i++) ConvectionSparseKernel.Pin(Targets[i], Targets[i].DeclaringType, Tokens[i]);
                 ConvectionSparseKernel.Pin(Integrate, typeof(FlightIntegrator), 100677461);
                 ConvectionSparseKernel.Pin(Evaluate, typeof(FloatCurve), 100681489);
+                if (Report.dragTransactionRequested)
+                {
+                    ConvectionSparseKernel.Pin(SetDrag, typeof(DragCubeList), 100664779);
+                    Report.faceDirectionFieldToken = AeroDragTransaction.Qualify();
+                }
                 BindParts(); QualifyGraph();
                 for (int i = 0; i < windows.Length; i++) windows[i] = new Window();
                 active = this; acquired = true; installing = true;
@@ -127,7 +153,8 @@ namespace KspContinuum
                         finalizer: i == 0 ? new HarmonyMethod(AccessTools.DeclaredMethod(typeof(AeroStepContext), "Finalizer")) : null);
                     Report.patchedMethods++;
                 }
-                Require(Report.shapeAdmissions == 4 && Report.staticCallsites == 9 && OwnedGraph(), "Aero root/callsite/ownership installation differs.");
+                Require(Report.shapeAdmissions == 4 && Report.staticCallsites == 9 &&
+                    (!Report.dragTransactionRequested || Report.staticSetDragCallsites == 1) && OwnedGraph(), "Aero root/callsite/ownership installation differs.");
                 Report.status = Report.cleanupStatus = "installed";
             }
             catch (Exception error)
@@ -140,6 +167,9 @@ namespace KspContinuum
         public static AeroStepContext Create(string[] args, string runId, Func<bool> capturing)
         {
             string mode = Environment.GetEnvironmentVariable("CONTINUUM_AERO_STEP_CONTEXT");
+            string drag = Environment.GetEnvironmentVariable("CONTINUUM_AERO_DRAG_TRANSACTION");
+            if (!string.IsNullOrEmpty(drag) && (drag != "1" || string.IsNullOrEmpty(mode)))
+                throw new InvalidOperationException("Drag transaction requires value 1 and an explicit aero step context mode.");
             if (string.IsNullOrEmpty(mode)) return null;
             if ((mode != "verify" && mode != "query" && mode != "compare") || string.IsNullOrEmpty(runId) || capturing == null || FlightGlobals.ActiveVessel == null ||
                 !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_AERO_INTEGRATION_ATTRIBUTION")) ||
@@ -306,7 +336,7 @@ namespace KspContinuum
             int target = Array.FindIndex(Targets, method => SameMethod(method, __originalMethod)); Require(target >= 0, "Unknown aero context patch identity.");
             var code = source.Select(item => new CodeInstruction(item)).ToArray();
             Require(code.Length == Instructions[target] && code.All(item => item.blocks.Count == 0), "Pinned aero context IL shape differs.");
-            var result = new List<CodeInstruction>(); var roles = new List<int>(); int roots = 0;
+            var result = new List<CodeInstruction>(); var roles = new List<int>(); int roots = 0, setDragSites = 0;
             if (target != 0)
             {
                 var entry = new CodeInstruction(OpCodes.Ldc_I4, target - 1); entry.labels.AddRange(code[0].labels); code[0].labels.Clear(); result.Add(entry);
@@ -324,22 +354,35 @@ namespace KspContinuum
                     result.Add(new CodeInstruction(OpCodes.Ldloc, integrator));
                     result.Add(new CodeInstruction(OpCodes.Call, AccessTools.DeclaredMethod(typeof(AeroStepContext), "EndRoot"))); continue;
                 }
+                if (target == 1 && owner.Report.dragTransactionRequested && code[i].Calls(SetDrag))
+                {
+                    Require(i >= 5 && code[i - 1].opcode == OpCodes.Conv_R4 && code[i - 2].opcode == OpCodes.Ldfld &&
+                        Equals(code[i - 2].operand, AccessTools.Field(typeof(FlightIntegrator), "mach")) && code[i - 3].opcode == OpCodes.Ldarg_0 &&
+                        code[i - 4].opcode == OpCodes.Ldfld && Equals(code[i - 4].operand, AccessTools.Field(typeof(Part), "dragVectorDirLocal")) &&
+                        code[i - 5].opcode == OpCodes.Ldarg_1, "Original SetDrag vector/Mach callsite differs.");
+                    var partLoad = new CodeInstruction(OpCodes.Ldarg_1); partLoad.labels.AddRange(code[i].labels);
+                    result.Add(partLoad); result.Add(new CodeInstruction(OpCodes.Call, AccessTools.DeclaredMethod(typeof(AeroStepContext), "SetDragAtRoot")));
+                    setDragSites++; continue;
+                }
                 int role = Role(code, i, __originalMethod);
                 if (role < 0) { result.Add(code[i]); continue; }
                 Require(i == 0 || (code[i - 1].opcode != OpCodes.Tailcall && code[i - 1].opcode != OpCodes.Constrained), "Unsupported Mach call prefix.");
                 var load = new CodeInstruction(OpCodes.Ldc_I4, role); load.labels.AddRange(code[i].labels); result.Add(load); result.Add(new CodeInstruction(OpCodes.Call, CachedMethod)); roles.Add(role);
             }
             int[][] expected = { new int[0], new[] { 5 }, new[] { 4, 3 }, new[] { 0, 1, 3, 1, 2, 3 } };
-            Require(roles.SequenceEqual(expected[target]) && (target != 0 || roots == 1), "Nine original Mach roles/root order differs.");
+            Require(roles.SequenceEqual(expected[target]) && (target != 0 || roots == 1) &&
+                setDragSites == (target == 1 && owner.Report.dragTransactionRequested ? 1 : 0), "Nine original Mach roles/root/drag order differs.");
             MethodRow row = owner.Report.methods.Single(item => item.assemblyMvid == __originalMethod.Module.ModuleVersionId.ToString("D") && item.metadataToken == __originalMethod.MetadataToken);
             if (row.shapeApplications == 0)
             {
                 Require(owner.installing && !owner.cleaning, "First aero context admission outside installation.");
                 row.roles = roles.ToArray(); row.instructionCount = code.Length; owner.Report.shapeAdmissions++; owner.Report.staticCallsites += roles.Count;
+                row.setDragCallsites = setDragSites; owner.Report.staticSetDragCallsites += setDragSites;
             }
             else
             {
-                Require(owner.cleaning && row.roles.SequenceEqual(roles) && row.instructionCount == code.Length, "Aero context reapplication outside exact owned cleanup.");
+                Require(owner.cleaning && row.roles.SequenceEqual(roles) && row.instructionCount == code.Length && row.setDragCallsites == setDragSites,
+                    "Aero context reapplication outside exact owned cleanup.");
                 row.cleanupApplications++; owner.Report.cleanupRecompositions++;
             }
             row.shapeApplications++; owner.Report.transpilerExecutions++; return result;
@@ -351,6 +394,8 @@ namespace KspContinuum
             if (current != null) { current.eligible = false; owner.Report.recursionStops++; owner.disabled = true; return; }
             __state = owner.epoch; __state.integrator = __instance; __state.window = null; __state.eligible = false; __state.validMask = 0;
             __state.rootStart = 0; __state.firstInvocation = false;
+            __state.firstDragSubstitution = false;
+            __state.setDragCalls = __state.originalSetDragCalls = __state.candidateSetDragCalls = __state.shadowSetDragCalls = __state.verifiedSetDragCalls = 0;
             __state.aeroEntries = __state.faceEntries = __state.surfaceEntries = 0; __state.fixedStart = start; __state.captured = owner.capturing();
             current = __state; __state.prefixTicks = Stopwatch.GetTimestamp() - start;
         }
@@ -367,6 +412,13 @@ namespace KspContinuum
                 if (epoch.curves[i] == null || epoch.curves[i].Curve == null) return Reject("missing-curve-role-" + i);
                 epoch.native[i] = epoch.curves[i].Curve;
             }
+            if (Report.dragTransactionRequested)
+            {
+                epoch.directionCd = PhysicsGlobals.DragCurveCd;
+                epoch.directionLift = PhysicsGlobals.BodyLiftCurve == null ? null : PhysicsGlobals.BodyLiftCurve.liftCurve;
+                if (epoch.directionCd == null || epoch.directionCd.Curve == null || epoch.directionLift == null || epoch.directionLift.Curve == null ||
+                    !AeroDragTransaction.DirectionLease()) return Reject("drag-direction-curve-or-face-basis-differs");
+            }
             for (int i = 0; i < parts.Length; i++)
             {
                 Part part = parts[i]; DragCubeList cube = cubes[i];
@@ -378,8 +430,10 @@ namespace KspContinuum
                 if (!ReferenceEquals(row.dragCurveTail, epoch.curves[0]) || !ReferenceEquals(row.dragCurveSurface, epoch.curves[1]) ||
                     !ReferenceEquals(row.dragCurveTip, epoch.curves[2]) || !ReferenceEquals(row.dragCurveMultiplier, epoch.curves[3]) ||
                     !ReferenceEquals(cube.DragCurveMultiplier, epoch.curves[3]) || !ReferenceEquals(cube.DragCurveCdPower, epoch.curves[4])) return Reject("part-curve-role-aliases-differ");
+                if (Report.dragTransactionRequested && !AeroDragTransaction.Admit(cube, epoch.directionCd, epoch.directionLift))
+                    return Reject("drag-input-array-or-direction-provider-differs:" + DescribePart(part, i));
             }
-            epoch.inputBits = Bits(mach); return true;
+            epoch.input = mach; epoch.inputBits = Bits(mach); return true;
         }
         bool Reject(string reason) { Report.lastFallback = reason; return false; }
         static void BeginRoot(FlightIntegrator integrator, Part root)
@@ -387,14 +441,19 @@ namespace KspContinuum
             Context context = current; if (context == null || !ReferenceEquals(context.integrator, integrator)) return;
             AeroStepContext owner = context.owner; long admission = Stopwatch.GetTimestamp(); owner.Report.calls++;
             if (context.captured) owner.Report.captureCalls++;
-            context.verifying = owner.Report.mode == "verify";
+            bool verifyMode = owner.Report.mode == "verify";
             context.comparing = owner.Report.mode == "compare";
             int compareSequence = context.comparing && context.captured ? owner.compareWindows++ : -1;
             context.control = context.comparing && (compareSequence < 0 || (compareSequence & 1) == 0);
-            if (context.verifying && (!context.captured || owner.verifyWindows >= 2)) return;
+            if (verifyMode && (!context.captured || owner.verifyWindows >= 2)) return;
+            context.dragQualifying = owner.Report.dragTransactionRequested && (verifyMode || owner.Report.dragQualificationRoots < 2);
+            context.verifying = verifyMode || context.dragQualifying;
+            if (context.dragQualifying) context.control = false;
             try
             {
                 context.validMask = 0; context.eligible = owner.Admit(integrator, root);
+                if (context.dragQualifying && context.captured && !verifyMode)
+                    context.eligible = owner.Reject("drag-qualification-incomplete-before-capture");
                 context.firstInvocation = owner.sequence == 0;
                 Window window = null;
                 if (context.captured)
@@ -407,7 +466,7 @@ namespace KspContinuum
                         window.fixedStartedTicks = context.fixedStart; window.prefixTicks = context.prefixTicks; window.originalReturnVerification = context.verifying;
                         window.compareSequence = compareSequence; window.treatment = context.verifying ? "verify-original-return" : context.control ? "control-original" : "query";
                         window.firstInvocation = context.firstInvocation; window.fallback = context.eligible ? null : owner.Report.lastFallback;
-                        if (context.verifying && context.eligible) owner.verifyWindows++;
+                        if (verifyMode && context.eligible) owner.verifyWindows++;
                     }
                 }
                 owner.sequence++;
@@ -427,11 +486,20 @@ namespace KspContinuum
         {
             Context context = current;
             if (context == null || !context.eligible) return curve.Evaluate(input);
-            AeroStepContext owner = context.owner; Window window = context.window;
+            AeroStepContext owner = context.owner;
             if (role < 0 || role >= Roles || !ReferenceEquals(curve, context.curves[role]) || Bits(input) != context.inputBits)
             {
                 owner.StopReuse("unexpected-in-root-curve-input-key"); return curve.Evaluate(input);
             }
+            return EvaluateSlot(context, curve, input, role);
+        }
+        internal static float EvaluateRole(Context context, int role)
+        {
+            return EvaluateSlot(context, context.curves[role], context.input, role);
+        }
+        static float EvaluateSlot(Context context, FloatCurve curve, float input, int role)
+        {
+            AeroStepContext owner = context.owner; Window window = context.window;
             if (window != null) window.calls[role]++;
             int bit = 1 << role;
             if ((context.validMask & bit) == 0)
@@ -451,6 +519,7 @@ namespace KspContinuum
             if (context.verifying)
             {
                 long start = Stopwatch.GetTimestamp(); float original = curve.Evaluate(input); owner.Report.verificationEvaluations++;
+                if (context.captured) owner.Report.captureVerificationEvaluations++;
                 if (window != null) { window.verificationTicks += Stopwatch.GetTimestamp() - start; window.originalEvaluations[role]++; }
                 if (Bits(original) != Bits(context.values[role]))
                 {
@@ -461,6 +530,52 @@ namespace KspContinuum
             }
             owner.Report.memoizedCalls++; if (context.captured) owner.Report.captureMemoizedCalls++;
             return context.values[role];
+        }
+        static void SetDragAtRoot(DragCubeList cubes, Vector3 input, float mach, Part part)
+        {
+            Context context = current;
+            if (context == null || !context.eligible) { cubes.SetDrag(input, mach); return; }
+            AeroStepContext owner = context.owner; context.setDragCalls++;
+            if (!ReferenceEquals(cubes, part.DragCubes) || Bits(mach) != context.inputBits || cubes.None)
+            {
+                owner.StopReuse("unexpected-in-root-drag-owner-or-input"); cubes.SetDrag(input, mach); return;
+            }
+            if (context.control || context.verifying)
+            {
+                context.originalSetDragCalls++; owner.Report.dragOriginalCalls++;
+                cubes.SetDrag(input, mach);
+                if (!context.verifying || !context.eligible) return;
+                DragCubeList.CubeData stock = AeroDragTransaction.Snapshot(cubes);
+                try
+                {
+                    DragCubeList.CubeData candidate = AeroDragTransaction.Calculate(cubes, input, context);
+                    context.shadowSetDragCalls++;
+                    double error;
+                    bool matched = AeroDragTransaction.Equivalent(candidate, stock, out error);
+                    owner.Report.dragMaximumRelativeError = Math.Max(owner.Report.dragMaximumRelativeError, error);
+                    if (!matched)
+                    {
+                        owner.Report.verificationMismatches++;
+                        if (context.window != null) context.window.mismatch = "complete-drag-relative-error=" + error;
+                        owner.StopReuse("complete-drag-output-mismatch"); return;
+                    }
+                    if (context.eligible) { context.verifiedSetDragCalls++; owner.Report.dragVerifiedCalls++; }
+                }
+                catch (Exception error) { owner.Fault(error); owner.StopReuse("drag-shadow-failed-before-publication"); }
+                return;
+            }
+            DragCubeList.CubeData value;
+            try
+            {
+                value = AeroDragTransaction.Calculate(cubes, input, context);
+            }
+            catch (Exception error)
+            {
+                owner.Fault(error); owner.StopReuse("drag-candidate-failed-before-publication"); cubes.SetDrag(input, mach); return;
+            }
+            if (!context.eligible) { cubes.SetDrag(input, mach); return; }
+            if (owner.Report.dragCandidateCalls == 0) context.firstDragSubstitution = true;
+            AeroDragTransaction.Publish(cubes, value); context.candidateSetDragCalls++; owner.Report.dragCandidateCalls++;
         }
         void StopReuse(string reason)
         {
@@ -475,15 +590,34 @@ namespace KspContinuum
             {
                 window.endedTicks = ended; window.rootTicks = ended - window.startedTicks; window.captureActiveAtEnd = owner.capturing();
                 window.aeroEntries = context.aeroEntries; window.faceEntries = context.faceEntries; window.surfaceEntries = context.surfaceEntries; window.reachedRoleMask = context.validMask;
+                window.setDragCalls = context.setDragCalls; window.originalSetDragCalls = context.originalSetDragCalls;
+                window.candidateSetDragCalls = context.candidateSetDragCalls; window.shadowSetDragCalls = context.shadowSetDragCalls; window.verifiedSetDragCalls = context.verifiedSetDragCalls;
                 window.completed = true;
                 if (window.fallback == null && (window.aeroEntries != window.parts || window.surfaceEntries != 6 * window.faceEntries ||
-                    window.calls.Sum() < 3L * window.surfaceEntries + 6L * window.faceEntries))
+                    window.calls.Sum() < 3L * window.surfaceEntries + 6L * window.faceEntries + 3L * window.candidateSetDragCalls))
                     owner.StopReuse("original-callsite-execution-coverage-differs");
+            }
+            if (owner.Report.dragTransactionRequested && context.eligible)
+            {
+                if (context.setDragCalls <= 0 || context.setDragCalls != context.originalSetDragCalls + context.candidateSetDragCalls ||
+                    context.faceEntries != context.originalSetDragCalls || context.surfaceEntries != 6 * context.faceEntries || context.aeroEntries != owner.parts.Length)
+                    owner.StopReuse("complete-drag-callsite-coverage-differs");
+                else if (context.dragQualifying)
+                {
+                    if (context.verifiedSetDragCalls != context.setDragCalls || context.shadowSetDragCalls != context.setDragCalls || context.candidateSetDragCalls != 0)
+                        owner.StopReuse("complete-drag-qualification-coverage-differs");
+                    else { owner.Report.dragQualificationRoots++; owner.Report.dragQualificationCalls += context.verifiedSetDragCalls; }
+                }
             }
             context.eligible = false;
             if (context.rootStart != 0)
             {
                 owner.Report.completedRoots++; if (context.captured) owner.Report.captureCompletedRoots++;
+                if (window != null && owner.Report.dragTransactionRequested)
+                {
+                    owner.Report.captureOriginalSetDragCalls += window.originalSetDragCalls; owner.Report.captureCandidateSetDragCalls += window.candidateSetDragCalls;
+                    owner.Report.captureVerifiedSetDragCalls += window.verifiedSetDragCalls;
+                }
                 if (window != null && context.comparing)
                 {
                     long evaluations = window.originalEvaluations.Sum();
@@ -495,6 +629,13 @@ namespace KspContinuum
                     owner.Report.firstInvocationAdmissionTicks = context.admissionTicks; owner.Report.firstInvocationRootTicks = ended - context.rootStart;
                     owner.Report.firstInvocationContextCompleteTicks = context.prefixTicks + context.admissionTicks + Stopwatch.GetTimestamp() - context.rootStart;
                     owner.Report.firstInvocationCaptured = context.captured;
+                    owner.Report.firstInvocationTreatment = context.dragQualifying ? "drag-qualification-original-return" : context.verifying ? "verify-original-return" : context.control ? "control-original" : "query";
+                }
+                if (context.dragQualifying) owner.Report.dragQualificationContextTicks += context.prefixTicks + context.admissionTicks + Stopwatch.GetTimestamp() - context.rootStart;
+                if (context.firstDragSubstitution)
+                {
+                    owner.Report.firstDragSubstitutionContextTicks = context.prefixTicks + context.admissionTicks + Stopwatch.GetTimestamp() - context.rootStart;
+                    owner.Report.firstDragSubstitutionCaptured = context.captured;
                 }
             }
             if (window != null)
@@ -536,6 +677,11 @@ namespace KspContinuum
         {
             if (disposed) return; disposed = true; Report.cleanupStartedTicks = Stopwatch.GetTimestamp();
             if (Report.patchedMethods == Targets.Length && !OwnedGraph()) { Report.errors++; Report.detail = "Frozen original callgraph ownership changed; native force effects are not rolled back."; }
+            if (Report.dragTransactionRequested && Report.faceDirectionFieldToken != 0)
+            {
+                try { if (!AeroDragTransaction.FinalLease()) { Report.errors++; Report.detail = "Frozen drag face basis changed; native force effects are not rolled back."; } }
+                catch (Exception error) { Fault(error); }
+            }
             RemoveHooks(); Report.windows = windows.Take(windowCount).ToArray(); Report.cleanupEndedTicks = Stopwatch.GetTimestamp();
             string reason; Report.status = IsValidFinal(out reason) ? "completed-experimental" : "invalid";
             if (Report.status == "invalid" && Report.detail == null) Report.detail = reason;
@@ -547,6 +693,16 @@ namespace KspContinuum
             { reason = "Installation/original shape/cleanup incomplete."; return false; }
             if (Report.errors != 0 || Report.originalExceptions != 0 || Report.recursionStops != 0 || Report.safetyStops != 0 || Report.verificationMismatches != 0 || Report.droppedWindows != 0 || Report.captureFallbacks != 0)
             { reason = "Fault, unsupported owner/input/result, mismatch or incomplete coverage."; return false; }
+            if (Report.dragTransactionRequested && (Report.staticSetDragCallsites != 1 || Report.dragQualificationRoots != 2 || Report.dragQualificationCalls <= 0 ||
+                Report.dragMaximumRelativeError > AeroDragTransaction.Tolerance || Report.windows.Any(window => window.setDragCalls <= 0 ||
+                    window.setDragCalls != window.originalSetDragCalls + window.candidateSetDragCalls || window.faceEntries != window.originalSetDragCalls ||
+                    window.shadowSetDragCalls != window.verifiedSetDragCalls || (window.originalReturnVerification ?
+                        window.verifiedSetDragCalls != window.setDragCalls || window.candidateSetDragCalls != 0 : window.shadowSetDragCalls != 0))))
+            { reason = "Complete drag admission/qualification/publication coverage differs."; return false; }
+            if (Report.dragTransactionRequested && Report.mode == "query" &&
+                (Report.captureCandidateSetDragCalls <= 0 || Report.captureOriginalSetDragCalls != 0 || Report.captureVerifiedSetDragCalls != 0 ||
+                    Report.windows.Any(window => window.candidateSetDragCalls != window.setDragCalls)))
+            { reason = "Complete drag query publication coverage absent or mixed."; return false; }
             if (Report.captureCompletedRoots <= 0 || Report.captureAdmittedRoots <= 0 || Report.windows.Any(window => !window.completed || window.rootTicks < 0 || window.contextCompleteTicks < window.rootTicks))
             { reason = "No complete captured root coverage."; return false; }
             if (Report.mode == "verify" && (verifyWindows != 2 || Report.windows.Length != 2 || Report.windows.Any(window => !window.originalReturnVerification || window.hits.Sum() <= 0)))
@@ -555,7 +711,7 @@ namespace KspContinuum
             { reason = "No captured query reuse or mixed verification cost."; return false; }
             if (Report.mode == "compare")
             {
-                if (Report.fallbacks != 0 || Report.captureMemoizedCalls <= 0 || Report.verificationEvaluations != 0 ||
+                if (Report.fallbacks != 0 || Report.captureMemoizedCalls <= 0 || Report.captureVerificationEvaluations != 0 ||
                     Report.captureControlCompletedRoots <= 0 || Report.captureQueryCompletedRoots <= 0 ||
                     (Report.captureControlCompletedRoots != Report.captureQueryCompletedRoots && Report.captureControlCompletedRoots != Report.captureQueryCompletedRoots + 1) ||
                     compareWindows != Report.windows.Length || Report.captureCalls != Report.windows.Length || Report.captureAdmittedRoots != Report.windows.Length ||
@@ -569,6 +725,10 @@ namespace KspContinuum
                         window.originalReturnVerification || window.verificationTicks != 0 || !window.captureActiveAtEnd || window.fallback != null || window.mismatch != null ||
                         window.fixedEndedTicks < window.endedTicks || window.hits.Sum() <= 0)
                     { reason = "Comparison alternation, completion or instrumentation differs."; return false; }
+                    if (Report.dragTransactionRequested && (window.shadowSetDragCalls != 0 || window.verifiedSetDragCalls != 0 ||
+                        (control ? window.originalSetDragCalls != window.setDragCalls || window.candidateSetDragCalls != 0 :
+                            window.candidateSetDragCalls != window.setDragCalls || window.originalSetDragCalls != 0)))
+                    { reason = "Comparison complete drag control/query publication differs."; return false; }
                     for (int role = 0; role < Roles; role++)
                     {
                         long calls = window.calls[role], evaluations = window.originalEvaluations[role], first = calls > 0 ? 1 : 0;
