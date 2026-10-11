@@ -45,6 +45,9 @@ namespace KspContinuum
             public int processId, initialActiveParts, initialTargetParts, faults, mergeCount, undockCalls, splitCount, controlledBodies, controlCallbacks, ticks;
             public uint activePortId, targetPortId;
             public bool preparationRequested, collisionsRestored, zeroCrewScope, initialSeparate, actualJointObserved, exactPartPartitionsRestored, crewConserved, resourcesConserved, sourceUnchanged, hooksRemoved, controlLockRemoved;
+            public bool schedulingRestored;
+            public double maximumDeltaTime, physicsFrameLimit, fixedDeltaTime;
+            public int screenWidth, screenHeight;
             public double initialUniversalTime, electricChargeRateBudget, electricChargeCommandRateBudget, electricChargeDockingMotorRateBudget, electricChargeConsumed, minimumGapMeters, finalGapMeters, finalSeparationSpeedMetersPerSecond, maxAccelerationMetersPerSecondSquared = .01;
             public long driverTicks, clockFrequency = System.Diagnostics.Stopwatch.Frequency;
             public uint[] activePartIds, targetPartIds;
@@ -130,6 +133,8 @@ namespace KspContinuum
                 initialResources = Rows(resources), minimumGapMeters = distance, preparationRequested = prepared, collisionsRestored = true,
                 zeroCrewScope = crew.Length == 0, initialUniversalTime = Planetarium.GetUniversalTime(), electricChargeRateBudget = ecRate,
                 electricChargeCommandRateBudget = commandEcRate, electricChargeDockingMotorRateBudget = dockingEcRate };
+            Report.maximumDeltaTime = Time.maximumDeltaTime; Report.physicsFrameLimit = GameSettings.PHYSICS_FRAME_DT_LIMIT;
+            Report.fixedDeltaTime = Time.fixedDeltaTime; Report.screenWidth = Screen.width; Report.screenHeight = Screen.height;
             startedWall = Time.realtimeSinceStartup; phaseUt = Planetarium.GetUniversalTime();
             try { InputLockManager.SetControlLock(ControlTypes.ALL_SHIP_CONTROLS | ControlTypes.TIMEWARP, Lock); lockOwned = true; Attach(va); Attach(vb); Record("seed"); }
             catch { Dispose(); throw; }
@@ -359,6 +364,16 @@ namespace KspContinuum
         DockingQualification owner;
         string directory;
         bool finished;
+        bool schedulingApplied;
+        float priorMaximumDelta, priorPhysicsLimit;
+        void RestoreScheduling()
+        {
+            if (!schedulingApplied) return;
+            Time.maximumDeltaTime = priorMaximumDelta; GameSettings.PHYSICS_FRAME_DT_LIMIT = priorPhysicsLimit;
+            if (Time.maximumDeltaTime != priorMaximumDelta || GameSettings.PHYSICS_FRAME_DT_LIMIT != priorPhysicsLimit)
+                throw new InvalidOperationException("Docking scheduling restoration failed.");
+            schedulingApplied = false;
+        }
         IEnumerator Start()
         {
             string[] args = Environment.GetCommandLineArgs(); if (!DockingQualification.Requested(args)) yield break;
@@ -375,6 +390,12 @@ namespace KspContinuum
             }
             try
             {
+                const string prefix = "--continuum-flight-catchup=";
+                string value = args.Single(arg => arg.StartsWith(prefix, StringComparison.Ordinal)).Substring(prefix.Length);
+                float limit = float.Parse(value, NumberStyles.Float, CultureInfo.InvariantCulture);
+                if (float.IsNaN(limit) || float.IsInfinity(limit) || limit < .001 || limit > 1) throw new InvalidOperationException("Docking catchup limit invalid.");
+                priorMaximumDelta = Time.maximumDeltaTime; priorPhysicsLimit = GameSettings.PHYSICS_FRAME_DT_LIMIT; schedulingApplied = true;
+                Time.maximumDeltaTime = limit; GameSettings.PHYSICS_FRAME_DT_LIMIT = limit;
                 FlightDiagnosticControls.Apply();
                 owner = DockingQualification.Create(args, directory);
                 if (FlightCamera.fetch != null) FlightCamera.fetch.SetDistanceImmediate(12f);
@@ -382,12 +403,15 @@ namespace KspContinuum
             catch (Exception error) { Rejected(args, error); }
             if (owner == null) yield break;
             yield return owner.Run();
+            RestoreScheduling();
             FlightDiagnosticControls.Restore();
+            owner.Report.schedulingRestored = !schedulingApplied; owner.Export();
             finished = true;
             Application.Quit(owner.Report.status == "complete-experimental" ? 0 : 2);
         }
         void Rejected(string[] args, Exception error)
         {
+            RestoreScheduling();
             FlightDiagnosticControls.Restore();
             string runId = args.Where(a => a.StartsWith("--continuum-research-run=", StringComparison.Ordinal)).Select(a => a.Substring("--continuum-research-run=".Length)).FirstOrDefault();
             var report = new DockingQualification.ReportData { runId = runId, processId = System.Diagnostics.Process.GetCurrentProcess().Id, sourceSha256 = ScaleCheckpointLoadState.SourceSha256,
@@ -396,6 +420,7 @@ namespace KspContinuum
         }
         void OnDestroy()
         {
+            RestoreScheduling();
             FlightDiagnosticControls.Restore();
             if (owner == null) return;
             owner.Dispose();

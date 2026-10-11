@@ -99,7 +99,7 @@ pub fn validate(s: &Selection, r: &Value, run: &str, pid: u32, expected_parts: u
         || r["activePortId"] != s.active_port || r["targetPortId"] != s.target_port
         || r["preparationRequested"] != s.prepare_pair || r["status"] != "complete-experimental"
         || r["faults"] != 0 || !r["reason"].is_null() || r["cleanupStatus"] != "removed-owned-controls"
-        || ["sourceUnchanged", "initialSeparate", "actualJointObserved", "exactPartPartitionsRestored", "crewConserved", "resourcesConserved", "hooksRemoved", "controlLockRemoved", "collisionsRestored"].iter().any(|k| r[*k] != true)
+        || ["sourceUnchanged", "initialSeparate", "actualJointObserved", "exactPartPartitionsRestored", "crewConserved", "resourcesConserved", "hooksRemoved", "controlLockRemoved", "collisionsRestored", "schedulingRestored"].iter().any(|k| r[*k] != true)
         || ["mergeCount", "undockCalls", "splitCount"].iter().any(|k| r[*k] != 1)
     { return Err("docking ownership, stock event or cleanup contract failed; raw evidence retained".into()); }
     let a = ids(&r["activePartIds"])?; let b = ids(&r["targetPartIds"])?;
