@@ -69,9 +69,13 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         public string scope="Consecutive Update boundaries containing one witnessed previous presented frame; craft, body, composition, UI and waits included; no simulation or GPU timer claim";
         public int processId,width,height,antiAliasing,qualityLevel,vSyncCount,targetFrameRate,sampleCount,capacity=65536,omittedDeadlineStraddlers,commandsDuringCapture;
         public string colorSpace; public double warmupSeconds,requestedCaptureSeconds,measuredSeconds;
+        public string processResourceStatus,processResourceError,processResourceScope="Whole-process CPU/RSS sampled outside retained frame intervals; may include final omitted deadline straddler; not GPU or exclusive submission cost";
+        public long processResourceStartTicks,processResourceEndTicks,workingSetStartBytes,workingSetEndBytes;
+        public double processCpuSeconds;
         public long frequency,windowStartTicks,windowEndTicks,preparationTicks; public double[] frameMilliseconds,submissionMilliseconds; public long[] frameStartedTicks,frameEndedTicks; public int[] renderedFrames,submissionCalls;
     }
     Benchmark benchmark; long warmupEnd,deadline,previousTick,previousSubmission; int previousFrame,benchmarkPriorVsync,benchmarkPriorCap,lastPresentedFrame=-1,presentedInFrame; bool benchmarkCapturing;
+    System.Diagnostics.Process benchmarkProcess; TimeSpan benchmarkCpuStart;
     static readonly string[] debugViews={"composed","craft-color","body-color","craft-flat","body-flat","craft-world-normals","body-world-normals","craft-view-normals","body-view-normals","craft-albedo","body-albedo","craft-vertex-colors","craft-uv","body-uv","craft-material-id","body-material-id","craft-linear-depth","body-linear-depth","craft-log-depth","body-log-depth"};
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)] static void Bootstrap()
     { if(!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_MULTISCALE_SCENE"))) new GameObject("Continuum Multiscale Workbench").AddComponent<MultiscaleWorkbench>(); }
@@ -240,20 +244,42 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     {
         long now=System.Diagnostics.Stopwatch.GetTimestamp();
         if(Screen.width!=benchmark.width||Screen.height!=benchmark.height||QualitySettings.vSyncCount!=0||Application.targetFrameRate!=-1||QualitySettings.antiAliasing!=benchmark.antiAliasing||QualitySettings.GetQualityLevel()!=benchmark.qualityLevel||QualitySettings.activeColorSpace.ToString()!=benchmark.colorSpace||!SplashScreen.isFinished||generation.Whole.RenderMode!=benchmark.mode||state.view!=benchmark.view) { EndBenchmark("invalid","effective-controls-changed"); return; }
-        if(!benchmarkCapturing) { if(now<warmupEnd) return; benchmarkCapturing=true; benchmark.windowStartTicks=previousTick=now; previousFrame=Time.frameCount; previousSubmission=generation.Whole.SubmissionTicks; deadline=now+(long)(benchmark.requestedCaptureSeconds*benchmark.frequency); return; }
+        if(!benchmarkCapturing) { if(now<warmupEnd) return; BeginProcessResources(); now=System.Diagnostics.Stopwatch.GetTimestamp(); benchmarkCapturing=true; benchmark.windowStartTicks=previousTick=now; previousFrame=Time.frameCount; previousSubmission=generation.Whole.SubmissionTicks; deadline=now+(long)(benchmark.requestedCaptureSeconds*benchmark.frequency); return; }
         if(now<=previousTick||Time.frameCount!=previousFrame+1||lastPresentedFrame!=previousFrame||presentedInFrame!=1) { EndBenchmark("invalid","missing-duplicate-or-nonconsecutive-presentation"); return; }
         if(now>deadline) { benchmark.omittedDeadlineStraddlers++; EndBenchmark(benchmark.sampleCount>0?"completed":"invalid",benchmark.sampleCount>0?"monotonic-window-complete":"no-complete-interval"); return; }
         int n=benchmark.sampleCount; if(n>=benchmark.capacity) { EndBenchmark("invalid","sample-capacity-exceeded"); return; } benchmark.frameStartedTicks[n]=previousTick; benchmark.frameEndedTicks[n]=now; benchmark.renderedFrames[n]=previousFrame; benchmark.frameMilliseconds[n]=(now-previousTick)*1000.0/benchmark.frequency; benchmark.submissionMilliseconds[n]=(generation.Whole.SubmissionTicks-previousSubmission)*1000.0/benchmark.frequency; benchmark.submissionCalls[n]=generation.Whole.LastSubmissionCalls; benchmark.sampleCount++; previousTick=now; previousFrame=Time.frameCount; previousSubmission=generation.Whole.SubmissionTicks;
     }
     void EndBenchmark(string status,string reason)
     {
-        if(!state.benchmarkActive) return; state.benchmarkActive=false; QualitySettings.vSyncCount=benchmarkPriorVsync; Application.targetFrameRate=benchmarkPriorCap; benchmark.status=status; benchmark.reason=reason; benchmark.windowEndTicks=benchmarkCapturing?previousTick:0; benchmark.measuredSeconds=benchmarkCapturing?(benchmark.windowEndTicks-benchmark.windowStartTicks)/(double)benchmark.frequency:0;
+        if(!state.benchmarkActive) return; state.benchmarkActive=false; EndProcessResources(); QualitySettings.vSyncCount=benchmarkPriorVsync; Application.targetFrameRate=benchmarkPriorCap; benchmark.status=status; benchmark.reason=reason; benchmark.windowEndTicks=benchmarkCapturing?previousTick:0; benchmark.measuredSeconds=benchmarkCapturing?(benchmark.windowEndTicks-benchmark.windowStartTicks)/(double)benchmark.frequency:0;
         if(status=="completed"&&benchmark.commandsDuringCapture>0) { benchmark.status="invalid"; benchmark.reason="command-interference"; }
         try { CheckBenchmarkSources(); } catch(Exception e) { benchmark.status="invalid"; benchmark.reason="source-identity-drift: "+e.Message; }
         Array.Resize(ref benchmark.frameMilliseconds,benchmark.sampleCount); Array.Resize(ref benchmark.submissionMilliseconds,benchmark.sampleCount); Array.Resize(ref benchmark.frameStartedTicks,benchmark.sampleCount); Array.Resize(ref benchmark.frameEndedTicks,benchmark.sampleCount); Array.Resize(ref benchmark.renderedFrames,benchmark.sampleCount); Array.Resize(ref benchmark.submissionCalls,benchmark.sampleCount);
         try { string path=Path.Combine(output,"benchmark-"+DateTime.UtcNow.Ticks+".json"); File.WriteAllText(path+".tmp",JsonUtility.ToJson(benchmark,true)); File.Move(path+".tmp",path); state.lastBenchmark=path; state.lastBenchmarkStatus=benchmark.status; state.lastBenchmarkReason=benchmark.reason; }
         catch(Exception e) { state.lastBenchmark=null; state.lastBenchmarkStatus="invalid"; state.lastBenchmarkReason="benchmark-export-failed: "+e.Message; }
         finally { benchmark=null; benchmarkCapturing=false; Write(); }
+    }
+    void BeginProcessResources()
+    {
+        try
+        {
+            benchmarkProcess=System.Diagnostics.Process.GetCurrentProcess(); benchmarkProcess.Refresh();
+            benchmarkCpuStart=benchmarkProcess.TotalProcessorTime; benchmark.workingSetStartBytes=benchmarkProcess.WorkingSet64;
+            benchmark.processResourceStartTicks=System.Diagnostics.Stopwatch.GetTimestamp(); benchmark.processResourceStatus="started";
+        }
+        catch(Exception error) { benchmark.processResourceStatus="unsupported"; benchmark.processResourceError=error.GetType().Name+": "+error.Message; benchmarkProcess?.Dispose(); benchmarkProcess=null; }
+    }
+    void EndProcessResources()
+    {
+        if(benchmarkProcess==null) { if(string.IsNullOrEmpty(benchmark.processResourceStatus)) benchmark.processResourceStatus="not-started"; return; }
+        try
+        {
+            benchmarkProcess.Refresh(); benchmark.processResourceEndTicks=System.Diagnostics.Stopwatch.GetTimestamp();
+            benchmark.processCpuSeconds=(benchmarkProcess.TotalProcessorTime-benchmarkCpuStart).TotalSeconds; benchmark.workingSetEndBytes=benchmarkProcess.WorkingSet64;
+            benchmark.processResourceStatus=benchmark.processCpuSeconds>=0?"available":"invalid-negative-cpu-delta";
+        }
+        catch(Exception error) { benchmark.processResourceStatus="unsupported"; benchmark.processResourceError=error.GetType().Name+": "+error.Message; }
+        finally { benchmarkProcess.Dispose(); benchmarkProcess=null; }
     }
     static void ValidateDebugShader(Shader shader)
     {
