@@ -19,6 +19,7 @@ public static class BuildShaderBundle
         public string[] instancingStrippingEnumNames, instancingStrippingDisplayNames;
         public string[] shaders;
         public string[] retainedVariants;
+        public string explicitVariantsPath, explicitVariantsSha256;
         public Input[] inputs;
     }
     static string Hash(string path)
@@ -123,10 +124,43 @@ public static class BuildShaderBundle
         }
         if (instancing && retained.Count == 0) throw new Exception("No instancing shader variants retained.");
         if (names.Distinct(StringComparer.Ordinal).Count() != names.Count) throw new Exception("Duplicate shader names.");
+        string explicitVariants = Environment.GetEnvironmentVariable("CONTINUUM_SHADER_VARIANTS_FILE");
+        string explicitVariantsHash = null;
+        if (!string.IsNullOrEmpty(explicitVariants))
+        {
+            if (!Path.IsPathRooted(explicitVariants) || !File.Exists(explicitVariants) || new FileInfo(explicitVariants).Length > 65536 || (File.GetAttributes(explicitVariants) & FileAttributes.ReparsePoint) != 0)
+                throw new Exception("Explicit variants require an existing bounded absolute TSV file.");
+            explicitVariantsHash = Hash(explicitVariants);
+            var tuples = new HashSet<string>(StringComparer.Ordinal);
+            foreach (string line in File.ReadAllLines(explicitVariants))
+            {
+                if (string.IsNullOrWhiteSpace(line) || line.StartsWith("#", StringComparison.Ordinal)) continue;
+                string[] cells = line.Split('\t');
+                PassType pass;
+                if (cells.Length != 3 || !names.Contains(cells[0]) || !Enum.TryParse(cells[1], false, out pass) || !Enum.IsDefined(typeof(PassType), pass) || pass.ToString() != cells[1])
+                    throw new Exception("Explicit variant must bind an imported shader and exact PassType.");
+                string[] keywords = cells[2].Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).OrderBy(k => k, StringComparer.Ordinal).ToArray();
+                if (keywords.Length > 16 || keywords.Distinct(StringComparer.Ordinal).Count() != keywords.Length ||
+                    keywords.Any(k => k.Length > 128 || k.Any(c => !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_'))))
+                    throw new Exception("Explicit variant keyword contract invalid.");
+                string tuple = cells[0] + ":" + pass + ":" + string.Join(",", keywords);
+                if (!tuples.Add(tuple) || tuples.Count > 64) throw new Exception("Explicit variant tuples duplicate or exceed bound.");
+                Shader shader = paths.Select(p => AssetDatabase.LoadAssetAtPath<Shader>(p)).Single(s => s.name == cells[0]);
+                if (!retained.Contains(tuple))
+                {
+                    var entry = new ShaderVariantCollection.ShaderVariant(shader, pass, keywords);
+                    if (!variants.Contains(entry) && !variants.Add(entry))
+                        throw new Exception("Unable to retain explicit variant " + tuple);
+                    retained.Add(tuple);
+                }
+            }
+            if (tuples.Count == 0 || Hash(explicitVariants) != explicitVariantsHash) throw new Exception("Explicit variant input empty or changed.");
+        }
+        bool retainCollection = instancing || explicitVariantsHash != null;
         const string variantPath = "Assets/ContinuumBuildVariants.shadervariants";
         if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(variantPath) != null)
             throw new Exception("Generated variant path already exists.");
-        if (instancing) AssetDatabase.CreateAsset(variants, variantPath);
+        if (retainCollection) AssetDatabase.CreateAsset(variants, variantPath);
         SerializedObject graphicsSettings = null;
         int originalInstancingStripping = -1, effectiveInstancingStripping = -1;
         string strippingName = null;
@@ -137,7 +171,7 @@ public static class BuildShaderBundle
             new AssetBundleBuild
             {
                 assetBundleName = name,
-                assetNames = instancing ? paths.Concat(new[] { variantPath }).ToArray() : paths
+                assetNames = retainCollection ? paths.Concat(new[] { variantPath }).ToArray() : paths
             }
         };
         try
@@ -175,6 +209,7 @@ public static class BuildShaderBundle
             }
             var manifest = BuildPipeline.BuildAssetBundles(output, builds, BuildAssetBundleOptions.StrictMode | BuildAssetBundleOptions.ChunkBasedCompression | BuildAssetBundleOptions.ForceRebuildAssetBundle, BuildTarget.StandaloneOSX);
             if (manifest == null || !File.Exists(Path.Combine(output, name))) throw new Exception("Shader bundle build failed.");
+            if (explicitVariantsHash != null && Hash(explicitVariants) != explicitVariantsHash) throw new Exception("Explicit variant input changed during build.");
             foreach (string path in paths) if (ShaderUtil.ShaderHasError(AssetDatabase.LoadAssetAtPath<Shader>(path))) throw new Exception("Shader error after bundle build: " + path);
             var inputs = Directory.GetFiles("Assets", "*", SearchOption.AllDirectories)
                 .Where(p => new[] { ".shader", ".cginc", ".hlsl", ".cs" }.Contains(Path.GetExtension(p)))
@@ -183,7 +218,7 @@ public static class BuildShaderBundle
                 .Concat(File.Exists("Packages/packages-lock.json") ? new[] { "Packages/packages-lock.json" } : new string[0])
                 .OrderBy(p => p, StringComparer.Ordinal).Select(p => new Input { path = p, sha256 = Hash(p) }).ToArray();
             var receipt = new Receipt { unityVersion = Application.unityVersion, editorFullVersion = editorVersion, editorBinarySha256 = Hash(Path.Combine(EditorApplication.applicationContentsPath, "MacOS/Unity")), toolAssemblySha256 = Hash(typeof(BuildShaderBundle).Assembly.Location), revision = "3310a4d4f880", graphicsApi = apiText,
-                bundleName = name, bundleSha256 = Hash(Path.Combine(output, name)), instancingRequired = instancing, referenceVariantsRequired = reference, shaders = names.ToArray(), retainedVariants = retained.ToArray(), inputs = inputs,
+                bundleName = name, bundleSha256 = Hash(Path.Combine(output, name)), instancingRequired = instancing, referenceVariantsRequired = reference, shaders = names.ToArray(), retainedVariants = retained.ToArray(), inputs = inputs, explicitVariantsPath = explicitVariants, explicitVariantsSha256 = explicitVariantsHash,
                 instancingStrippingValue = effectiveInstancingStripping, instancingStrippingName = strippingName, instancingStrippingEnumNames = strippingNames, instancingStrippingDisplayNames = strippingDisplayNames, generatedPassSourceDirectory = generatedSource };
             File.WriteAllText(Path.Combine(output, "build-receipt.json"), JsonUtility.ToJson(receipt, true));
             Debug.Log("Built " + apiText + " shader bundle with " + paths.Length + " shaders; instancing=" + instancing);
@@ -191,7 +226,7 @@ public static class BuildShaderBundle
         finally
         {
             if (graphicsSettings != null && originalInstancingStripping >= 0) { graphicsSettings.Update(); graphicsSettings.FindProperty("m_InstancingStripping").enumValueIndex = originalInstancingStripping; graphicsSettings.ApplyModifiedPropertiesWithoutUndo(); }
-            if (instancing) AssetDatabase.DeleteAsset(variantPath); else UnityEngine.Object.DestroyImmediate(variants);
+            if (retainCollection) AssetDatabase.DeleteAsset(variantPath); else UnityEngine.Object.DestroyImmediate(variants);
         }
     }
 

@@ -45,13 +45,14 @@ static class MenuShaderCook
             string destination = Path.Combine(shaders, name); File.WriteAllBytes(destination, value.Asset!); copied.Add(new { source = package + "#" + value.Path, relative = name, sha256 = Hash(destination), shaderBehavior = "matching-tmp-package-source" });
         }
         if (!File.Exists(Path.Combine(shaders, "TMP_SDF-Mobile.shader")) || !File.Exists(Path.Combine(shaders, "TMP_Sprite.shader"))) throw new InvalidDataException("TMP exact shader source missing.");
-        string[] names = { "KSP/Bumped", "KSP/Bumped Specular", "KSP/Scenery/Bumped", "KSP/Scenery/Diffuse", "KSP/Scenery/Emissive/Bumped Specular", "KSP/Scenery/Specular", "KSP/Scenery/Unlit/Transparent", "KSP/Unlit", "Sprite/Simple Texture (Unlit)", "Terrain/Scaled Planet (RimAerial) Standard", "Terrain/Scaled Planet (Simple)", "MaskedTexture" };
+        string[] names = { "KSP/Bumped", "KSP/Bumped Specular", "KSP/Scenery/Bumped", "KSP/Scenery/Diffuse", "KSP/Scenery/Emissive/Bumped Specular", "KSP/Scenery/Specular", "KSP/Scenery/Unlit/Transparent", "KSP/Unlit", "Sprite/Simple Texture (Unlit)", "Terrain/Scaled Planet (RimAerial) Standard", "Terrain/Scaled Planet (Simple)", "MaskedTexture", "KSP/Emissive/Bumped Specular" };
         var generated = new List<object>();
         for (int index = 0; index < names.Length; index++)
         {
             string name = names[index]; bool unlit = name.Contains("Unlit", StringComparison.Ordinal) || name.StartsWith("Sprite/", StringComparison.Ordinal) || name == "MaskedTexture";
             bool transparent = name.EndsWith("Transparent", StringComparison.Ordinal) || name == "MaskedTexture";
             bool standard = name.EndsWith("Standard", StringComparison.Ordinal);
+            bool kerbalEmissive = name == "KSP/Emissive/Bumped Specular";
             if (!contracts.TryGetValue(name, out var variants)) throw new InvalidDataException("Missing exact original property contract: " + name);
             for (int variant = 0; variant < variants.Count; variant++)
             {
@@ -66,14 +67,16 @@ static class MenuShaderCook
                 return property;
             }
             string color = Value("_Color", "float4(1,1,1,1)"), opacity = Value("_Opacity", "1.0"), shininess = Value("_Shininess", "0.078125"), rimColor = Value("_RimColor", "float4(0,0,0,0)"), rimFalloff = Value("_RimFalloff", "1.0"), emissiveColor = Value("_EmissiveColor", "float4(0,0,0,0)"), specColor = Value("_SpecColor", "float4(.5,.5,.5,1)");
-            string uniforms = string.Join("\n", properties.Where(p => p.Name != "_SpecColor").Select(p => p.Uniform())) + "\nstruct Input { float2 uv_MainTex; float3 viewDir; };";
+            string uniforms = string.Join("\n", properties.Where(p => p.Name != "_SpecColor").Select(p => p.Uniform())) + "\nstruct Input { float2 uv_MainTex; float3 viewDir; " + (kerbalEmissive ? "float2 uv_BumpMap; float2 uv_Emissive; float4 color : COLOR; " : "") + "};";
             string source = "Shader \"" + contract.DonorName + "\" {\nProperties {\n" + string.Join("\n", properties.Select(p => p.Declaration())) + "\n}\nSubShader { Tags { \"RenderType\"=\"" + (transparent ? "Transparent" : "Opaque") + "\" \"Queue\"=\"" + (transparent ? "Transparent" : "Geometry") + "\" }\n" + (transparent ? "ZWrite Off Blend SrcAlpha OneMinusSrcAlpha\n" : "") +
                 "CGPROGRAM\n#pragma target 3.0\n#pragma surface surf " + (unlit ? "MenuUnlit" : standard ? "StandardSpecular" : name.Contains("Specular", StringComparison.Ordinal) ? "BlinnPhong" : "Lambert") + (transparent ? " alpha:fade" : "") + "\n#include \"UnityCG.cginc\"\n" + (unlit ? "half4 LightingMenuUnlit(SurfaceOutput s,half3 lightDir,half atten){return half4(s.Albedo,s.Alpha);}\n" : "") + uniforms +
                 "\nvoid surf(Input i,inout " + (standard ? "SurfaceOutputStandardSpecular" : "SurfaceOutput") + " o){ float4 t=" + (Has("_MainTex", 4) ? "tex2D(_MainTex,i.uv_MainTex)" : "float4(1,1,1,1)") + "; float4 color=" + color + "; o.Albedo=t.rgb*color.rgb; o.Alpha=t.a*color.a*" + opacity + ";" +
-                (Has("_BumpMap", 4) ? "o.Normal=UnpackNormal(tex2D(_BumpMap,i.uv_MainTex));" : "") +
+                (kerbalEmissive ? "o.Albedo*=(" + Value("_BurnColor", "float4(1,1,1,1)") + ").rgb*i.color.rgb;" : "") +
+                (Has("_BumpMap", 4) ? "o.Normal=UnpackNormal(tex2D(_BumpMap," + (kerbalEmissive ? "i.uv_BumpMap" : "i.uv_MainTex") + "));" : "") +
                 (standard ? "o.Specular=(" + specColor + ").rgb; o.Smoothness=" + shininess + ";" : "o.Specular=" + shininess + "; o.Gloss=t.a;") +
                 "float4 rimColor=" + rimColor + "; float rim=pow(1-saturate(dot(normalize(i.viewDir),o.Normal)),max(" + rimFalloff + ",.0001)); o.Emission=rimColor.rgb*rimColor.a*rim;" +
-                (Has("_Emissive", 4) ? "float4 emissionColor=" + emissiveColor + "; o.Emission+=tex2D(_Emissive,i.uv_MainTex).rgb*emissionColor.rgb*emissionColor.a;" : "") + " }\nENDCG\n}\nFallback Off\n}\n";
+                (kerbalEmissive ? "float4 temperature=" + Value("_TemperatureColor", "float4(0,0,0,0)") + "; o.Emission+=temperature.rgb*temperature.a;" : "") +
+                (Has("_Emissive", 4) ? "float4 emissionColor=" + emissiveColor + "; o.Emission+=tex2D(_Emissive," + (kerbalEmissive ? "i.uv_Emissive" : "i.uv_MainTex") + ").rgb*emissionColor.rgb*emissionColor.a;" : "") + " }\nENDCG\n}\nFallback Off\n}\n";
             string relative = "ReconstructedBackground-" + index.ToString("D2") + (variant == 0 ? "" : "-" + variant.ToString("D2")) + ".shader"; string path = Path.Combine(shaders, relative); File.WriteAllText(path, source);
             generated.Add(new { name, donorName = contract.DonorName, relative, sha256 = Hash(path), originalPropertyContractSha256 = contract.Digest, originalPropertyCount = properties.Length, targetIdentities = contract.Sources, shaderBehavior = "reconstructed-experimental/approximate", obligations = "Exact original property exposure/types/defaults/attributes; approximate lighting, rim/emission, resource-map, underwater fog, atmosphere/scattering and transparency behavior need original-GL image comparison. Not stock shader equivalence." });
             }

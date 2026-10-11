@@ -12,11 +12,14 @@ Run the matching editor with `-batchmode -nographics -quit -projectPath <absolut
 | `CONTINUUM_SHADER_SOURCE_ROOT` | `Assets/ContinuumShaders` |
 | `CONTINUUM_SHADER_BUNDLE_NAME` | `continuum-opengl-aero` |
 | `CONTINUUM_SHADER_REQUIRE_INSTANCING` | `1` for shaders with `#pragma multi_compile_instancing` |
+| `CONTINUUM_SHADER_VARIANTS_FILE` | Optional absolute private TSV: exact imported shader name, exact `PassType`, and space-separated keywords in three tab-separated columns. Empty keyword column is allowed. Only declared tuples are retained; omission preserves existing cooking behavior. |
 | `CONTINUUM_SHADER_BUNDLE_OUTPUT` | Absolute, existing, empty private directory |
 
 The build retains an explicit `INSTANCING_ON` variant collection, disables automatic graphics API selection, performs a strict fresh LZ4 bundle build, and writes `build-receipt.json` with shader names, retained pass/keyword tuples and input/output SHA-256 hashes. Vertex/fragment shaders use `PassType.Normal`; surface shaders retain `ForwardBase` with `DIRECTIONAL` and, when `addshadow` is present, `ShadowCaster` with `SHADOWS_DEPTH`. Other required pass combinations must extend this contract before use. Metal remains the default for existing donor builds.
 
 To verify compiler-error detection once, run the editor with `-executeMethod BuildShaderBundle.VerifyCompilerFailure` and `CONTINUUM_SHADER_PROBE_REPORT` pointing to a new absolute JSON path. This imports one intentionally invalid temporary shader, requires a compiler error from `ShaderUtil.GetShaderMessages`, and removes the asset afterward. Its intentional error in the editor log is expected. It does not produce a runtime bundle.
+
+The explicit variant input is limited to 64 unique tuples and 64 KiB, rejects numeric pass aliases and unknown shader identities, and is hashed before and after cooking. Its path, digest and retained tuples appear in the build receipt. Choose tuples from the actual material consumer's keyword and pass observations; this option does not infer blend state, render queue or shader equivalence.
 
 A successful bundle build proves compilation and provenance. The KSP consumer must separately verify the bundle hash, shader support, material binding, actual instanced execution and rendered behavior. A retained variant is not proof that the player physically executes it.
 
