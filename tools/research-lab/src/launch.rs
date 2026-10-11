@@ -87,6 +87,8 @@ pub struct Startup {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Diagnostics {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub convection_tan_reuse: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub convection_capture: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -224,6 +226,7 @@ impl ResolvedLaunch {
                 work_scheduler: boolean("--startup-work-scheduler")?,
             },
             diagnostics: Diagnostics {
+                convection_tan_reuse: boolean("--flight-convection-tan-reuse")?,
                 convection_capture: path("--flight-convection-capture"),
                 integrator_update_attribution: boolean("--flight-integrator-update-attribution")?,
                 backend_menu_presentation: path("--backend-menu-presentation"),
@@ -253,6 +256,18 @@ impl ResolvedLaunch {
             return Err("timeout must be 1..1800 seconds".into());
         }
         let s = &self.startup;
+        if self.diagnostics.convection_tan_reuse
+            && (self.flight.is_none()
+                || self.diagnostics.integrator_update_attribution
+                || self
+                    .flight
+                    .as_ref()
+                    .is_some_and(|flight| flight.callback_attribution))
+        {
+            return Err(
+                "convection tangent reuse requires flight and excludes attribution patches".into(),
+            );
+        }
         if let Some(path) = &self.diagnostics.convection_capture {
             if self.flight.is_none()
                 || self.diagnostics.integrator_update_attribution
