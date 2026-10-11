@@ -384,6 +384,8 @@ namespace KspContinuum
                 if (FlightLocalCamera.FailureReason != null) { valid = false; reason = "local-camera-invalid: " + FlightLocalCamera.FailureReason; }
                 if (FlightCameraChain.FailureReason != null) { valid = false; reason = "camera-chain-invalid: " + FlightCameraChain.FailureReason; }
                 if (FlightWorldDraw.FailureReason != null) { valid = false; reason = "world-draw-invalid: " + FlightWorldDraw.FailureReason; }
+                if (probe != null && probe.VesselRuntimeReport != null && probe.VesselRuntimeReport.status != "complete")
+                { valid = false; reason = "vessel-runtime-" + probe.VesselRuntimeReport.status + ": " + probe.VesselRuntimeReport.reason; }
                 if (setDragStressCandidate && !AeroSetDragProviderQualification.EndStressWindow())
                 { valid = false; reason = "setdrag-stress-provider-invalid"; }
                 bool sourceUnchanged = !ScaleCheckpointLoadState.Requested || ScaleCheckpointLoadState.SourceUnchanged();

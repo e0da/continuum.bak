@@ -20,12 +20,12 @@ namespace KspContinuum
                 (2*x*y+2*z*w)*s.x,(1-2*x*x-2*z*z)*s.y,(2*y*z-2*x*w)*s.z,(double)p.y,
                 (2*x*z-2*y*w)*s.x,(2*y*z+2*x*w)*s.y,(1-2*x*x-2*y*y)*s.z,(double)p.z,0,0,0,1};
         }
-        static double[] World(Transform value)
+        internal static double[] World(Transform value)
         {
             var chain=new List<Transform>(); while(value!=null) { if(chain.Count>=256) throw new InvalidDataException("Oversize world transform hierarchy."); chain.Add(value); value=value.parent; }
             double[] m=Identity(); for(int i=chain.Count-1;i>=0;i--) m=Multiply(m,Local(chain[i])); return m;
         }
-        static double[] RootLocal(Transform value,Transform root,double[] rootWorld,out string source)
+        internal static double[] RootLocal(Transform value,Transform root,double[] rootWorld,out string source)
         {
             Transform original=value; var chain=new List<Transform>(); while(value!=root&&value!=null) { if(chain.Count>=256) throw new InvalidDataException("Oversize renderer hierarchy."); chain.Add(value); value=value.parent; }
             if(value==null) { source="detached-world-trs-double-relative"; return WholeCraftSceneFormat.RelativeAffine(rootWorld,World(original)); }
@@ -37,7 +37,7 @@ namespace KspContinuum
             double d=m[0]*(m[5]*m[10]-m[6]*m[9])-m[1]*(m[4]*m[10]-m[6]*m[8])+m[2]*(m[4]*m[9]-m[5]*m[8]);
             if(double.IsNaN(d)||double.IsInfinity(d)||Math.Abs(d)<=1e-30) throw new InvalidDataException("Singular renderer pose.");
         }
-        static string Stable(Renderer renderer,Part part)
+        internal static string Stable(Renderer renderer,Part part)
         {
             var indices=new List<int>(); Transform t=renderer.transform; while(t!=part.transform) { if(t==null||indices.Count>=256) throw new InvalidDataException("Renderer outside owning part."); indices.Add(t.GetSiblingIndex()); t=t.parent; } indices.Reverse(); return part.flightID+"/"+string.Join("/",indices.Select(i=>i.ToString()).ToArray())+"/"+renderer.GetType().Name;
         }

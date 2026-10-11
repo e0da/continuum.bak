@@ -27,6 +27,7 @@ namespace KspContinuum
         PartForceObservation partForces;
         FixedCallbackAttribution callbackAttribution;
         DryBuoyancyRuntime dryBuoyancy;
+        VesselRuntimeCapture vesselRuntime;
         Action<ProbeReport> completion;
         bool started, finished;
         int completed;
@@ -43,6 +44,7 @@ namespace KspContinuum
         bool topologyHooks, captureActive;
         FlightPerturbation perturbation;
         Exception perturbationError;
+        public VesselRuntimeCapture.CaptureReport VesselRuntimeReport { get { return vesselRuntime == null ? null : vesselRuntime.Report; } }
 
         [Serializable] sealed class CaptureSignal
         {
@@ -75,8 +77,9 @@ namespace KspContinuum
             started = true; owner = this; completion = complete;
             try
             {
+                int requestedFrames = simulationSeconds > 0 ? (VesselRuntimeCapture.Requested ? VesselRuntimeFormat.MaxFrames : 20000) : FrameCount;
                 report = new ProbeReport {
-                    requestedFrames = simulationSeconds > 0 ? 20000 : FrameCount, frames = new ProfileFrame[simulationSeconds > 0 ? 20000 : FrameCount], markers = new MarkerReport[Names.Length],
+                    requestedFrames = requestedFrames, frames = new ProfileFrame[requestedFrames], markers = new MarkerReport[Names.Length],
                     unity = Application.unityVersion, ksp = Versioning.GetVersionString(),
                     plugin = typeof(Probe).Assembly.GetName().Version.ToString(), platform = Application.platform.ToString(),
                     processor = SystemInfo.processorType, processorCount = SystemInfo.processorCount,
@@ -92,6 +95,9 @@ namespace KspContinuum
                     report.cameraContract="diagnostic-controls.json records requested and effective seeded FREE camera; engine camera adjustments remain possible";
                 foreach (string argument in Environment.GetCommandLineArgs()) if (argument.StartsWith("--continuum-research-run=", StringComparison.Ordinal))
                     report.runId = argument.Substring("--continuum-research-run=".Length);
+                if (VesselRuntimeCapture.Requested && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-callback-attribution") >= 0)
+                    throw new InvalidOperationException("Vessel runtime recording excludes broad callback attribution.");
+                vesselRuntime = VesselRuntimeCapture.Create(FlightGlobals.ActiveVessel, report.runId);
                 for (int i = 0; i < Names.Length; i++)
                 {
                     var row = new MarkerReport { name = Names[i], status = "unavailable", availabilityDetail = "Recorder unavailable in this player or marker has not been created.",
@@ -185,6 +191,9 @@ namespace KspContinuum
                         }
                     }
                     if (partForces != null) partForces.Tick();
+                    if (vesselRuntime != null)
+                        try { vesselRuntime.CaptureFrame(); }
+                        catch { report.status = "invalid"; report.completionReason = "vessel-runtime-capture-invalid"; throw; }
                     double now = clock.Elapsed.TotalSeconds;
                     previous.observedFrame = Time.frameCount;
                     previous.markerFrame = Time.frameCount - 1;
@@ -403,8 +412,14 @@ namespace KspContinuum
                     if (report.researchPanel != null && report.researchPanel.status != "complete") { report.status = "invalid"; report.completionReason = "research-panel-visibility-or-callback-invalid"; }
                     FlightLocalCamera.EndWindow(report.captureEndClockTimestamp);
                     FlightPartBatcher.CaptureEnd(report.captureEndClockTimestamp);
-                    Signal("capture-end", report.completionReason);
                 }
+                if (vesselRuntime != null)
+                {
+                    vesselRuntime.Finish(report.status == "complete", report.completionReason);
+                    if (vesselRuntime.Report.status != "complete")
+                    { report.status = "invalid"; report.completionReason = "vessel-runtime-" + vesselRuntime.Report.status; }
+                }
+                if (report.captureStartClockTimestamp > 0) Signal("capture-end", report.completionReason);
                 callback(report);
             }
             catch (Exception error)
