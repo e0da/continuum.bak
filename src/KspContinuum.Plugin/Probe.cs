@@ -190,6 +190,18 @@ namespace KspContinuum
                 // Recorder counters describe the previous frame; discard the partly enabled initial frame.
                 yield return null;
                 if (finished) yield break;
+                if (aeroStepContext != null && !aeroStepContext.ReadyForCapture)
+                {
+                    aeroStepContext.Report.dragWarmupWaitStartedTicks = Stopwatch.GetTimestamp();
+                    while (!aeroStepContext.ReadyForCapture)
+                    {
+                        if (aeroStepContext.QualificationFailed || clock.Elapsed.TotalSeconds >= wallTimeoutSeconds)
+                            throw new InvalidOperationException("Aero drag qualification failed or timed out before capture.");
+                        yield return null;
+                        if (finished) yield break;
+                    }
+                    aeroStepContext.Report.dragWarmupWaitEndedTicks = Stopwatch.GetTimestamp();
+                }
                 perturbation = FlightPerturbation.Create(arguments, FlightGlobals.ActiveVessel, report.runId);
                 if (perturbation != null)
                 {
