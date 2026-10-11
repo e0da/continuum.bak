@@ -34,7 +34,7 @@ pub fn validate(r: &Value, run: &str, pid: u32, expected: u32, source: &str) -> 
     if !rows(r,"admissionFailures")?.is_empty() || !(0.0..=60.).contains(&number(r,"settleSeconds")?) {
         return Err("reload quiet admission or declared settling failed".into());
     }
-    if r["savedStartScene"]!="FLIGHT" || r["loadedStartScene"]!="FLIGHT" || r["loadedCompatible"]!=true
+    if r["savedStartScene"]!="FLIGHT" || r["loadedStartScene"]!="FLIGHT" || r["loadedCompatible"]!=true || r["aboutToQuicksaveNotified"]!=true
         || rows(r,"memberships")?.is_empty() || r["memberships"]!=r["loadedMemberships"] {
         return Err("reload saved scene or whole-game partition differs".into());
     }

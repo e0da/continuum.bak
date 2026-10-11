@@ -63,7 +63,7 @@ namespace KspContinuum
             public string[] admissionFailures;
             public EngineRow[] shutdownEngines;
             public string savedStartScene, loadedStartScene;
-            public bool loadedCompatible;
+            public bool loadedCompatible, aboutToQuicksaveNotified;
             public MembershipRow[] loadedMemberships;
             public SnapshotRow before, after; public MembershipRow[] memberships; public EventRow[] events; public string[] screenshots;
         }
@@ -163,16 +163,20 @@ namespace KspContinuum
         }
         void SaveAndDepart()
         {
+            GameEvents.onGameAboutToQuicksave.Fire(); report.aboutToQuicksaveNotified = true;
             before = Snapshot(vessel, Planetarium.GetUniversalTime()); report.before = before;
             report.electricChargeRateBudget = vessel.parts.Sum(p => p.Modules.OfType<ModuleCommand>().Sum(m => m.resHandler.inputResources.Where(r => r.name == "ElectricCharge").Sum(r => r.rate)));
             saveName = "continuum-reload-" + Guid.NewGuid().ToString("N");
             savePath = Path.GetFullPath(Path.Combine(KSPUtil.ApplicationRootPath, "saves", ScaleCheckpointLoadState.Save, saveName + ".sfs"));
             if (File.Exists(savePath)) throw new InvalidOperationException("Disposable checkpoint already exists.");
-            Game state = HighLogic.CurrentGame.Updated(GameScenes.FLIGHT);
+            Game state = HighLogic.CurrentGame.Updated();
+            GameScenes returnScene = state.startScene;
             state.startScene = GameScenes.FLIGHT;
             report.savedStartScene = state.startScene.ToString();
             report.memberships = Memberships(state);
-            string result = GamePersistence.SaveGame(state, saveName, ScaleCheckpointLoadState.Save, SaveMode.ABORT);
+            string result;
+            try { result = GamePersistence.SaveGame(state, saveName, ScaleCheckpointLoadState.Save, SaveMode.ABORT); }
+            finally { state.startScene = returnScene; }
             if (result != saveName || !File.Exists(savePath)) throw new InvalidOperationException("Stock save did not publish the owned checkpoint.");
             report.savedPath = savePath; report.savedSha256 = ScaleCheckpointLoadState.HashFile(savePath); Record("saved"); Export();
             Rigidbody rb = vessel.rootPart.Rigidbody;
