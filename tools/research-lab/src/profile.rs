@@ -141,16 +141,92 @@ impl FrozenLaunch {
                     .join(format!("{}.sfs", flight.checkpoint)),
                 &mut inputs,
             )?;
-            for path in [&flight.part_shader_bundle, &flight.aero_field_bundle, &flight.gpu_timing_library]
-                .into_iter()
-                .flatten()
+            for path in [
+                &flight.part_shader_bundle,
+                &flight.aero_field_bundle,
+                &flight.gpu_timing_library,
+            ]
+            .into_iter()
+            .flatten()
             {
                 bind(path, &mut inputs)?;
             }
         }
         if let Some(path) = &selection.diagnostics.backend_pixel_proof_bundle {
             bind(path, &mut inputs)?;
-            bind(&instance.join("KSP.app/Contents/Resources/Data/globalgamemanagers"), &mut inputs)?;
+            bind(
+                &instance.join("KSP.app/Contents/Resources/Data/globalgamemanagers"),
+                &mut inputs,
+            )?;
+        }
+        if let Some(path) = &selection.diagnostics.backend_menu_presentation {
+            if fs::metadata(path).map_err(|e| e.to_string())?.len() > 1024 * 1024 {
+                return Err("menu presentation recipe exceeds metadata bound".into());
+            }
+            bind(path, &mut inputs)?;
+            bind(
+                &instance.join("KSP.app/Contents/Resources/Data/globalgamemanagers"),
+                &mut inputs,
+            )?;
+            let recipe: serde_json::Value = read(path)?;
+            if recipe["schema"] != "continuum-metal-menu-presentation/v1"
+                || recipe["unity"] != "2019.4.18f1"
+            {
+                return Err("menu presentation recipe identity differs".into());
+            }
+            let files = recipe["files"].as_array().ok_or("menu files absent")?;
+            let shaders = recipe["requiredShaders"]
+                .as_array()
+                .ok_or("menu shaders absent")?;
+            if files.is_empty()
+                || files.len() > 16
+                || shaders.is_empty()
+                || shaders.len() > 64
+                || shaders.iter().any(|v| v.as_str().is_none_or(str::is_empty))
+            {
+                return Err("menu presentation closure exceeds bounded scope".into());
+            }
+            let mut targets = std::collections::BTreeSet::new();
+            for row in files {
+                let relative = Path::new(
+                    row["relativeDataPath"]
+                        .as_str()
+                        .ok_or("menu target absent")?,
+                );
+                if relative.components().count() == 0
+                    || relative
+                        .components()
+                        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+                    || !targets.insert(relative.to_path_buf())
+                {
+                    return Err("menu target must be unique and contained in Data".into());
+                }
+                let digest = row["derivedSha256"]
+                    .as_str()
+                    .ok_or("menu derived digest absent")?;
+                let source_digest = row["sourceSha256"]
+                    .as_str()
+                    .ok_or("menu source digest absent")?;
+                if [digest, source_digest].iter().any(|v| {
+                    v.len() != 64
+                        || !v
+                            .bytes()
+                            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+                }) {
+                    return Err("menu file digest invalid".into());
+                }
+                let derived = Path::new(
+                    row["derivedPath"]
+                        .as_str()
+                        .ok_or("menu derivative absent")?,
+                );
+                let target = instance
+                    .join("KSP.app/Contents/Resources/Data")
+                    .join(relative);
+                if bind(derived, &mut inputs)? != digest || bind(&target, &mut inputs)? != digest {
+                    return Err("menu derived or installed file identity differs".into());
+                }
+            }
         }
         if let Some(path) = &selection.native_asset_installation {
             bind(path, &mut inputs)?;

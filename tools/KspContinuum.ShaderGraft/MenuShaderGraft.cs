@@ -35,7 +35,7 @@ static class MenuShaderGraft
         var donor = manager.LoadAssetsFileFromBundle(bundle, 0, false);
         if (source.file.Metadata.UnityVersion != "2019.4.18f1" || donor.file.Metadata.UnityVersion != source.file.Metadata.UnityVersion) throw new InvalidDataException("Matching pinned Unity required.");
         manager.LoadClassDatabaseFromPackage(source.file.Metadata.UnityVersion);
-        var dependencies = new List<object>(); var sourceFiles = new Dictionary<string, string> { [sourcePath] = sourceHash };
+        var dependencies = new List<object>(); var implicitEngineDependencies = new List<object>(); var sourceFiles = new Dictionary<string, string> { [sourcePath] = sourceHash };
         var destinations = new List<(int FileId, long PathId, string Name)>();
         void Inventory(AssetsFileInstance file, int fileId)
         {
@@ -43,10 +43,16 @@ static class MenuShaderGraft
         }
         Inventory(source, 0);
         string root = Path.GetDirectoryName(sourcePath)!;
+        if (Path.GetFileName(sourcePath) == "unity_builtin_extra" && Path.GetFileName(root) == "Resources") root = Path.GetDirectoryName(root)!;
         for (int i = 0; i < source.file.Metadata.Externals.Count; i++)
         {
             string relative = source.file.Metadata.Externals[i].PathName.Replace('\\', '/');
             if (Path.IsPathRooted(relative) || relative.Contains(':')) throw new InvalidDataException("Unsafe serialized dependency path.");
+            if (relative == "Resources/unity default resources" || relative == "Library/unity default resources")
+            {
+                implicitEngineDependencies.Add(new { fileId = i + 1, relative, scope = "Original virtual engine dependency retained; no donor binding may resolve through an uninventoried object." });
+                continue;
+            }
             string path = relative.StartsWith("Library/", StringComparison.Ordinal) ? Path.Combine(root, "Resources", Path.GetFileName(relative)) : Path.GetFullPath(Path.Combine(root, relative));
             if (!path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal) || !File.Exists(path)) throw new InvalidDataException("Missing serialized dependency: " + relative);
             if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("Linked source dependency rejected.");
@@ -118,7 +124,7 @@ static class MenuShaderGraft
             }
             if (!Metadata(check).SequenceEqual(metadata)) throw new InvalidDataException("Non-layout metadata/dependencies changed.");
             if (Hash(donorPath) != donorHash || Hash(classData) != classHash || Hash(args[5]) != namesHash || sourceFiles.Any(p => Hash(p.Key) != p.Value)) throw new InvalidDataException("Cook/graft input changed.");
-            string receipt = JsonSerializer.Serialize(new { schema = "continuum-private-menu-shader-graft/v1", source = sourcePath, sourceSha256 = sourceHash, donor = donorPath, donorSha256 = donorHash, classDataSha256 = classHash, output, derivedSha256 = Hash(temporary), replacements = replacementRows, dependencies, sourceFiles, unchangedOtherObjects = inventory.Length - replacements.Count, nonLayoutMetadataPreserved = true, inputUnchanged = true, remainingGate = "Dependency identities preserved; every reachable shader still needs Metal program coverage and native menu image qualification. No texture/material/source object rewritten." }, new JsonSerializerOptions { WriteIndented = true });
+            string receipt = JsonSerializer.Serialize(new { schema = "continuum-private-menu-shader-graft/v1", source = sourcePath, sourceSha256 = sourceHash, donor = donorPath, donorSha256 = donorHash, classDataSha256 = classHash, output, derivedSha256 = Hash(temporary), replacements = replacementRows, dependencies, implicitEngineDependencies, sourceFiles, unchangedOtherObjects = inventory.Length - replacements.Count, nonLayoutMetadataPreserved = true, inputUnchanged = true, remainingGate = "Dependency identities preserved; every reachable shader still needs Metal program coverage and native menu image qualification. No texture/material/source object rewritten." }, new JsonSerializerOptions { WriteIndented = true });
             File.Move(temporary, output); File.WriteAllText(output + ".receipt.json", receipt); Console.WriteLine("Verified menu graft: " + replacements.Count + " shaders; unrelated objects and dependencies preserved."); return 0;
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }

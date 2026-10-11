@@ -60,6 +60,8 @@ impl ResourceImageMode {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Startup {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub prepared_bindings: bool,
     pub unlimited: bool,
     pub reuse_bundle_data: bool,
     pub file_bundles: bool,
@@ -83,6 +85,8 @@ pub struct Startup {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Diagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_menu_presentation: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend_pixel_proof_bundle: Option<PathBuf>,
     pub profile: bool,
@@ -160,6 +164,7 @@ impl ResolvedLaunch {
                 _ => return Err("graphics-api must be current or metal".into()),
             },
             startup: Startup {
+                prepared_bindings: boolean("--startup-prepared-bindings")?,
                 unlimited: boolean("--startup-unlimited")?,
                 reuse_bundle_data: boolean("--startup-reuse-bundle-data")?,
                 file_bundles: boolean("--startup-file-bundles")?,
@@ -203,6 +208,7 @@ impl ResolvedLaunch {
                 work_scheduler: boolean("--startup-work-scheduler")?,
             },
             diagnostics: Diagnostics {
+                backend_menu_presentation: path("--backend-menu-presentation"),
                 backend_pixel_proof_bundle: path("--backend-pixel-proof-bundle"),
                 profile: boolean("--startup-profile")?,
                 texture_observe: boolean("--startup-texture-observe")?,
@@ -225,14 +231,47 @@ impl ResolvedLaunch {
             return Err("timeout must be 1..1800 seconds".into());
         }
         let s = &self.startup;
-        if let Some(path) = &self.diagnostics.backend_pixel_proof_bundle {
-            if self.flight.is_some() || self.graphics_api != GraphicsApi::Metal ||
-                matches!(s.catalog_mode, CatalogMode::Prepare | CatalogMode::PrepareMinimal) ||
-                s.resource_image_mode == ResourceImageMode::Prepare || s.build_cache {
-                return Err("backend pixel proof requires a Metal menu-only launch without preparation".into());
+        if let Some(path) = &self.diagnostics.backend_menu_presentation {
+            if self.flight.is_some()
+                || self.graphics_api != GraphicsApi::Metal
+                || self.diagnostics.backend_pixel_proof_bundle.is_some()
+                || s.catalog_mode.is_preparation()
+                || s.resource_image_mode == ResourceImageMode::Prepare
+                || s.build_cache
+            {
+                return Err("backend menu presentation requires an exclusive Metal menu run without preparation".into());
             }
-            if !path.is_absolute() || !path.is_file() || path.canonicalize().map_err(|e| e.to_string())? != *path {
-                return Err("backend pixel proof bundle requires a canonical absolute existing file".into());
+            if !path.is_absolute()
+                || !path.is_file()
+                || path.canonicalize().map_err(|e| e.to_string())? != *path
+            {
+                return Err(
+                    "backend menu presentation requires a canonical absolute recipe file".into(),
+                );
+            }
+        }
+        if let Some(path) = &self.diagnostics.backend_pixel_proof_bundle {
+            if self.flight.is_some()
+                || self.graphics_api != GraphicsApi::Metal
+                || matches!(
+                    s.catalog_mode,
+                    CatalogMode::Prepare | CatalogMode::PrepareMinimal
+                )
+                || s.resource_image_mode == ResourceImageMode::Prepare
+                || s.build_cache
+            {
+                return Err(
+                    "backend pixel proof requires a Metal menu-only launch without preparation"
+                        .into(),
+                );
+            }
+            if !path.is_absolute()
+                || !path.is_file()
+                || path.canonicalize().map_err(|e| e.to_string())? != *path
+            {
+                return Err(
+                    "backend pixel proof bundle requires a canonical absolute existing file".into(),
+                );
             }
         }
         if self.diagnostics.construction_timing
@@ -366,6 +405,7 @@ const FLIGHT_KEYS: &[(&str, &str)] = &[
     ("perturbation", "perturbation"),
     ("pulseDeltaV", "pulse-delta-v"),
     ("callbackAttribution", "callback-attribution"),
+    ("mechjebProviderPlan", "mechjeb-provider-plan"),
     ("hideVessel", "hide-vessel"),
     ("noAeroFx", "no-aero-fx"),
     ("aeroQuality", "aero-quality"),
@@ -390,6 +430,63 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+    #[test]
+    fn new_owners_preserve_legacy_profiles_and_require_real_consumers() {
+        let legacy = ResolvedLaunch::parse(&BTreeMap::new()).unwrap();
+        let identity = legacy.identity_json().unwrap();
+        assert!(!identity.contains("preparedBindings"));
+        assert!(!identity.contains("backendMenuPresentation"));
+        assert_eq!(
+            identity,
+            ResolvedLaunch::parse_from_json(&identity)
+                .unwrap()
+                .identity_json()
+                .unwrap()
+        );
+        let mut input = options(&[("--startup-prepared-bindings", "true")]);
+        assert!(
+            ResolvedLaunch::parse(&input)
+                .unwrap()
+                .startup
+                .prepared_bindings
+        );
+        input.insert("--startup-prepared-bindings".into(), "yes".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input = options(&[
+            ("--flight-save", "scenarios"),
+            ("--flight-checkpoint", "station"),
+        ]);
+        let flight_legacy = ResolvedLaunch::parse(&input)
+            .unwrap()
+            .identity_json()
+            .unwrap();
+        assert!(!flight_legacy.contains("mechjebProviderPlan"));
+        input.insert("--flight-mechjeb-provider-plan".into(), "true".into());
+        let flight = ResolvedLaunch::parse(&input).unwrap();
+        assert!(flight
+            .flight
+            .as_ref()
+            .unwrap()
+            .arguments()
+            .contains(&"--continuum-mechjeb-provider-plan".into()));
+        assert_eq!(
+            flight.identity_json().unwrap(),
+            ResolvedLaunch::parse_from_json(&flight.identity_json().unwrap())
+                .unwrap()
+                .identity_json()
+                .unwrap()
+        );
+        let root = tempfile::tempdir().unwrap();
+        let recipe = root.path().canonicalize().unwrap().join("menu.json");
+        std::fs::write(&recipe, "{}").unwrap();
+        input = options(&[("--backend-menu-presentation", recipe.to_str().unwrap())]);
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input.insert("--graphics-api".into(), "metal".into());
+        assert!(ResolvedLaunch::parse(&input).is_ok());
+        input.insert("--flight-save".into(), "scenarios".into());
+        input.insert("--flight-checkpoint".into(), "station".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
     }
     #[test]
     fn construction_requires_owned_startup_and_preserves_legacy_identity() {

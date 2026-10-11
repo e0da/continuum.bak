@@ -500,6 +500,8 @@ namespace KspContinuum
             if (quitAfterQualification) finished = true;
             active = false;
             try { if (probe != null) probe.Dispose(); } catch (Exception error) { Debug.LogException(error); code = 2; }
+            try { MechJebProviderPlan.FinishForFlight(); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
             probe = null;
             try { FlightLocalCamera.Finish(status); if (FlightLocalCamera.FailureReason != null) code = 2; }
             catch (Exception error) { Debug.LogException(error); code = 2; }

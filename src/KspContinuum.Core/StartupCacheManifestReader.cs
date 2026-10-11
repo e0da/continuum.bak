@@ -8,16 +8,37 @@ namespace KspContinuum
     {
         public static string[] ReadBundleObjects(string json)
         {
+            return ReadObjectArray(json, "bundles", 3, 3);
+        }
+        public static string[] ReadMenuFileObjects(string json)
+        {
+            return ReadObjectArray(json, "files", 1, 16);
+        }
+        public static string[] ReadMenuShaderNames(string json)
+        {
+            Value root = new Reader(json).Parse(); Value array;
+            if (root.Fields == null || !root.Fields.TryGetValue("requiredShaders", out array) || array.Items == null || array.Items.Count == 0 || array.Items.Count > 64)
+                throw new FormatException("Menu requires 1..64 shader names.");
+            var result = new string[array.Items.Count];
+            for (int i = 0; i < result.Length; i++)
+            {
+                if (array.Items[i].Text == null) throw new FormatException("Shader name must be a string.");
+                result[i] = array.Items[i].Text;
+            }
+            return result;
+        }
+        static string[] ReadObjectArray(string json, string member, int minimum, int maximum)
+        {
             var reader = new Reader(json);
             Value root = reader.Parse();
             Value array;
-            if (root.Fields == null || !root.Fields.TryGetValue("bundles", out array) || array.Items == null || array.Items.Count != 3)
-                throw new FormatException("Manifest requires exactly three bundle objects.");
-            var result = new string[3];
+            if (root.Fields == null || !root.Fields.TryGetValue(member, out array) || array.Items == null || array.Items.Count < minimum || array.Items.Count > maximum)
+                throw new FormatException("Manifest object-array bounds invalid: " + member);
+            var result = new string[array.Items.Count];
             for (int i = 0; i < result.Length; i++)
             {
                 Value item = array.Items[i];
-                if (item.Fields == null) throw new FormatException("Bundle entry must be an object.");
+                if (item.Fields == null) throw new FormatException("Manifest entry must be an object.");
                 result[i] = json.Substring(item.Start, item.End - item.Start);
             }
             return result;
@@ -25,6 +46,7 @@ namespace KspContinuum
         sealed class Value
         {
             public int Start, End;
+            public string Text;
             public Dictionary<string, Value> Fields;
             public List<Value> Items;
         }
@@ -70,7 +92,7 @@ namespace KspContinuum
                             value.Items.Add(Read(depth + 1)); Space(); if (Take(']')) break; Need(',');
                         }
                 }
-                else if (first == '"') String();
+                else if (first == '"') value.Text = String();
                 else if (first == 't') Literal("true");
                 else if (first == 'f') Literal("false");
                 else if (first == 'n') Literal("null");

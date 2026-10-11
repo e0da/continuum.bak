@@ -60,5 +60,5 @@ static class MenuShaderCook
         Console.WriteLine("Prepared matching vendor/TMP and explicitly approximate original background recipes."); return 0;
     }
     const string Properties = "Properties { _MainTex(\"Main texture\",2D)=\"white\"{} _BumpMap(\"Normal map\",2D)=\"bump\"{} _Emissive(\"Emission map\",2D)=\"black\"{} _Color(\"Color\",Color)=(1,1,1,1) _SpecColor(\"Specular\",Color)=(.5,.5,.5,1) _Shininess(\"Shininess\",Range(.01,1))=.078125 _Opacity(\"Opacity\",Range(0,1))=1 _RimColor(\"Rim\",Color)=(0,0,0,0) _RimFalloff(\"Rim falloff\",Float)=1 _EmissiveColor(\"Emission\",Color)=(0,0,0,0) _ResourceMap(\"Resource\",2D)=\"black\"{} }";
-    const string Uniforms = "sampler2D _MainTex,_BumpMap,_Emissive,_ResourceMap; float4 _Color,_SpecColor,_RimColor,_EmissiveColor; float _Shininess,_Opacity,_RimFalloff; struct Input { float2 uv_MainTex; float3 viewDir; };";
+    const string Uniforms = "sampler2D _MainTex,_BumpMap,_Emissive,_ResourceMap; float4 _Color,_RimColor,_EmissiveColor; float _Shininess,_Opacity,_RimFalloff; struct Input { float2 uv_MainTex; float3 viewDir; };";
 }

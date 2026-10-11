@@ -80,6 +80,13 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.FlightAeroFieldRenderer+Report" ||
                  type.FullName == "KspContinuum.FlightPartBatcher+Report" ||
                  type.FullName == "KspContinuum.ResidentMaterialFixtureCapture+Topology" ||
+                 type.FullName == "KspContinuum.StartupPreparedBindings+Report" ||
+                 type.FullName == "KspContinuum.StartupPreparedBindings+Row" ||
+                 type.FullName == "KspContinuum.MechJebProviderPlan+Report" ||
+                 type.FullName == "KspContinuum.BackendMenuPresentation+Report" ||
+                 type.FullName == "KspContinuum.BackendMenuPresentation+ShaderRow" ||
+                 type.FullName == "KspContinuum.BackendMenuPresentation+MaterialRow" ||
+                 type.FullName == "KspContinuum.BackendMenuPresentation+CameraRow" ||
                  type.FullName == "KspContinuum.StartupSiteProof+Report" ||
                  type.FullName == "KspContinuum.StartupSiteProof+Row" ||
                  type.FullName == "KspContinuum.FlightAeroBatcher+Fallback" ||

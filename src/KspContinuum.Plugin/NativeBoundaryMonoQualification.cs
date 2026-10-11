@@ -24,6 +24,8 @@ namespace KspContinuum
             try
             {
                 StartupAssetGeneration.ObserveMenu();
+                StartupPreparedBindings.ObserveForMenu();
+                if (BackendMenuPresentation.Requested) return;
                 if (pixels) { StartCoroutine(BackendAdmissionPixelProof.Run()); return; }
                 if (!benchmark) return;
                 NativeBoundaryMonoReport report = Run();

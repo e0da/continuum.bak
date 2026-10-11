@@ -65,7 +65,13 @@ namespace KspContinuum
                 report.recipePath = Argument("--continuum-backend-menu-presentation=");
                 if (!Path.IsPathRooted(report.recipePath) || !File.Exists(report.recipePath) || new FileInfo(report.recipePath).Length > 1024 * 1024) throw new InvalidOperationException("Bounded absolute menu recipe required.");
                 report.recipeSha256 = ScaleCheckpointLoadState.HashFile(report.recipePath);
-                Recipe recipe = JsonUtility.FromJson<Recipe>(File.ReadAllText(report.recipePath));
+                string recipeJson = File.ReadAllText(report.recipePath);
+                Recipe recipe = JsonUtility.FromJson<Recipe>(recipeJson);
+                if (recipe != null)
+                {
+                    recipe.files = StartupCacheManifestReader.ReadMenuFileObjects(recipeJson).Select(value => JsonUtility.FromJson<FileRow>(value)).ToArray();
+                    recipe.requiredShaders = StartupCacheManifestReader.ReadMenuShaderNames(recipeJson);
+                }
                 if (recipe == null || recipe.schema != "continuum-metal-menu-presentation/v1" || recipe.unity != "2019.4.18f1" ||
                     recipe.files == null || recipe.files.Length == 0 || recipe.files.Length > 16 || recipe.requiredShaders == null || recipe.requiredShaders.Length == 0 || recipe.requiredShaders.Length > 64)
                     throw new InvalidOperationException("Menu recipe schema/closure invalid.");
@@ -124,7 +130,7 @@ namespace KspContinuum
             yield return new WaitForEndOfFrame();
             report.cleanupStatus = readback == null && report.originalRenderTargetRestored ? "released-readback-restored-target" : "cleanup-failed";
             if (report.cleanupStatus == "cleanup-failed") report.status = "failed";
-            try { Directory.CreateDirectory(directory); using (var stream = new FileStream(output, FileMode.CreateNew, FileAccess.Write)) using (var writer = new StreamWriter(stream)) writer.Write(JsonUtility.ToJson(report, true)); }
+            try { Directory.CreateDirectory(directory); using (var stream = new FileStream(output, FileMode.CreateNew, FileAccess.Write)) using (var writer = new StreamWriter(stream)) writer.Write(ReportJson.Encode(report)); }
             catch (Exception error) { report.status = "failed"; Debug.LogException(error); }
             Application.Quit(report.status == "captured-structural" || report.status == "captured-reference-structural" ? 0 : 2);
         }

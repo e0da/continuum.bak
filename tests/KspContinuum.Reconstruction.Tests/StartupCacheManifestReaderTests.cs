@@ -7,6 +7,21 @@ public static class StartupCacheManifestReaderTests
     {
         const string valid = "{\"nested\":{\"bundles\":[null]},\"bundles\":[{\"name\":\"brace } slash \\\" and \\\\ end\"},{\"n\":-12.5e+3},{\"array\":[true,false,null]}]}";
         Check(valid);
+        const string menu = "{\"files\":[{\"relativeDataPath\":\"nested/asset\"}],\"requiredShaders\":[\"shader \\\" name\",\"\\u0041\"]}";
+        using (var oracle = JsonDocument.Parse(menu))
+        {
+            if (StartupCacheManifestReader.ReadMenuFileObjects(menu)[0] != oracle.RootElement.GetProperty("files")[0].GetRawText() ||
+                !StartupCacheManifestReader.ReadMenuShaderNames(menu).SequenceEqual(oracle.RootElement.GetProperty("requiredShaders").EnumerateArray().Select(value => value.GetString())))
+                throw new Exception("Menu closure differs from independent parser.");
+        }
+        foreach (string invalid in new[] { "{\"files\":[null]}", "{\"files\":[]}", "{\"files\":[{}],\"files\":[{}]}" })
+        {
+            try { StartupCacheManifestReader.ReadMenuFileObjects(invalid); }
+            catch (FormatException) { continue; }
+            throw new Exception("Invalid menu file list accepted.");
+        }
+        try { StartupCacheManifestReader.ReadMenuShaderNames("{\"requiredShaders\":[null]}"); throw new Exception("Nonstring shader name accepted."); }
+        catch (FormatException) { }
         foreach (string invalid in new[] {
             "{}", "{\"bundles\":[]}", "{\"bundles\":[{},{},null]}", "{\"bundles\":[{},{},{}],\"bundles\":[{},{},{}]}",
             "{\"bundles\":[{\"x\":1,\"x\":2},{},{}]}", "{\"bundles\":[{\"x\":1,\"\\u0078\":2},{},{}]}",

@@ -1,6 +1,7 @@
 #![recursion_limit = "256"]
-mod native_assets;
+mod backend_menu;
 mod backend_pixel;
+mod native_assets;
 use continuum_research_lab::{
     compare, hash, inventory, matrix, metrics, read, source_tree_hash, write_new, FlightReceipt,
     Result, VariantManifest,
@@ -69,6 +70,7 @@ fn run() -> Result<()> {
             "--startup-native-admission",
             "--graphics-api",
             "--backend-pixel-proof-bundle",
+            "--backend-menu-presentation",
             "--startup-prepared-bundles",
             "--startup-catalog-mode",
             "--startup-catalog",
@@ -85,6 +87,7 @@ fn run() -> Result<()> {
             "--native-asset-installation",
             "--startup-world-timing",
             "--startup-construction-timing",
+            "--startup-prepared-bindings",
             "--flight-save",
             "--flight-checkpoint",
             "--flight-max-delta",
@@ -102,6 +105,7 @@ fn run() -> Result<()> {
             "--flight-perturbation",
             "--flight-pulse-delta-v",
             "--flight-callback-attribution",
+            "--flight-mechjeb-provider-plan",
             "--flight-hide-vessel",
             "--flight-no-aero-fx",
             "--flight-aero-quality",
@@ -149,7 +153,9 @@ fn run() -> Result<()> {
     };
     let output = Path::new(get("--output")?);
     match operation.as_str() {
-        "verify-backend-proof" => backend_pixel::verify_offline(Path::new(get("--receipt")?), output)?,
+        "verify-backend-proof" => {
+            backend_pixel::verify_offline(Path::new(get("--receipt")?), output)?
+        }
         "recovery" => continuum_research_lab::recovery::advance(
             Path::new(get("--catalog")?),
             options.get("--state").map(|v| Path::new(v)),
@@ -572,6 +578,8 @@ fn smoke(
     let selection_sha = selection.identity_sha256()?;
     let pixel_bundle = selection.diagnostics.backend_pixel_proof_bundle.as_deref();
     let pixel_bundle_hash = pixel_bundle.map(hash).transpose()?;
+    let menu_recipe = selection.diagnostics.backend_menu_presentation.as_deref();
+    let menu_recipe_hash = menu_recipe.map(hash).transpose()?;
     let s = &selection.startup;
     let timeout = selection.timeout_seconds;
     let startup_unlimited = s.unlimited;
@@ -596,6 +604,7 @@ fn smoke(
     let startup_resource_image_mode = s.resource_image_mode.as_str();
     let startup_resource_image = path_argument(s.resource_image.as_deref())?;
     let startup_work_scheduler = s.work_scheduler;
+    let startup_prepared_bindings = s.prepared_bindings;
     let native_asset_installation = selection.native_asset_installation.as_deref();
     let flight = &selection.flight;
     let startup_world_timing = selection.diagnostics.world_timing;
@@ -731,7 +740,9 @@ fn smoke(
     let admission_seconds = admission_started.elapsed().as_secs_f64();
     let mut child = Command::new(&executable)
         .current_dir(&instance)
-        .args(if flight.is_none() {
+        .args(if menu_recipe.is_some() {
+            vec![]
+        } else if flight.is_none() {
             vec!["--continuum-native-boundary-bench".to_string()]
         } else {
             flight.as_ref().unwrap().arguments()
@@ -745,7 +756,26 @@ fn smoke(
         ])
         .arg(&log_path)
         .arg(format!("--continuum-research-run={run_id}"))
-        .args(pixel_bundle.map(|path| vec![format!("--continuum-backend-pixel-proof-bundle={}", path.display())]).unwrap_or_default())
+        .args(
+            pixel_bundle
+                .map(|path| {
+                    vec![format!(
+                        "--continuum-backend-pixel-proof-bundle={}",
+                        path.display()
+                    )]
+                })
+                .unwrap_or_default(),
+        )
+        .args(
+            menu_recipe
+                .map(|path| {
+                    vec![format!(
+                        "--continuum-backend-menu-presentation={}",
+                        path.display()
+                    )]
+                })
+                .unwrap_or_default(),
+        )
         .arg(format!(
             "--continuum-launch-profile-sha256={resolved_profile_sha}"
         ))
@@ -759,6 +789,11 @@ fn smoke(
         })
         .args(if startup_construction_timing {
             vec!["--continuum-startup-construction-timing"]
+        } else {
+            vec![]
+        })
+        .args(if startup_prepared_bindings {
+            vec!["--continuum-startup-prepared-bindings"]
         } else {
             vec![]
         })
@@ -1187,18 +1222,77 @@ fn smoke(
         };
     let pixel_bundle_after_hash = pixel_bundle.map(hash).transpose();
     let (pixel_evidence, mut pixel_error) = if let Some(bundle) = pixel_bundle {
-        match backend_pixel::retain(&observer_directory, output, &run_id, child.id(), bundle, pixel_bundle_hash.as_deref().unwrap()) {
+        match backend_pixel::retain(
+            &observer_directory,
+            output,
+            &run_id,
+            child.id(),
+            bundle,
+            pixel_bundle_hash.as_deref().unwrap(),
+        ) {
             Ok(evidence) => (Some(evidence), None),
             Err(error) => (None, Some(error)),
         }
-    } else { (None, None) };
+    } else {
+        (None, None)
+    };
     match &pixel_bundle_after_hash {
-        Ok(value) if value == &pixel_bundle_hash => {},
-        Ok(_) => { pixel_error.get_or_insert("backend pixel bundle changed during owned run".into()); },
-        Err(error) => { pixel_error.get_or_insert(format!("backend pixel bundle post-run hash failed: {error}")); },
+        Ok(value) if value == &pixel_bundle_hash => {}
+        Ok(_) => {
+            pixel_error.get_or_insert("backend pixel bundle changed during owned run".into());
+        }
+        Err(error) => {
+            pixel_error.get_or_insert(format!(
+                "backend pixel bundle post-run hash failed: {error}"
+            ));
+        }
     }
     let (construction_evidence, construction_error) = if startup_construction_timing {
         match retain_construction_timing(&observer_directory, output, &run_id, child.id()) {
+            Ok(evidence) => (Some(evidence), None),
+            Err(error) => (None, Some(error)),
+        }
+    } else {
+        (None, None)
+    };
+    let (bindings_evidence, bindings_error) = if startup_prepared_bindings {
+        match continuum_research_lab::provider_proofs::bindings(
+            &observer_directory,
+            output,
+            &run_id,
+            child.id(),
+        ) {
+            Ok(evidence) => (Some(evidence), None),
+            Err(error) => (None, Some(error)),
+        }
+    } else {
+        (None, None)
+    };
+    let (menu_evidence, menu_error) = if let Some(recipe) = menu_recipe {
+        match backend_menu::retain(
+            &observer_directory,
+            output,
+            &run_id,
+            child.id(),
+            recipe,
+            menu_recipe_hash.as_deref().unwrap(),
+        ) {
+            Ok(evidence) => (Some(evidence), None),
+            Err(error) => (None, Some(error)),
+        }
+    } else {
+        (None, None)
+    };
+    let (provider_evidence, provider_error) = if flight
+        .as_ref()
+        .is_some_and(|request| request.mechjeb_provider_plan)
+    {
+        match continuum_research_lab::provider_proofs::mechjeb(
+            &observer_directory,
+            output,
+            &run_id,
+            child.id(),
+        ) {
             Ok(evidence) => (Some(evidence), None),
             Err(error) => (None, Some(error)),
         }
@@ -1220,6 +1314,7 @@ fn smoke(
         "startupUnlimitedRequested":startup_unlimited,
         "graphicsApiRequested":graphics_api,
         "backendPixelProofBundle":pixel_bundle,"backendPixelProofBundleSha256":pixel_bundle_hash,"backendPixelProofBundleAfterSha256":pixel_bundle_after_hash.as_ref().ok().and_then(|v|v.as_ref()),"backendPixelProofEvidence":pixel_evidence,"backendPixelProofError":pixel_error,
+        "backendMenuPresentationRecipe":menu_recipe,"backendMenuPresentationRecipeSha256":menu_recipe_hash,"backendMenuPresentationEvidence":menu_evidence,"backendMenuPresentationError":menu_error,
         "startupPreparedBundlesRequested":startup_prepared_bundles,
         "startupTexturePrefetchRequested":startup_texture_prefetch,
         "startupTextureObserveRequested":startup_texture_observe,
@@ -1234,6 +1329,8 @@ fn smoke(
         "startupWorkSchedulerRequested":startup_work_scheduler,
         "startupConstructionTimingRequested":startup_construction_timing,
         "startupConstructionTimingEvidence":construction_evidence,"startupConstructionTimingError":construction_error,
+        "startupPreparedBindingsRequested":startup_prepared_bindings,"startupPreparedBindingsEvidence":bindings_evidence,"startupPreparedBindingsError":bindings_error,
+        "mechjebProviderPlanEvidence":provider_evidence,"mechjebProviderPlanError":provider_error,
         "nativeAssetInstallation":native_assets.as_ref().map(|assets| assets.receipt()),
         "startupCatalogModeRequested":startup_catalog_mode,"startupCatalog":startup_catalog,"startupCatalogSha256":catalog_before,
         "generatedCatalogSha256":generated_catalog_hash,
@@ -1243,7 +1340,7 @@ fn smoke(
         "startupBuildCacheRequested":startup_build_cache,"startupCache":startup_cache,"bundleSha256":bundle_hashes,
         "startupCachedBundlesRequested":startup_cached_bundles,
         "startupNativeAdmissionRequested":startup_native_admission,"cacheAdmissionSha256":proof_hash,"cacheAdmissionFiles":admission.as_ref().map(|value|&value.files),
-        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none()&&deferred_terrain_error.is_none()&&site_proof_error.is_none()&&generation_error.is_none()&&pixel_error.is_none()&&construction_error.is_none() {"passed"} else {"failed"},
+        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none()&&deferred_terrain_error.is_none()&&site_proof_error.is_none()&&generation_error.is_none()&&pixel_error.is_none()&&construction_error.is_none()&&bindings_error.is_none()&&provider_error.is_none()&&menu_error.is_none() {"passed"} else {"failed"},
         "qualification":if flight.is_some() {"diagnostic-window-only; behavior-and-gameplay-not-qualified"} else if catalog_preparation {"catalog-content-and-fresh-process-reuse-proof-required"} else {"process-exit-only-native-receipt-review-and-flight-proof-required"}}),
     )?;
     if timed_out
@@ -1256,6 +1353,9 @@ fn smoke(
         || generation_error.is_some()
         || pixel_error.is_some()
         || construction_error.is_some()
+        || bindings_error.is_some()
+        || provider_error.is_some()
+        || menu_error.is_some()
     {
         return Err("owned process smoke failed; retained logs and receipt".into());
     }

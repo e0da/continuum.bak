@@ -7,6 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+fn is_false(value: &bool) -> bool { !*value }
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
@@ -29,6 +31,8 @@ pub struct Request {
     pub perturbation: String,
     pub pulse_delta_v: f64,
     pub callback_attribution: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub mechjeb_provider_plan: bool,
     #[serde(default)]
     pub camera_chain: bool,
     #[serde(default)]
@@ -254,6 +258,7 @@ impl Request {
             perturbation: perturbation.to_string(),
             pulse_delta_v: number("--flight-pulse-delta-v", 0.25, 0.001, 100.0)?,
             callback_attribution: boolean("--flight-callback-attribution")?,
+            mechjeb_provider_plan: boolean("--flight-mechjeb-provider-plan")?,
             camera_chain: boolean("--flight-camera-chain")?,
             world_draw,
             hide_vessel: boolean("--flight-hide-vessel")?,
@@ -316,6 +321,9 @@ impl Request {
         }
         if self.callback_attribution {
             args.push("--continuum-callback-attribution".into());
+        }
+        if self.mechjeb_provider_plan {
+            args.push("--continuum-mechjeb-provider-plan".into());
         }
         if self.hide_vessel {
             args.push("--continuum-flight-hide-vessel".into());
@@ -1445,6 +1453,7 @@ mod tests {
             perturbation: "quiet".into(),
             pulse_delta_v: 0.25,
             callback_attribution: false,
+            mechjeb_provider_plan: false,
             camera_chain: false,
             world_draw: None,
             hide_vessel: false,
@@ -1542,6 +1551,7 @@ mod tests {
             perturbation: "quiet".into(),
             pulse_delta_v: 0.25,
             callback_attribution: false,
+            mechjeb_provider_plan: false,
             camera_chain: false,
             world_draw: None,
             hide_vessel: false,
