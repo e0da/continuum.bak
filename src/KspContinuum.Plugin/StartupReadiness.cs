@@ -29,6 +29,8 @@ namespace KspContinuum
             public Transform Target;
             public Transform StockReturnedTarget;
             public bool StockTargetCaptured;
+            public bool StockTargetManagedNullAtReturn, StockTargetLiveAtReturn;
+            public int StockTargetIdAtReturn;
             public bool ForceCompleted;
             public bool CallerObserved;
         }
@@ -92,6 +94,9 @@ namespace KspContinuum
             originalForce(setup, sphere, target);
             frame.StockReturnedTarget = sphere == null ? null : sphere.target;
             frame.StockTargetCaptured = sphere != null;
+            frame.StockTargetManagedNullAtReturn = ReferenceEquals(frame.StockReturnedTarget, null);
+            frame.StockTargetLiveAtReturn = frame.StockReturnedTarget != null;
+            frame.StockTargetIdAtReturn = frame.StockTargetLiveAtReturn ? frame.StockReturnedTarget.GetInstanceID() : 0;
             frame.ForceCompleted = true;
         }
         static IEnumerable<CodeInstruction> LaunchTranspile(IEnumerable<CodeInstruction> source)
@@ -146,6 +151,15 @@ namespace KspContinuum
                     " framePresent=" + framePresent + " callerObserved=" + callerObserved + " forceCompleted=" + forceCompleted +
                     " sphereMatches=" + sphereMatches + " targetMatches=" + targetMatches + " sphereTargetMatches=" + sphereTargetMatches +
                     " stockReturnedTargetMatches=" + stockTargetMatches +
+                    " stockTargetCaptured=" + (framePresent && frame.StockTargetCaptured) +
+                    " stockTargetManagedNullAtReturn=" + (framePresent && frame.StockTargetManagedNullAtReturn) +
+                    " stockTargetLiveAtReturn=" + (framePresent && frame.StockTargetLiveAtReturn) +
+                    " stockTargetIdAtReturn=" + (framePresent ? frame.StockTargetIdAtReturn : 0) +
+                    " currentTargetManagedNull=" + (!spherePresent || ReferenceEquals(sphere.target, null)) +
+                    " currentTargetLive=" + (spherePresent && sphere.target != null) +
+                    " capturedTargetLiveNow=" + (framePresent && frame.StockReturnedTarget != null) +
+                    " currentTargetId=" + (spherePresent && sphere.target != null ? sphere.target.GetInstanceID() : 0) +
+                    " targetManagedReferenceUnchanged=" + (framePresent && spherePresent && ReferenceEquals(sphere.target, frame.StockReturnedTarget)) +
                     " currentFrameMatches=" + (framePresent && ReferenceEquals(current, frame)) +
                     " bodyTransformPresent=" + (spherePresent && sphere.PQSModCBTransform != null));
                 return new WaitForSeconds(seconds);
