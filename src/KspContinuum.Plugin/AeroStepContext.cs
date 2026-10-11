@@ -53,10 +53,11 @@ namespace KspContinuum
             public string assemblySha256 = StockSha, assemblyMvid = ConvectionSparseKernel.Mvid.ToString("D");
             public string scope = "Original root Integrate, original nine reached Mach Evaluate sites and six lazy exact float values. All directional/weighted arithmetic, recursive part order and native force publication remain original. No global FloatCurve hook or cross-root value reuse.";
             public string ownershipScope = "Reserved frozen research patch/managed-callgraph ownership lease, qualified at installation and cleanup. No per-root Harmony/reflection/hash scan. Root typed guards reject changed part/cube/provider owners and curve alias disagreement before Integrate. Concurrent or within-root curve/native/patch mutation is unsupported; cleanup detection invalidates evidence and does not roll back native forces.";
+            public string partOwnerScope = "Exact pinned Part or stock CompoundPart with inherited nonvirtual Part Rigidbody/DragCubes/ShieldedFromAirstream accessors; exact non-null DragCubeList. CompoundPart lifecycle/editor overrides are outside the retained Integrate callgraph. Custom subclasses and absent cube owners are unsupported.";
             public string timingScope = "Query windows charge original root elapsed plus complete context prefix/admission/reset/end bookkeeping; root contains lookup/first-use Evaluate/native force costs. Installation and first invocation retained separately. Verify is original-return same-state numerical proof, not a stock/candidate complete-method speedup comparator; it records at most two captured roots and then runs stock. No FPS claim.";
             public string fallbackScope = "Admission failure runs the entire original root without memoization. Unexpected in-root key/context or nonfinite result stops future reuse and marks this experiment invalid; no synthetic native-force rollback or all-or-none publication claim.";
             public string[] roleOrder = { "surface-tail", "surface", "surface-tip", "surface-multiplier-and-exposure", "cd-power", "body-lift-mach" };
-            public int processId, boundParts, patchedMethods, shapeAdmissions, transpilerExecutions, cleanupRecompositions, staticCallsites, errors, originalExceptions, recursionStops, safetyStops, verificationMismatches, droppedWindows;
+            public int processId, boundParts, boundStockParts, boundCompoundParts, patchedMethods, shapeAdmissions, transpilerExecutions, cleanupRecompositions, staticCallsites, errors, originalExceptions, recursionStops, safetyStops, verificationMismatches, droppedWindows;
             public long clockFrequency = Stopwatch.Frequency, installationStartedTicks, installationEndedTicks, cleanupStartedTicks, cleanupEndedTicks;
             public long firstInvocationAdmissionTicks, firstInvocationRootTicks, firstInvocationContextCompleteTicks;
             public bool firstInvocationCaptured;
@@ -149,6 +150,25 @@ namespace KspContinuum
         static void Require(bool condition, string detail) { if (!condition) throw new InvalidOperationException(detail); }
         static int Bits(float value) { return new FloatBits { value = value }.bits; }
         static bool Finite(float value) { return !float.IsNaN(value) && !float.IsInfinity(value); }
+        static void QualifyPartType(Type type)
+        {
+            Require((type == typeof(Part) || type == typeof(CompoundPart)) && type.Module.ModuleVersionId == ConvectionSparseKernel.Mvid &&
+                type.Assembly == typeof(FlightIntegrator).Assembly, "Unsupported concrete stock part type: " + type.AssemblyQualifiedName);
+            foreach (string property in new[] { "Rigidbody", "DragCubes", "ShieldedFromAirstream" })
+            {
+                MethodInfo inherited = AccessTools.PropertyGetter(type, property), original = AccessTools.DeclaredPropertyGetter(typeof(Part), property);
+                Require(original != null && !original.IsVirtual && original.DeclaringType == typeof(Part) && Equals(inherited, original),
+                    "Stock part accessor dispatch differs: " + type.FullName + "." + property);
+            }
+        }
+        static string DescribePart(Part part, int index)
+        {
+            if (ReferenceEquals(part, null)) return "index=" + index + ",part=null,cube=unknown";
+            DragCubeList cube = part.DragCubes; Type type = part.GetType();
+            return "index=" + index + ",name=" + (part.partInfo == null ? "unknown" : part.partInfo.name) + ",flightId=" + part.flightID +
+                ",type=" + type.AssemblyQualifiedName + ",mvid=" + type.Module.ModuleVersionId.ToString("D") +
+                ",cube=" + (cube == null ? "null" : cube.GetType().AssemblyQualifiedName);
+        }
 
         void BindParts()
         {
@@ -156,9 +176,14 @@ namespace KspContinuum
             parts = vessel.parts.ToArray(); cubes = new DragCubeList[parts.Length]; providers = new ILiftProvider[parts.Length]; children = new Part[parts.Length][];
             var bound = new HashSet<Part>(parts);
             Require(bound.Count == parts.Length && bound.Contains(vessel.rootPart), "Bound topology has duplicate/missing owners.");
+            var partTypes = new HashSet<Type>();
             for (int i = 0; i < parts.Length; i++)
             {
-                Part part = parts[i]; Require(part != null && part.GetType() == typeof(Part) && part.DragCubes != null, "Unsupported concrete part/cube owner.");
+                Part part = parts[i];
+                Require(part != null && (part.GetType() == typeof(Part) || part.GetType() == typeof(CompoundPart)) &&
+                    part.DragCubes != null && part.DragCubes.GetType() == typeof(DragCubeList), "Unsupported concrete part/cube owner: " + DescribePart(part, i));
+                if (partTypes.Add(part.GetType())) QualifyPartType(part.GetType());
+                if (part.GetType() == typeof(CompoundPart)) Report.boundCompoundParts++; else Report.boundStockParts++;
                 cubes[i] = part.DragCubes; providers[i] = part.bodyLiftOnlyProvider;
                 children[i] = part.children.ToArray();
                 foreach (Part child in part.children) Require(bound.Contains(child), "Child outside bound vessel.");
@@ -322,7 +347,7 @@ namespace KspContinuum
             {
                 Part part = parts[i]; DragCubeList cube = cubes[i];
                 if (!ReferenceEquals(vessel.parts[i], part) || !ReferenceEquals(part.DragCubes, cube) || !ReferenceEquals(part.bodyLiftOnlyProvider, providers[i]) ||
-                    part.children.Count != children[i].Length) return Reject("part-cube-provider-owner-changed");
+                    part.children.Count != children[i].Length) return Reject("part-cube-provider-owner-changed:" + DescribePart(part, i));
                 for (int child = 0; child < children[i].Length; child++)
                     if (!ReferenceEquals(part.children[child], children[i][child])) return Reject("part-child-topology-changed");
                 PhysicsGlobals.SurfaceCurvesList row = cube.SurfaceCurves;
