@@ -95,16 +95,16 @@ namespace KspContinuum
                     report.cameraContract="diagnostic-controls.json records requested and effective seeded FREE camera; engine camera adjustments remain possible";
                 foreach (string argument in Environment.GetCommandLineArgs()) if (argument.StartsWith("--continuum-research-run=", StringComparison.Ordinal))
                     report.runId = argument.Substring("--continuum-research-run=".Length);
-                if (VesselRuntimeCapture.Requested && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-callback-attribution") >= 0)
-                    throw new InvalidOperationException("Vessel runtime recording excludes broad callback attribution.");
-                vesselRuntime = VesselRuntimeCapture.Create(FlightGlobals.ActiveVessel, report.runId);
                 for (int i = 0; i < Names.Length; i++)
                 {
                     var row = new MarkerReport { name = Names[i], status = "unavailable", availabilityDetail = "Recorder unavailable in this player or marker has not been created.",
                         nanoseconds = new long[report.requestedFrames], blocks = new int[report.requestedFrames], available = new bool[report.requestedFrames] };
                     report.markers[i] = row;
-                    Acquire(row);
                 }
+                if (VesselRuntimeCapture.Requested && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-callback-attribution") >= 0)
+                    throw new InvalidOperationException("Vessel runtime recording excludes broad callback attribution.");
+                vesselRuntime = VesselRuntimeCapture.Create(FlightGlobals.ActiveVessel, report.runId);
+                foreach (MarkerReport row in report.markers) Acquire(row);
                 string[] arguments = Environment.GetCommandLineArgs();
                 string canaryReason;
                 bool canaryRequested = ActiveVesselPhysicsSubstitutionCanary.RequestedAndQualified(arguments, out canaryReason);

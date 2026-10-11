@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -9,7 +10,27 @@ namespace KspContinuum
 {
     internal static class WholeCraftSceneCapture
     {
+        sealed class RuntimeBinding
+        {
+            internal readonly Vessel Vessel;
+            internal readonly WholeCraftSceneManifest Manifest;
+            internal readonly string Path, Sha256, Json;
+            internal RuntimeBinding(Vessel vessel, WholeCraftSceneManifest manifest, string path, string sha256, string json)
+            { Vessel=vessel; Manifest=manifest; Path=path; Sha256=sha256; Json=json; }
+        }
+        static RuntimeBinding runtimeBinding;
         static string Hash(string path) { return ScaleCheckpointLoadState.HashFile(path); }
+        internal static WholeCraftSceneManifest TakeRuntimeManifest(Vessel vessel,string path,string sha256,string runId)
+        {
+            RuntimeBinding binding=runtimeBinding;
+            if(binding==null) throw new InvalidDataException("Runtime cold manifest was not retained by this process.");
+            if(!ReferenceEquals(binding.Vessel,vessel)) throw new InvalidDataException("Runtime cold manifest vessel reference differs.");
+            if(!string.Equals(binding.Path,System.IO.Path.GetFullPath(path),StringComparison.Ordinal)) throw new InvalidDataException("Runtime cold manifest path differs: actual="+System.IO.Path.GetFullPath(path)+", expected="+binding.Path+".");
+            if(!string.Equals(binding.Sha256,sha256,StringComparison.Ordinal)) throw new InvalidDataException("Runtime cold manifest encoded digest differs: actual="+sha256+", expected="+binding.Sha256+".");
+            if(!string.Equals(binding.Manifest.runId,runId,StringComparison.Ordinal)) throw new InvalidDataException("Runtime retained manifest run differs: actual="+binding.Manifest.runId+", expected="+runId+".");
+            if(!string.Equals(ReportJson.Encode(binding.Manifest),binding.Json,StringComparison.Ordinal)) throw new InvalidDataException("Runtime retained cold manifest changed after encoding.");
+            runtimeBinding=null; return binding.Manifest;
+        }
         static float[] Matrix(Matrix4x4 m) { var a=new float[16]; for(int r=0;r<4;r++) for(int c=0;c<4;c++) a[r*4+c]=m[r,c]; return a; }
         static double[] Identity() { var a=new double[16]; a[0]=a[5]=a[10]=a[15]=1; return a; }
         static double[] Multiply(double[] a,double[] b) { var c=new double[16]; for(int r=0;r<4;r++) for(int k=0;k<4;k++) for(int j=0;j<4;j++) c[r*4+j]+=a[r*4+k]*b[k*4+j]; return c; }
@@ -55,6 +76,7 @@ namespace KspContinuum
         }
         internal static string Capture(Vessel vessel,string output,string runId)
         {
+            runtimeBinding=null;
             if(vessel==null||!vessel.loaded||vessel.packed||HighLogic.LoadedScene!=GameScenes.FLIGHT) throw new InvalidDataException("Whole-craft requires loaded physical flight vessel.");
             if(!Path.IsPathRooted(output)||Directory.Exists(output)||File.Exists(output)) throw new InvalidDataException("Whole-craft requires new absolute output.");
             string stage=output+".pending-"+Guid.NewGuid().ToString("N"); Directory.CreateDirectory(stage);
@@ -120,7 +142,15 @@ namespace KspContinuum
             var geometry=new WholeCraftGeometry {meshes=meshes.ToArray()}; string geometryPath=Path.Combine(stage,"geometry.bin"); WholeCraftSceneFormat.WriteGeometry(geometryPath,geometry);
             var root=new Matrix4x4(); for(int r=0;r<4;r++) for(int c=0;c<4;c++) root[r,c]=(float)rootWorld[r*4+c]; root.m03=root.m13=root.m23=0;
             var manifest=new WholeCraftSceneManifest {schema="continuum-whole-craft-scene/v1",runId=runId,processId=System.Diagnostics.Process.GetCurrentProcess().Id,vesselId=vessel.id.ToString("D"),engine=Application.unityVersion,colorSpace=QualitySettings.activeColorSpace.ToString(),geometry="geometry.bin",geometrySha256=Hash(geometryPath),rootToWorld=Matrix(root),rendererInventory=renderers.Count,capturedRenderers=draws.Select(d=>d.rendererId).Distinct().Count(),omittedRenderers=omissions.Count,drawSlots=draws.Count,materials=materials.ToArray(),textures=textures.ToArray(),textureCaptureModes=modes.ToArray(),draws=draws.ToArray(),omissions=omissions.ToArray()};
-            WholeCraftSceneFormat.Validate(manifest,geometry); File.WriteAllText(Path.Combine(stage,"manifest.json"),ReportJson.Encode(manifest)); Directory.Move(stage,output);
+            WholeCraftSceneFormat.Validate(manifest,geometry); string json=ReportJson.Encode(manifest),manifestPath=Path.Combine(stage,"manifest.json");
+            bool retainRuntime=VesselRuntimeCapture.Requested;
+            File.WriteAllText(manifestPath,json,new UTF8Encoding(false)); string manifestSha256=retainRuntime?Hash(manifestPath):null; Directory.Move(stage,output);
+            if(retainRuntime)
+            {
+                string sceneDirectory=Environment.GetEnvironmentVariable("CONTINUUM_MULTISCALE_SCENE");
+                if(!string.IsNullOrEmpty(sceneDirectory)&&Path.IsPathRooted(sceneDirectory))
+                    runtimeBinding=new RuntimeBinding(vessel,manifest,Path.GetFullPath(Path.Combine(sceneDirectory,"whole-craft","manifest.json")),manifestSha256,json);
+            }
             Debug.Log("[Continuum whole craft] captured="+manifest.capturedRenderers+" omitted="+manifest.omittedRenderers+" slots="+manifest.drawSlots+" output="+output); return Path.Combine(output,"manifest.json");
         }
     }

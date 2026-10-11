@@ -21,6 +21,10 @@ namespace KspContinuum
         {
             public string schema = "continuum-vessel-runtime-capture/v1";
             public string status = "admitting", reason, runId, vesselId, manifestSha256, recordingSha256, recordingPath, reportPath;
+            public string decodedSceneRunId, decodedSceneVesselId, decodedSceneWholeCraft, decodedSceneWholeCraftSha256;
+            public string manifestSchema, manifestRunId, manifestVesselId, manifestEngine, observedEngine;
+            public string manifestBindingSource = "Validated in-process cold manifest, bound to its exact encoded-file digest and declared final path; Unity 2019 external-assembly custom-array JSON decoding is not used.";
+            public int manifestDraws = -1;
             public string observationScope = "Main-thread Probe coroutine observation after yield null, before its wall-time endpoint; poses and stored force fields are current at that boundary, not synchronized force publications.";
             public string forceScope = "Aerodynamic diagnostic only: stored part drag, projected stored body lift when !hasLiftModule and enabled active ModuleLiftingSurface lift/internal drag; shielded parts excluded. No field freshness proof, arbitrary mod-provider equivalence, gravity/thrust/other force coverage, or physics writeback.";
             public string momentScope = "Resultant about the vessel transform origin using each part Rigidbody world center of mass; physicsless parts share their parent body center. Missing bodies use the part CoMOffset. CoP/CoL application moments and intrinsic torque are not represented.";
@@ -67,6 +71,11 @@ namespace KspContinuum
             return string.IsNullOrEmpty(path) ? null : new VesselRuntimeCapture(vessel, runId, path);
         }
         static void Require(bool value, string reason) { if (!value) throw new InvalidDataException(reason); }
+        static string BindingValue(string value) { return value == null ? "<null>" : "\"" + value + "\""; }
+        static void RequireBinding(string actual, string expected, string component)
+        {
+            Require(string.Equals(actual, expected, StringComparison.Ordinal), "Runtime " + component + " differs: actual=" + BindingValue(actual) + ", expected=" + BindingValue(expected) + ".");
+        }
         static Renderer[] OwnedRenderers(Part part)
         {
             return part.GetComponentsInChildren<Renderer>(true).Where(r => r != null && ReferenceEquals(r.GetComponentInParent<Part>(), part)).ToArray();
@@ -91,10 +100,33 @@ namespace KspContinuum
                 Require(File.Exists(scenePath) && File.Exists(manifestPath) && new FileInfo(scenePath).Length <= 16 * 1024 * 1024 && new FileInfo(manifestPath).Length <= 16 * 1024 * 1024, "Runtime cold manifest missing or oversize.");
                 var scene = JsonUtility.FromJson<MultiscaleSceneManifest>(File.ReadAllText(scenePath));
                 report.manifestSha256 = ScaleCheckpointLoadState.HashFile(manifestPath);
-                manifest = JsonUtility.FromJson<WholeCraftSceneManifest>(File.ReadAllText(manifestPath));
+                manifest = WholeCraftSceneCapture.TakeRuntimeManifest(vessel, manifestPath, report.manifestSha256, runId);
                 report.vesselId = vessel.id.ToString("D");
-                Require(scene != null && scene.wholeCraft == "whole-craft/manifest.json" && scene.wholeCraftSha256 == report.manifestSha256 && scene.vesselId == report.vesselId && scene.runId == runId, "Runtime scene binding differs.");
-                Require(manifest != null && manifest.schema == "continuum-whole-craft-scene/v1" && manifest.vesselId == report.vesselId && manifest.runId == runId && manifest.engine == Application.unityVersion && manifest.draws != null && manifest.draws.Length > 0 && manifest.draws.Length <= VesselRuntimeFormat.MaxDraws, "Runtime whole-craft binding differs.");
+                report.observedEngine = Application.unityVersion;
+                if (scene != null)
+                {
+                    report.decodedSceneRunId = scene.runId; report.decodedSceneVesselId = scene.vesselId;
+                    report.decodedSceneWholeCraft = scene.wholeCraft; report.decodedSceneWholeCraftSha256 = scene.wholeCraftSha256;
+                }
+                if (manifest != null)
+                {
+                    report.manifestSchema = manifest.schema; report.manifestRunId = manifest.runId;
+                    report.manifestVesselId = manifest.vesselId; report.manifestEngine = manifest.engine;
+                    report.manifestDraws = manifest.draws == null ? -1 : manifest.draws.Length;
+                }
+                Require(scene != null, "Runtime scene JSON decoded to null.");
+                RequireBinding(scene.wholeCraft, "whole-craft/manifest.json", "scene whole-craft path");
+                RequireBinding(scene.wholeCraftSha256, report.manifestSha256, "scene whole-craft digest");
+                RequireBinding(scene.vesselId, report.vesselId, "scene vessel identity");
+                RequireBinding(scene.runId, runId, "scene run identity");
+                Require(manifest != null, "Runtime retained whole-craft manifest is null.");
+                RequireBinding(manifest.schema, "continuum-whole-craft-scene/v1", "whole-craft schema");
+                RequireBinding(manifest.vesselId, report.vesselId, "whole-craft vessel identity");
+                RequireBinding(manifest.runId, runId, "whole-craft run identity");
+                RequireBinding(manifest.engine, report.observedEngine, "whole-craft engine");
+                Require(manifest.draws != null, "Runtime retained whole-craft draws are null.");
+                Require(manifest.draws.Length > 0 && manifest.draws.Length <= VesselRuntimeFormat.MaxDraws,
+                    "Runtime whole-craft draw capacity invalid: actual=" + manifest.draws.Length + ", maximum=" + VesselRuntimeFormat.MaxDraws + ".");
                 Require(ScaleCheckpointLoadState.HashFile(manifestPath) == report.manifestSha256, "Runtime cold manifest changed during admission.");
                 parts = vessel.parts.ToArray();
                 Require(parts.Length > 0 && parts.Length <= VesselRuntimeFormat.MaxParts, "Runtime part capacity invalid.");
@@ -256,7 +288,7 @@ namespace KspContinuum
         void WriteReport()
         {
             string staged = report.reportPath + ".pending-" + Guid.NewGuid().ToString("N");
-            File.WriteAllText(staged, JsonUtility.ToJson(report, true)); File.Move(staged, report.reportPath);
+            File.WriteAllText(staged, ReportJson.Encode(report)); File.Move(staged, report.reportPath);
         }
         public void Dispose()
         {
