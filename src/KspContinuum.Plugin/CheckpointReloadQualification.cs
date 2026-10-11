@@ -25,6 +25,7 @@ namespace KspContinuum
         bool physicalHookOwned, physicalArmed;
         int mainThread;
         MethodInfo trackMethod;
+        ReloadMassInitialization massInitialization;
         ReportData report;
         string directory, saveName, savePath;
         bool finished, cameraOwned, lockOwned, sunward, cameraReleaseObserved;
@@ -104,6 +105,7 @@ namespace KspContinuum
             public GeometryRow beforePhysical, readyPhysical;
             public TrackRow firstTrack;
             public double[] savedLocalCoM, loadedSerializedLocalCoM;
+            public ReloadMassInitialization.ReportData massInitialization;
             public string[] restorationFailures;
             public SnapshotRow before, after; public MembershipRow[] memberships; public EventRow[] events; public string[] screenshots;
         }
@@ -125,6 +127,7 @@ namespace KspContinuum
             mainThread=System.Threading.Thread.CurrentThread.ManagedThreadId;
             report.physicalWitnessRequested=Environment.GetEnvironmentVariable("CONTINUUM_RELOAD_PHYSICAL_WITNESS")=="1"||Environment.GetCommandLineArgs().Contains("--continuum-checkpoint-reload-physical-witness");
             if(report.physicalWitnessRequested)report.physicalWitnessStatus="requested";
+            if(Environment.GetEnvironmentVariable("CONTINUUM_RELOAD_MASS_BARRIER")=="1")report.massInitialization=new ReloadMassInitialization.ReportData{requested=true,status="requested"};
         }
         IEnumerator Start()
         {
@@ -260,6 +263,11 @@ namespace KspContinuum
             ConfigNode node = ConfigNode.Load(savePath); if (node == null) throw new InvalidOperationException("Owned saved ConfigNode is unavailable.");
             GameEvents.onGameStatePostLoad.Fire(node); report.postLoadNotified = true;
             if(HighLogic.SaveFolder!=ScaleCheckpointLoadState.Save)throw new InvalidOperationException("Selected save folder changed before reload.");
+            if(report.massInitialization!=null)
+            {
+                massInitialization=new ReloadMassInitialization(Guid.Parse(before.vesselId),before.instanceId,before.parts.Select(p=>p.flightId).ToArray());
+                report.massInitialization=massInitialization.Report;
+            }
             FlightDriver.StartAndFocusVessel(reloadedGame, reloadedGame.flightState.activeVesselIdx);
         }
         static MembershipRow[] Memberships(Game game)
@@ -303,6 +311,7 @@ namespace KspContinuum
         void Verify()
         {
             if (!ReferenceEquals(HighLogic.CurrentGame, reloadedGame) || HighLogic.SaveFolder != ScaleCheckpointLoadState.Save || !PhysicalReady()) throw new InvalidOperationException("Reload live owner differs.");
+            if(massInitialization!=null)massInitialization.Dispose();
             if(report.physicalWitnessRequested)
             {
                 report.readyPhysical=Geometry(vessel);
@@ -332,6 +341,7 @@ namespace KspContinuum
             if (!report.loadedOrbitRestored) failures.Add("serialized-orbit");
             if (!report.orbitRestored) failures.Add("physical-orbit");
             if(report.physicalWitnessRequested&&(report.physicalWitnessStatus!="observed"||!report.physicalHooksRemoved))failures.Add("physical-witness");
+            if(report.massInitialization!=null&&(report.massInitialization.status!="completed"||report.massInitialization.calls!=1||report.massInitialization.faults!=0||!report.massInitialization.hooksRemoved))failures.Add("mass-initialization");
             report.restorationFailures = failures.ToArray();
             if (failures.Count != 0) { report.reason = "Saved gameplay state failed frozen gates: " + string.Join(",", failures); report.faults++; }
             InputLockManager.SetControlLock(ControlTypes.ALL_SHIP_CONTROLS | ControlTypes.TIMEWARP, Lock); lockOwned = true;
@@ -388,10 +398,11 @@ namespace KspContinuum
         bool Try(Action action){try{action();return !finished;}catch(Exception e){Fail(e);return false;}}
         void Cleanup()
         {
+            if(massInitialization!=null)massInitialization.Dispose();
             RemovePhysicalWitness();
             EndCamera();if(lockOwned){InputLockManager.RemoveControlLock(Lock);lockOwned=false;}
             if (!cameraReleaseObserved) report.cameraRestored = !cameraOwned;
-            report.hooksRemoved=CameraMethods.All(m=>m!=null&&Harmony.GetPatchInfo(m)?.Owners.Contains(Hook)!=true)&&report.physicalHooksRemoved;report.controlLockRemoved=!lockOwned&&InputLockManager.GetControlLock(Lock)==ControlTypes.None;
+            report.hooksRemoved=CameraMethods.All(m=>m!=null&&Harmony.GetPatchInfo(m)?.Owners.Contains(Hook)!=true)&&report.physicalHooksRemoved&&(report.massInitialization==null||report.massInitialization.hooksRemoved);report.controlLockRemoved=!lockOwned&&InputLockManager.GetControlLock(Lock)==ControlTypes.None;
             report.cleanupStatus=report.hooksRemoved&&report.controlLockRemoved&&report.cameraRestored?"removed-owned-hooks-locks-restored-camera":"cleanup-error";
             if(report.cleanupStatus=="cleanup-error")report.faults++;
         }
