@@ -52,7 +52,7 @@ namespace KspContinuum
                 build = AccessTools.DeclaredMethod(typeof(PQS), "BuildQuad", new[] { typeof(PQ) });
                 initialize = AccessTools.DeclaredMethod(typeof(PQS), "UpdateQuadsInit", Type.EmptyTypes);
                 if (build == null || build.ReturnType != typeof(bool) || build.IsStatic || initialize == null || initialize.ReturnType != typeof(void)) throw new InvalidOperationException("Pinned terrain construction signatures differ.");
-                if (Harmony.GetPatchInfo(build)?.Owners.Count > 0) throw new InvalidOperationException("Terrain construction already modified.");
+                if (Harmony.GetPatchInfo(build)?.Owners.Count > 0 && !StartupTerrainDispatchPlan.IsOwnedBuildObserver(build)) throw new InvalidOperationException("Terrain construction already modified.");
                 Patches patches = Harmony.GetPatchInfo(initialize);
                 if (patches != null && patches.Owners.Count > 0 && !(patches.Owners.Count == 1 && patches.Owners[0] == "continuum.startup-world-timing" && patches.Transpilers.Count == 0 && patches.Postfixes.Count == 0 && patches.Prefixes.Count == 1 && patches.Finalizers.Count == 1 && patches.Prefixes[0].PatchMethod.DeclaringType == typeof(StartupWorldTiming) && patches.Finalizers[0].PatchMethod.DeclaringType == typeof(StartupWorldTiming)))
                     throw new InvalidOperationException("Terrain initialization has an unrecognized owner.");
