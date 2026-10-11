@@ -99,7 +99,9 @@ pub fn validate(s: &Selection, r: &Value, run: &str, pid: u32, expected_parts: u
         || r["activePortId"] != s.active_port || r["targetPortId"] != s.target_port
         || r["preparationRequested"] != s.prepare_pair || r["status"] != "complete-experimental"
         || r["faults"] != 0 || !r["reason"].is_null() || r["cleanupStatus"] != "removed-owned-controls"
-        || ["sourceUnchanged", "initialSeparate", "actualJointObserved", "exactPartPartitionsRestored", "crewConserved", "resourcesConserved", "hooksRemoved", "controlLockRemoved", "controlCallbacksRestored", "collisionsRestored", "schedulingRestored"].iter().any(|k| r[*k] != true)
+        || ["sourceUnchanged", "initialSeparate", "actualJointObserved", "exactPartPartitionsRestored", "crewConserved", "resourcesConserved", "hooksRemoved", "controlLockRemoved", "inputIngressRestored", "cameraRestored", "collisionsRestored", "schedulingRestored"].iter().any(|k| r[*k] != true)
+        || r["callbackRegistrationMutations"] != 0
+        || r["cameraCallbacks"].as_u64().unwrap_or(0) == 0
         || ["mergeCount", "undockCalls", "splitCount"].iter().any(|k| r[*k] != 1)
     { return Err("docking ownership, stock event or cleanup contract failed; raw evidence retained".into()); }
     let controls = r["controlLeases"].as_array().filter(|rows| !rows.is_empty() && rows.len() % 4 == 0 && rows.len() <= 64).ok_or("docking input-control lease census missing")?;
@@ -109,9 +111,10 @@ pub fn validate(s: &Selection, r: &Value, run: &str, pid: u32, expected_parts: u
         guid(vessel)?;
         let instance = rows[0]["vesselInstanceId"].as_i64().filter(|id| *id != 0).ok_or("docking control instance missing")?;
         for (row, chain) in rows.iter().zip(["pre-autopilot", "autopilot", "post-autopilot", "fly-by-wire"]) {
-            if row["vesselId"] != vessel || row["vesselInstanceId"] != instance || row["chain"] != chain || row["restored"] != true
+            if row["vesselId"] != vessel || row["vesselInstanceId"] != instance || row["chain"] != chain
                 || row["suspendedCallbacks"].as_array().is_none_or(|v| v.iter().any(|v| v.as_str().is_none_or(|s| s.is_empty())))
-            { return Err("docking input-control restoration witness failed".into()); }
+                || (if row["destroyed"] == true { !row["finalCallbacks"].is_null() } else { row["destroyed"] != false || row["finalCallbacks"].as_array().is_none_or(|v| v.iter().any(|v| v.as_str().is_none_or(|s| s.is_empty()))) })
+            { return Err("docking input-delivery census witness failed".into()); }
         }
         if !leased.insert((vessel, instance)) { return Err("duplicate docking input-control lease".into()); }
     }
@@ -132,6 +135,7 @@ pub fn validate(s: &Selection, r: &Value, run: &str, pid: u32, expected_parts: u
         if event["phase"] != phase || ut < last_ut || wall < last_wall || wall < 0.0
             || number(event, "distanceMeters")? < 0.0 || number(event, "relativeSpeedMetersPerSecond")? < 0.0
             || !(-1.000001..=1.000001).contains(&number(event, "alignmentDot")?)
+            || (s.prepare_pair && number(event, "sunHorizonClearanceMeters")? <= 0.0)
         { return Err("docking event order or physical readback failed".into()); }
         last_ut = ut; last_wall = wall;
     }
@@ -167,6 +171,13 @@ pub fn validate(s: &Selection, r: &Value, run: &str, pid: u32, expected_parts: u
     let crew = r["crewNames"].as_array().ok_or("docking crew scope missing")?;
     if r["zeroCrewScope"] != crew.is_empty() { return Err("docking crew scope differs".into()); }
     if s.prepare_pair {
+        let orbits = r["orbitalPreparation"].as_array().filter(|v| v.len() == 2).ok_or("paired Sunward orbit proof missing")?;
+        for (row, id) in orbits.iter().zip([&s.active_vessel, &s.target_vessel]) {
+            if row["vesselId"].as_str() != Some(id.as_str()) { return Err("paired Sunward orbit identity differs".into()); }
+            for (before, after) in [("radiusBefore", "radiusAfter"), ("speedBefore", "speedAfter"), ("radialBefore", "radialAfter")] {
+                if (number(row, before)? - number(row, after)?).abs() > 0.0001 { return Err("paired Sunward orbit invariant differs".into()); }
+            }
+        }
         let setup = r["setup"].as_array().filter(|v| v.len() == 4).ok_or("docking declared preparation witness missing")?;
         for (i, row) in setup.iter().enumerate() {
             if row["phase"] != (if i < 2 {"before"} else {"after"}) || row["vesselId"].as_str() != Some(if i%2==0 {s.active_vessel.as_str()} else {s.target_vessel.as_str()}) { return Err("docking preparation identity differs".into()); }

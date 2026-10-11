@@ -79,6 +79,7 @@ namespace KspContinuum
                         throw new InvalidOperationException("Scale checkpoint is not a compatible flight with an active vessel.");
                     ScaleCheckpointLoadState.BindVessel(loadedGame.flightState.protoVessels[loadedGame.flightState.activeVesselIdx].vesselID);
                     AtmosphericEntryPreparation.Prepare(loadedGame, receiptDirectory, Environment.GetCommandLineArgs());
+                    DockingQualification.PrepareSeed(loadedGame, Environment.GetCommandLineArgs());
                     HighLogic.SaveFolder = ScaleCheckpointLoadState.Save; HighLogic.CurrentGame = loadedGame;
                     loadedGame.startScene = GameScenes.FLIGHT; loading = true; loadedGame.Start(); return;
                 }

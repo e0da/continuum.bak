@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using HarmonyLib;
 using UnityEngine;
 
 namespace KspContinuum
@@ -13,9 +14,16 @@ namespace KspContinuum
         const string Lock = "continuum.docking.roundtrip";
         readonly ModuleDockingNode a, b;
         readonly Part[] groupA, groupB, parts;
-        sealed class ControlLease { public FlightInputCallback[] callbacks; public ControlRow[] rows; }
-        readonly Dictionary<Vessel, ControlLease> controls = new Dictionary<Vessel, ControlLease>();
+        const string InputOwner = "continuum.docking.input";
+        static DockingQualification inputOwner;
+        readonly Harmony inputHook = new Harmony(InputOwner);
+        readonly System.Reflection.MethodInfo inputFeed = AccessTools.DeclaredMethod(typeof(Vessel), "FeedInputFeed");
+        readonly Dictionary<Vessel, ControlRow[]> controls = new Dictionary<Vessel, ControlRow[]>();
         readonly List<ControlRow> controlRows = new List<ControlRow>();
+        sealed class CameraPose { public Camera camera; public Vector3 position; public Quaternion rotation; }
+        CameraPose[] cameraPoses;
+        bool cameraHook;
+        static OrbitRow[] preparedOrbits;
         static readonly System.Reflection.FieldInfo TransmitterQueue = typeof(ModuleDataTransmitter).GetField("transmissionQueue", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
         readonly Dictionary<string, double> resources;
         readonly string[] crew;
@@ -33,24 +41,29 @@ namespace KspContinuum
         readonly List<string> images = new List<string>();
         [Serializable] public sealed class SetupRow { public string phase, vesselId; public double[] position, velocity, rotation; }
         [Serializable] public sealed class ResourceRow { public string name; public double amount; }
-        [Serializable] public sealed class ControlRow { public string vesselId, chain; public int vesselInstanceId; public string[] suspendedCallbacks; public bool restored; }
+        [Serializable] public sealed class ControlRow { public string vesselId, chain; public int vesselInstanceId; public string[] suspendedCallbacks, finalCallbacks; public bool destroyed; }
+        [Serializable] public sealed class OrbitRow { public string vesselId; public double radiusBefore, radiusAfter, speedBefore, speedAfter, radialBefore, radialAfter; }
         [Serializable] public sealed class EventRow
         {
             public uint activeLinkedPortId, targetLinkedPortId;
             public string phase, activeVesselId, targetVesselId, activePortState, targetPortState;
             public double universalTime, wallSeconds, distanceMeters, relativeSpeedMetersPerSecond, alignmentDot;
+            public double sunHorizonClearanceMeters;
             public int activeParts, targetParts, jointId;
         }
         [Serializable] public sealed class ReportData
         {
             public string schema = "continuum-docking-roundtrip/v1", status = "running", cleanupStatus = "owned", reason, runId, sourceSha256;
             public string activeVesselId, targetVesselId, mergedVesselId, splitActiveVesselId, splitTargetVesselId;
-            public string scope = "Paired checkpoint with optional declared alignment; suspended input providers and exclusive quiet-control lease; bounded distributed diagnostic translation forces; actual stock capture/docking/undocking. Not RCS, rendezvous, fuel controller or complete mission qualification.";
+            public string scope = "Paired checkpoint with optional declared alignment; scoped replacement of input delivery with quiet controls and unchanged provider registrations; bounded distributed diagnostic translation forces; actual stock capture/docking/undocking. Not RCS, rendezvous, fuel controller or complete mission qualification.";
             public int processId, initialActiveParts, initialTargetParts, faults, mergeCount, undockCalls, splitCount, controlledBodies, controlCallbacks, ticks, idleStockDataTransmitters;
             public uint activePortId, targetPortId;
             public bool preparationRequested, collisionsRestored, zeroCrewScope, initialSeparate, actualJointObserved, exactPartPartitionsRestored, crewConserved, resourcesConserved, sourceUnchanged, hooksRemoved, controlLockRemoved;
             public bool schedulingRestored;
-            public bool controlCallbacksRestored;
+            public bool inputIngressRestored;
+            public bool cameraRestored;
+            public int callbackRegistrationMutations = 0;
+            public int cameraCallbacks;
             public double maximumDeltaTime, physicsFrameLimit, fixedDeltaTime;
             public int screenWidth, screenHeight;
             public double initialUniversalTime, electricChargeRateBudget, electricChargeCommandRateBudget, electricChargeDockingMotorRateBudget, electricChargeConsumed, minimumGapMeters, finalGapMeters, finalSeparationSpeedMetersPerSecond, maxAccelerationMetersPerSecondSquared = .01;
@@ -62,6 +75,7 @@ namespace KspContinuum
             public EventRow[] events;
             public SetupRow[] setup;
             public ControlRow[] controlLeases;
+            public OrbitRow[] orbitalPreparation;
         }
         public ReportData Report { get; private set; }
         public static bool Requested(string[] args) { return args.Any(arg => arg.StartsWith("--continuum-docking=", StringComparison.Ordinal)); }
@@ -90,6 +104,48 @@ namespace KspContinuum
             uint pa = uint.Parse(Value(args, "--continuum-docking-active-port"), CultureInfo.InvariantCulture), pb = uint.Parse(Value(args, "--continuum-docking-target-port"), CultureInfo.InvariantCulture);
             Vessel va = FlightGlobals.Vessels.Single(v => v != null && v.id == active), vb = FlightGlobals.Vessels.Single(v => v != null && v.id == target);
             return new DockingQualification(args, va, pa, vb, pb, directory);
+        }
+        static Orbit SeedOrbit(ProtoVessel proto, CelestialBody body)
+        {
+            OrbitSnapshot s = proto.orbitSnapShot;
+            return new Orbit(s.inclination, s.eccentricity, s.semiMajorAxis, s.LAN, s.argOfPeriapsis, s.meanAnomalyAtEpoch, s.epoch, body);
+        }
+        public static void PrepareSeed(Game game, string[] args)
+        {
+            preparedOrbits = null;
+            if (!Requested(args) || !args.Contains("--continuum-docking-prepare-pair")) return;
+            Guid aid = Guid.Parse(Value(args, "--continuum-docking-active-vessel")), bid = Guid.Parse(Value(args, "--continuum-docking-target-vessel"));
+            var pair = new[] { game.flightState.protoVessels.Single(v => v.vesselID == aid), game.flightState.protoVessels.Single(v => v.vesselID == bid) };
+            CelestialBody body = FlightGlobals.Bodies[pair[0].orbitSnapShot.ReferenceBodyIndex];
+            if (body.bodyName != "Kerbin" || body.orbit.referenceBody != Planetarium.fetch.Sun || pair.Any(v => v.landed || v.splashed || v.orbitSnapShot.ReferenceBodyIndex != pair[0].orbitSnapShot.ReferenceBodyIndex))
+                throw new InvalidOperationException("Paired Sunward preparation requires two Kerbin orbital seeds.");
+            double epoch = game.flightState.universalTime;
+            var epochZup = new Planetarium.CelestialFrame(); Planetarium.ZupAtT(epoch, body, ref epochZup);
+            Vector3d solar = epochZup.WorldToLocal(Planetarium.Zup.LocalToWorld(-body.orbit.getRelativePositionAtUT(epoch))).normalized;
+            Vector3d p0, v0; SeedOrbit(pair[0], body).GetOrbitalStateVectorsAtUT(epoch, out p0, out v0);
+            Vector3d from = p0.normalized, axis = Vector3d.Cross(from, solar);
+            double sine = axis.magnitude, cosine = Vector3d.Dot(from, solar);
+            if (sine > 1e-12) axis /= sine;
+            else if (cosine < 0) axis = Vector3d.Cross(from, Math.Abs(from.x) < .9 ? Vector3d.right : Vector3d.up).normalized;
+            Func<Vector3d, Vector3d> rotate = value => sine > 1e-12 ? value * cosine + Vector3d.Cross(axis, value) * sine + axis * Vector3d.Dot(axis, value) * (1 - cosine) : cosine < 0 ? -value + 2 * axis * Vector3d.Dot(axis, value) : value;
+            var rows = new List<OrbitRow>();
+            foreach (ProtoVessel proto in pair)
+            {
+                Orbit orbit = SeedOrbit(proto, body); Vector3d position, velocity; orbit.GetOrbitalStateVectorsAtUT(epoch, out position, out velocity);
+                var row = new OrbitRow { vesselId = proto.vesselID.ToString("D"), radiusBefore = position.magnitude, speedBefore = velocity.magnitude, radialBefore = Vector3d.Dot(position.normalized, velocity) };
+                position = rotate(position); velocity = rotate(velocity);
+                orbit.UpdateFromStateVectors(Planetarium.Zup.WorldToLocal(epochZup.LocalToWorld(position)), Planetarium.Zup.WorldToLocal(epochZup.LocalToWorld(velocity)), body, epoch);
+                orbit.GetOrbitalStateVectorsAtUT(epoch, out position, out velocity);
+                row.radiusAfter = position.magnitude; row.speedAfter = velocity.magnitude; row.radialAfter = Vector3d.Dot(position.normalized, velocity);
+                if (Math.Abs(row.radiusAfter - row.radiusBefore) > .0001 || Math.Abs(row.speedAfter - row.speedBefore) > .0001 || Math.Abs(row.radialAfter - row.radialBefore) > .0001)
+                    throw new InvalidOperationException("Paired Sunward orbital invariants failed.");
+                proto.orbitSnapShot = new OrbitSnapshot(orbit); proto.altitude = position.magnitude - body.Radius;
+                var frame = new Planetarium.CelestialFrame(); Planetarium.CelestialFrame.PlanetaryFrame(0, 90, body.initialRotation + (body.rotationPeriod == 0 ? 0 : 360 * epoch / body.rotationPeriod), ref frame);
+                Vector3d local = frame.WorldToLocal(epochZup.LocalToWorld(position)).normalized;
+                proto.latitude = Math.Asin(local.z) * 180 / Math.PI; proto.longitude = Math.Atan2(local.y, local.x) * 180 / Math.PI;
+                rows.Add(row);
+            }
+            preparedOrbits = rows.ToArray();
         }
         DockingQualification(string[] args, Vessel va, uint pa, Vessel vb, uint pb, string directory)
         {
@@ -139,12 +195,25 @@ namespace KspContinuum
                 initialResources = Rows(resources), minimumGapMeters = distance, preparationRequested = prepared, collisionsRestored = true,
                 zeroCrewScope = crew.Length == 0, initialUniversalTime = Planetarium.GetUniversalTime(), electricChargeRateBudget = ecRate,
                 electricChargeCommandRateBudget = commandEcRate, electricChargeDockingMotorRateBudget = dockingEcRate };
+            Report.orbitalPreparation = preparedOrbits;
             ValidateIdleModules();
             Report.idleStockDataTransmitters = parts.Sum(p => p.Modules.OfType<ModuleDataTransmitter>().Count());
             Report.maximumDeltaTime = Time.maximumDeltaTime; Report.physicsFrameLimit = GameSettings.PHYSICS_FRAME_DT_LIMIT;
             Report.fixedDeltaTime = Time.fixedDeltaTime; Report.screenWidth = Screen.width; Report.screenHeight = Screen.height;
             startedWall = Time.realtimeSinceStartup; phaseUt = Planetarium.GetUniversalTime();
-            try { InputLockManager.SetControlLock(ControlTypes.ALL_SHIP_CONTROLS | ControlTypes.TIMEWARP, Lock); lockOwned = true; Attach(va); Attach(vb); Record("seed"); }
+            try
+            {
+                if (inputOwner != null || inputFeed == null || Harmony.GetPatchInfo(inputFeed)?.Owners.Any() == true)
+                    throw new InvalidOperationException("Docking input delivery requires one unpatched owner.");
+                InputLockManager.SetControlLock(ControlTypes.ALL_SHIP_CONTROLS | ControlTypes.TIMEWARP, Lock); lockOwned = true;
+                Attach(va); Attach(vb); inputOwner = this;
+                inputHook.Patch(inputFeed, prefix: new HarmonyMethod(AccessTools.DeclaredMethod(typeof(DockingQualification), "InputPrefix")));
+                if (FlightCamera.fetch == null || FlightCamera.fetch.cameras == null) throw new InvalidOperationException("Docking camera missing.");
+                cameraPoses = FlightCamera.fetch.cameras.Where(c => c != null).Distinct().Select(c => new CameraPose { camera = c, position = c.transform.localPosition, rotation = c.transform.localRotation }).ToArray();
+                if (cameraPoses.Length == 0) throw new InvalidOperationException("Docking rendered cameras missing.");
+                Camera.onPreCull += RenderCamera; cameraHook = true;
+                Record("seed");
+            }
             catch { Dispose(); throw; }
         }
         static ModuleDockingNode Port(Vessel v, uint id)
@@ -201,14 +270,15 @@ namespace KspContinuum
         }
         void ValidateCallbacks(Vessel v)
         {
-            if (!controls.ContainsKey(v) || Chains(v).Any(chain => chain != (FlightInputCallback)Quiet))
-                throw new InvalidOperationException("Docking lost its exclusive input-control lease.");
+            if (!controls.ContainsKey(v) || !ReferenceEquals(inputOwner, this) || Harmony.GetPatchInfo(inputFeed)?.Owners.SingleOrDefault() != InputOwner)
+                throw new InvalidOperationException("Docking lost its input-delivery owner.");
         }
         static FlightInputCallback[] Chains(Vessel v) { return new[] { v.OnPreAutopilotUpdate, v.OnAutopilotUpdate, v.OnPostAutopilotUpdate, v.OnFlyByWire }; }
-        static void SetChains(Vessel v, FlightInputCallback[] chains)
+        static string[] CallbackNames(FlightInputCallback chain)
         {
-            v.OnPreAutopilotUpdate = chains[0]; v.OnAutopilotUpdate = chains[1];
-            v.OnPostAutopilotUpdate = chains[2]; v.OnFlyByWire = chains[3];
+            return chain == null ? new string[0] : chain.GetInvocationList().Select(callback =>
+                callback.Method.DeclaringType.FullName + "." + callback.Method.Name + ":" + callback.Method.Module.ModuleVersionId.ToString("D") + ":" +
+                callback.Method.MetadataToken.ToString("X8", CultureInfo.InvariantCulture) + ":target=" + (callback.Target == null ? "static" : callback.Target.GetType().FullName)).ToArray();
         }
         void Attach(Vessel v)
         {
@@ -218,19 +288,50 @@ namespace KspContinuum
             string[] names = { "pre-autopilot", "autopilot", "post-autopilot", "fly-by-wire" };
             for (int index = 0; index < prior.Length; index++)
                 rows[index] = new ControlRow { vesselId = v.id.ToString("D"), vesselInstanceId = v.GetInstanceID(), chain = names[index],
-                    suspendedCallbacks = prior[index] == null ? new string[0] : prior[index].GetInvocationList().Select(callback =>
-                        callback.Method.DeclaringType.FullName + "." + callback.Method.Name + ":" + callback.Method.Module.ModuleVersionId.ToString("D") + ":" +
-                        callback.Method.MetadataToken.ToString("X8", CultureInfo.InvariantCulture) + ":target=" + (callback.Target == null ? "static" : callback.Target.GetType().FullName)).ToArray() };
+                    suspendedCallbacks = CallbackNames(prior[index]) };
             controlRows.AddRange(rows);
-            controls.Add(v, new ControlLease { callbacks = prior, rows = rows });
-            SetChains(v, new FlightInputCallback[] { Quiet, Quiet, Quiet, Quiet });
-            ValidateCallbacks(v);
+            controls.Add(v, rows);
+        }
+        static bool InputPrefix(Vessel __instance)
+        {
+            DockingQualification owner = inputOwner;
+            if (owner == null || owner.disposed || !owner.parts.Any(p => p != null && p.vessel == __instance)) return true;
+            try
+            {
+                if (System.Threading.Thread.CurrentThread.ManagedThreadId != owner.thread) throw new InvalidOperationException("Docking input delivery left the owned thread.");
+                owner.Attach(__instance); owner.Quiet(__instance.ctrlState);
+                if (__instance.loaded && !__instance.packed && !__instance.HoldPhysics && __instance.IsControllable)
+                    __instance.rootPart.propagateControlUpdate(__instance.ctrlState);
+            }
+            catch (Exception error) { owner.Fail(error); }
+            return false;
         }
         void Quiet(FlightCtrlState c)
         {
             c.mainThrottle = c.pitch = c.yaw = c.roll = c.pitchTrim = c.yawTrim = c.rollTrim = 0;
             c.X = c.Y = c.Z = c.wheelSteer = c.wheelSteerTrim = c.wheelThrottle = c.wheelThrottleTrim = 0;
             if (Report != null) Report.controlCallbacks++;
+        }
+        double HorizonClearance()
+        {
+            Vector3d position = a.vessel.GetWorldPos3D(), radial = position - a.vessel.mainBody.position;
+            Vector3d sun = (Planetarium.fetch.Sun.position - position).normalized;
+            double along = -Vector3d.Dot(radial, sun);
+            return (along > 0 ? (radial + along * sun).magnitude : radial.magnitude) - a.vessel.mainBody.Radius;
+        }
+        void RenderCamera(Camera camera)
+        {
+            if (disposed || cameraPoses == null || !cameraPoses.Any(p => p.camera == camera)) return;
+            try
+            {
+                Vector3 sun = (Vector3)(Planetarium.fetch.Sun.position - a.vessel.GetWorldPos3D()).normalized;
+                Vector3 up = Vector3.ProjectOnPlane(a.nodeTransform.forward, sun).normalized;
+                if (up.sqrMagnitude < .9 || (Report.preparationRequested && HorizonClearance() <= 0)) throw new InvalidOperationException("Docking inspection lighting invalid.");
+                Vector3 center = (a.nodeTransform.position + b.nodeTransform.position) * .5f;
+                camera.transform.position = center + sun * 12f; camera.transform.rotation = Quaternion.LookRotation(-sun, up);
+                Report.cameraCallbacks++;
+            }
+            catch (Exception error) { Fail(error); }
         }
         Vector3 Relative()
         {
@@ -352,6 +453,7 @@ namespace KspContinuum
                 activeVesselId = a.vessel.id.ToString("D"), targetVesselId = b.vessel.id.ToString("D"), activeParts = a.vessel.parts.Count, targetParts = b.vessel.parts.Count,
                 activePortState = a.state, targetPortState = b.state, jointId = joint, distanceMeters = (a.nodeTransform.position - b.nodeTransform.position).magnitude,
                 relativeSpeedMetersPerSecond = Relative().magnitude, alignmentDot = Vector3.Dot(a.nodeTransform.forward, -b.nodeTransform.forward),
+                sunHorizonClearanceMeters = HorizonClearance(),
                 activeLinkedPortId = a.otherNode == null ? 0 : a.otherNode.part.flightID, targetLinkedPortId = b.otherNode == null ? 0 : b.otherNode.part.flightID });
         }
         bool TryImage(string stage)
@@ -379,25 +481,28 @@ namespace KspContinuum
         public void Dispose()
         {
             if (disposed) return; disposed = true;
+            inputHook.UnpatchAll(InputOwner);
+            Report.inputIngressRestored = inputFeed != null && Harmony.GetPatchInfo(inputFeed)?.Owners.Contains(InputOwner) != true;
+            if (ReferenceEquals(inputOwner, this)) inputOwner = null;
+            if (cameraHook) { Camera.onPreCull -= RenderCamera; cameraHook = false; }
+            Report.cameraRestored = !cameraHook;
+            if (cameraPoses != null) foreach (CameraPose pose in cameraPoses)
+            {
+                if (pose.camera == null) { Report.cameraRestored = false; continue; }
+                pose.camera.transform.localPosition = pose.position; pose.camera.transform.localRotation = pose.rotation;
+                Report.cameraRestored &= pose.camera.transform.localPosition == pose.position && pose.camera.transform.localRotation == pose.rotation;
+            }
             foreach (var lease in controls)
             {
-                FlightInputCallback[] current = Chains(lease.Key);
-                bool exclusive = current.All(chain => chain == (FlightInputCallback)Quiet);
-                if (exclusive) SetChains(lease.Key, lease.Value.callbacks);
-                else
-                {
-                    for (int index = 0; index < current.Length; index++)
-                        while (current[index] != null && current[index].GetInvocationList().Contains((Delegate)(FlightInputCallback)Quiet)) current[index] -= Quiet;
-                    SetChains(lease.Key, current);
-                }
-                FlightInputCallback[] restored = Chains(lease.Key);
-                for (int index = 0; index < restored.Length; index++) lease.Value.rows[index].restored = exclusive && restored[index] == lease.Value.callbacks[index];
+                bool destroyed = lease.Key == null;
+                FlightInputCallback[] current = destroyed ? null : Chains(lease.Key);
+                for (int index = 0; index < lease.Value.Length; index++)
+                { lease.Value[index].destroyed = destroyed; lease.Value[index].finalCallbacks = destroyed ? null : CallbackNames(current[index]); }
             }
-            Report.controlCallbacksRestored = controlRows.All(row => row.restored);
-            Report.hooksRemoved = controls.Keys.All(v => Chains(v).All(chain => chain == null || !chain.GetInvocationList().Contains((Delegate)(FlightInputCallback)Quiet)));
+            Report.hooksRemoved = Report.inputIngressRestored;
             if (lockOwned) { InputLockManager.RemoveControlLock(Lock); lockOwned = false; }
             Report.controlLockRemoved = !lockOwned;
-            Report.cleanupStatus = Report.hooksRemoved && Report.controlLockRemoved && Report.controlCallbacksRestored ? "removed-owned-controls" : "cleanup-error";
+            Report.cleanupStatus = Report.hooksRemoved && Report.controlLockRemoved && Report.cameraRestored ? "removed-owned-controls" : "cleanup-error";
             if (Report.cleanupStatus == "cleanup-error") Report.faults++;
         }
     }
