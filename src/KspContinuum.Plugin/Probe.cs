@@ -29,6 +29,7 @@ namespace KspContinuum
         FlightIntegratorUpdateAttribution integratorUpdateAttribution;
         ConvectionCapture convectionCapture;
         ConvectionReplacement convectionReplacement;
+        AeroIntegrationAttribution aeroIntegrationAttribution;
         DryBuoyancyRuntime dryBuoyancy;
         VesselRuntimeCapture vesselRuntime;
         Action<ProbeReport> completion;
@@ -111,6 +112,8 @@ namespace KspContinuum
                 string[] arguments = Environment.GetCommandLineArgs();
                 convectionReplacement = ConvectionReplacement.Create(arguments, report.runId, () => captureActive);
                 if (convectionReplacement != null) report.convectionReplacement = convectionReplacement.Report;
+                aeroIntegrationAttribution = AeroIntegrationAttribution.Create(arguments, report.runId, () => captureActive);
+                if (aeroIntegrationAttribution != null) report.aeroIntegrationAttribution = aeroIntegrationAttribution.Report;
                 convectionCapture = ConvectionCapture.Create(arguments, report.runId, () => captureActive);
                 if (convectionCapture != null) report.convectionCapture = convectionCapture.Report;
                 string canaryReason;
@@ -346,6 +349,17 @@ namespace KspContinuum
             if (finished) return;
             finished = true;
             var errors = new List<string>();
+            if (aeroIntegrationAttribution != null)
+            {
+                try
+                {
+                    aeroIntegrationAttribution.Dispose();
+                    string reason;
+                    if (!aeroIntegrationAttribution.IsValidFinal(out reason)) errors.Add("AeroIntegrationAttribution: " + reason);
+                }
+                catch (Exception error) { errors.Add("AeroIntegrationAttribution: " + error.GetType().Name); }
+                aeroIntegrationAttribution = null;
+            }
             if (callbackAttribution != null)
             {
                 try { callbackAttribution.Dispose(); }
