@@ -8,6 +8,7 @@ namespace KspContinuum
     {
         public string schema, runId, vesselId, engine, colorSpace, sourceFrame, bodyId, bodyName;
         public string vesselFixture, vesselFixtureSha256, bodyGeometry, bodyGeometrySha256;
+        public string wholeCraft, wholeCraftSha256;
         public string bodyMaterialRecipe, originalBodyShader, bodyTextureProperty, bodyTextureCapture, initialCameraTarget;
         public int processId;
         public double[] vesselAnchorMeters, bodyAnchorMeters, bodyLocalToMeters, initialCameraOffsetMeters;
@@ -39,7 +40,8 @@ namespace KspContinuum
         }
         public static void Validate(MultiscaleSceneManifest scene)
         {
-            Require(scene != null && scene.schema == "continuum-multiscale-scene/v1", "Multiscale scene schema differs.");
+            Require(scene != null && (scene.schema == "continuum-multiscale-scene/v1" || scene.schema == "continuum-multiscale-scene/v2"), "Multiscale scene schema differs.");
+            if(scene.schema == "continuum-multiscale-scene/v2") { PortablePath(scene.wholeCraft); Digest(scene.wholeCraftSha256); }
             Text(scene.runId); Text(scene.vesselId); Text(scene.bodyId); Text(scene.bodyName); Text(scene.engine); Text(scene.originalBodyShader);
             Require(scene.processId > 0 && scene.bodyId != scene.vesselId, "Scene source/object identity differs.");
             Require(scene.colorSpace == "Gamma" || scene.colorSpace == "Linear", "Scene colour space differs.");

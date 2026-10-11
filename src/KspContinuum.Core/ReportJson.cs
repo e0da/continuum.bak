@@ -33,7 +33,7 @@ namespace KspContinuum
             }
             if (value is bool) { output.Append((bool)value ? "true" : "false"); return; }
             if (value is Enum) { Write(output, value.ToString()); return; }
-            if (value is int || value is long || value is float || value is double)
+            if (value is int || value is uint || value is long || value is float || value is double)
             {
                 double number = Convert.ToDouble(value, CultureInfo.InvariantCulture);
                 if (double.IsNaN(number) || double.IsInfinity(number))
@@ -148,6 +148,7 @@ namespace KspContinuum
                 type != typeof(LiveControlReply) &&
                 type != typeof(NativeBoundaryMonoReport) && type != typeof(NativeBoundaryMonoRow) &&
                 type != typeof(MultiscaleSceneManifest) && type != typeof(ResidentMaterialManifest) && type != typeof(ResidentTextureAsset) &&
+                type != typeof(WholeCraftSceneManifest) && type != typeof(WholeCraftMaterialAsset) && type != typeof(WholeCraftDraw) && type != typeof(WholeCraftOmission) &&
                 type != typeof(ResidentMaterialAsset) && type != typeof(ResidentMaterialProperty) &&
                 type != typeof(ResidentInstanceAsset) && type != typeof(ResidentLighting) &&
                 type != typeof(NativeBoundaryMonoTiming) && type != typeof(ManagedReconstructionObservation) && !pluginDiagnostic)

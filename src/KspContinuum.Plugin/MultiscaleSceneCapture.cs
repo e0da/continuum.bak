@@ -26,6 +26,7 @@ namespace KspContinuum
             try
             {
                 string fixture = ResidentMaterialFixtureCapture.Capture(vessel, Path.Combine(staging, "vessel"), runId, sources);
+                string wholeCraft = WholeCraftSceneCapture.Capture(vessel, Path.Combine(staging, "whole-craft"), runId);
                 Vector3[] vertices = mesh.vertices, normals = mesh.normals; Vector2[] uv = mesh.uv; Vector4[] tangents = mesh.tangents;
                 if (vertices.Length == 0 || normals.Length != vertices.Length || uv.Length != vertices.Length || mesh.subMeshCount != 1) throw new InvalidDataException("Scaled mesh source layout unsupported.");
                 bool derivedTangents = tangents.Length != vertices.Length;
@@ -52,9 +53,10 @@ namespace KspContinuum
                 if (camera == null) throw new InvalidDataException("Actual flight camera unavailable.");
                 Vector3 cameraOffset = camera.transform.position - vessel.transform.position;
                 Vector2 tiling = material.GetTextureScale("_MainTex"), offset = material.GetTextureOffset("_MainTex");
-                var scene = new MultiscaleSceneManifest { schema = "continuum-multiscale-scene/v1", runId = runId, processId = System.Diagnostics.Process.GetCurrentProcess().Id,
+                var scene = new MultiscaleSceneManifest { schema = "continuum-multiscale-scene/v2", runId = runId, processId = System.Diagnostics.Process.GetCurrentProcess().Id,
                     vesselId = vessel.id.ToString("D"), engine = Application.unityVersion, colorSpace = QualitySettings.activeColorSpace.ToString(), sourceFrame = "body-centred-world-axes",
                     bodyId = "body/" + body.bodyName, bodyName = body.bodyName, vesselFixture = "vessel/manifest.json", vesselFixtureSha256 = Hash(fixture),
+                    wholeCraft = "whole-craft/manifest.json", wholeCraftSha256 = Hash(wholeCraft),
                     bodyGeometry = "body-geometry.bin", bodyGeometrySha256 = Hash(geometryPath), vesselAnchorMeters = D(anchor), bodyAnchorMeters = new double[3], bodyLocalToMeters = transform,
                     bodyRadiusMeters = body.Radius, initialCameraTarget = vessel.id.ToString("D"), initialCameraOffsetMeters = new[] { (double)cameraOffset.x, cameraOffset.y, cameraOffset.z }, fov = camera.fieldOfView,
                     bodyMaterialRecipe = "continuum-body-diffuse-v1", originalBodyShader = material.shader.name, bodyTextureProperty = "_MainTex", bodyTextureCapture = captureMode,
@@ -71,8 +73,11 @@ namespace KspContinuum
         }
         [Serializable] sealed class Evidence { public string schema="continuum-multiscale-capture/v1",runId,body,mesh,shader,textureCapture,sourceTexture; public int vertices,triangles,sourceTextureFormat,sourceTextureMips; public bool derivedTangents; public double scaledSpaceFactor; public string qualification="Actual source geometry and texture captured; body diffuse recipe omits original atmosphere/ocean/material parity. No simulation state mutation."; }
         static ResidentTextureAsset CaptureTexture(Texture2D source, string directory, out string captureMode)
+        { return CaptureTexture(source,directory,"body-texture.bin",out captureMode); }
+        internal static ResidentTextureAsset CaptureTexture(Texture2D source, string directory, string filename, out string captureMode)
         {
-            string path=Path.Combine(directory,"body-texture.bin"), payload; ResourceImageEntry entry = null;
+            MultiscaleSceneFormat.PortablePath(filename);
+            string path=Path.Combine(directory,filename), payload; ResourceImageEntry entry = null;
             try { entry = StartupResourceImage.PublishedPayload(source, out payload); } catch (InvalidDataException) { payload = null; }
             Texture2D encoded = source; bool linear = GraphicsFormatUtility.IsSRGBFormat(source.graphicsFormat) == false;
             try
@@ -89,7 +94,7 @@ namespace KspContinuum
                     linear=true; captureMode="rgba-readback-mip0";
                 }
                 string digest = Hash(path);
-                return new ResidentTextureAsset { id=digest, payload="body-texture.bin",payloadSha256=digest,payloadLength=new FileInfo(path).Length,
+                return new ResidentTextureAsset { id=digest, payload=filename,payloadSha256=digest,payloadLength=new FileInfo(path).Length,
                     width=encoded.width,height=encoded.height,format=(int)encoded.format,graphicsFormat=Convert.ToInt32(encoded.graphicsFormat),mipCount=encoded.mipmapCount,
                     filter=(int)source.filterMode,wrap=(int)source.wrapMode,aniso=source.anisoLevel,mipBias=source.mipMapBias,linear=entry == null ? linear : entry.linear };
             }
