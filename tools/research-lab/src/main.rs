@@ -84,6 +84,7 @@ fn run() -> Result<()> {
             "--startup-work-scheduler",
             "--native-asset-installation",
             "--startup-world-timing",
+            "--startup-construction-timing",
             "--flight-save",
             "--flight-checkpoint",
             "--flight-max-delta",
@@ -598,6 +599,7 @@ fn smoke(
     let native_asset_installation = selection.native_asset_installation.as_deref();
     let flight = &selection.flight;
     let startup_world_timing = selection.diagnostics.world_timing;
+    let startup_construction_timing = selection.diagnostics.construction_timing;
     let catalog_preparation = startup_catalog_mode.starts_with("prepare");
     let catalog_before = match startup_catalog {
         Some(path) => {
@@ -752,6 +754,11 @@ fn smoke(
         ))
         .args(if startup_world_timing {
             vec!["--continuum-startup-world-timing"]
+        } else {
+            vec![]
+        })
+        .args(if startup_construction_timing {
+            vec!["--continuum-startup-construction-timing"]
         } else {
             vec![]
         })
@@ -1009,7 +1016,13 @@ fn smoke(
                 output,
                 &report,
             )?;
-            summary["localCamera"] = continuum_research_lab::flight::local_camera_summary(request, &read::<Value>(&output.join("local-camera.json"))?, &report, &run_id, child.id())?;
+            summary["localCamera"] = continuum_research_lab::flight::local_camera_summary(
+                request,
+                &read::<Value>(&output.join("local-camera.json"))?,
+                &report,
+                &run_id,
+                child.id(),
+            )?;
             if let Some(library) = &request.gpu_timing_library {
                 summary["gpuTiming"] = continuum_research_lab::gpu_timing::retain_summary(
                     output,
@@ -1070,7 +1083,11 @@ fn smoke(
         let mut retained = json!({});
         type Recover = fn(&Path, &str, u32, &Path) -> Result<()>;
         let recoveries: [(&str, &str, Recover); 4] = [
-            ("local-camera.json", "localCamera", continuum_research_lab::flight::recover_failed_local_camera),
+            (
+                "local-camera.json",
+                "localCamera",
+                continuum_research_lab::flight::recover_failed_local_camera,
+            ),
             (
                 "aero-batch.json",
                 "aeroBatch",
@@ -1180,6 +1197,14 @@ fn smoke(
         Ok(_) => { pixel_error.get_or_insert("backend pixel bundle changed during owned run".into()); },
         Err(error) => { pixel_error.get_or_insert(format!("backend pixel bundle post-run hash failed: {error}")); },
     }
+    let (construction_evidence, construction_error) = if startup_construction_timing {
+        match retain_construction_timing(&observer_directory, output, &run_id, child.id()) {
+            Ok(evidence) => (Some(evidence), None),
+            Err(error) => (None, Some(error)),
+        }
+    } else {
+        (None, None)
+    };
     write_new(
         &output.join("receipt.json"),
         &json!({"schema":"continuum-lab-process-smoke/v1","scope":if flight.is_some() {"timed-diagnostic-flight"} else if catalog_preparation {"asset-catalog-preparation-process"} else {"menu-native-boundary-process-smoke"},
@@ -1207,6 +1232,8 @@ fn smoke(
         "startupDeferredTerrainEvidence":deferred_terrain_evidence,"startupDeferredTerrainError":deferred_terrain_error,
         "startupResourceImageModeRequested":startup_resource_image_mode,"startupResourceImage":startup_resource_image,
         "startupWorkSchedulerRequested":startup_work_scheduler,
+        "startupConstructionTimingRequested":startup_construction_timing,
+        "startupConstructionTimingEvidence":construction_evidence,"startupConstructionTimingError":construction_error,
         "nativeAssetInstallation":native_assets.as_ref().map(|assets| assets.receipt()),
         "startupCatalogModeRequested":startup_catalog_mode,"startupCatalog":startup_catalog,"startupCatalogSha256":catalog_before,
         "generatedCatalogSha256":generated_catalog_hash,
@@ -1216,7 +1243,7 @@ fn smoke(
         "startupBuildCacheRequested":startup_build_cache,"startupCache":startup_cache,"bundleSha256":bundle_hashes,
         "startupCachedBundlesRequested":startup_cached_bundles,
         "startupNativeAdmissionRequested":startup_native_admission,"cacheAdmissionSha256":proof_hash,"cacheAdmissionFiles":admission.as_ref().map(|value|&value.files),
-        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none()&&deferred_terrain_error.is_none()&&site_proof_error.is_none()&&generation_error.is_none()&&pixel_error.is_none() {"passed"} else {"failed"},
+        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none()&&deferred_terrain_error.is_none()&&site_proof_error.is_none()&&generation_error.is_none()&&pixel_error.is_none()&&construction_error.is_none() {"passed"} else {"failed"},
         "qualification":if flight.is_some() {"diagnostic-window-only; behavior-and-gameplay-not-qualified"} else if catalog_preparation {"catalog-content-and-fresh-process-reuse-proof-required"} else {"process-exit-only-native-receipt-review-and-flight-proof-required"}}),
     )?;
     if timed_out
@@ -1228,8 +1255,266 @@ fn smoke(
         || site_proof_error.is_some()
         || generation_error.is_some()
         || pixel_error.is_some()
+        || construction_error.is_some()
     {
         return Err("owned process smoke failed; retained logs and receipt".into());
+    }
+    Ok(())
+}
+
+fn retain_construction_timing(
+    directory: &Path,
+    output: &Path,
+    run: &str,
+    pid: u32,
+) -> Result<Value> {
+    let mut owned = Vec::new();
+    let mut rejected = 0;
+    let mut foreign = None;
+    for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if !name.starts_with("startup-construction-timing-") || !name.ends_with(".json") {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 1024 * 1024
+        {
+            return Err("construction report is not a bounded owned regular file".into());
+        }
+        let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+        let parsed = serde_json::from_slice::<Value>(&bytes);
+        match parsed {
+            Ok(report)
+                if report["runId"].as_str() == Some(run)
+                    && report["processId"].as_u64() == Some(u64::from(pid)) =>
+            {
+                owned.push((bytes, report))
+            }
+            Ok(_) => {
+                if foreign.is_none() {
+                    foreign = Some(bytes);
+                }
+            }
+            Err(_) => {
+                if rejected < 4 {
+                    fs::write(
+                        output.join(format!("startup-construction-unbound-{rejected}.json")),
+                        &bytes,
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+                rejected += 1;
+            }
+        }
+    }
+    if owned.len() != 1 {
+        if owned.is_empty() {
+            if let Some(bytes) = foreign {
+                fs::write(
+                    output.join("startup-construction-unbound-foreign.json"),
+                    bytes,
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        } else {
+            for (index, (bytes, _)) in owned.iter().enumerate().take(4) {
+                fs::write(
+                    output.join(format!("startup-construction-ambiguous-{index}.json")),
+                    bytes,
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        return Err(format!("expected one nonce/PID-owned construction report, found {}; malformed reports {rejected}", owned.len()));
+    }
+    let (bytes, report) = owned.pop().unwrap();
+    let path = output.join("startup-construction-timing.json");
+    if path.exists() {
+        return Err("construction evidence destination already exists".into());
+    }
+    fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    validate_construction_timing(&report)?;
+    Ok(
+        json!({"sha256":hash(&path)?,"report":report,"scope":"intrusive-construction-readiness-attribution; no optimization or CPU-exclusive claim"}),
+    )
+}
+
+fn validate_construction_timing(report: &Value) -> Result<()> {
+    continuum_research_lab::launch::validate_construction_closure(report)?;
+    let fail = || "construction report malformed, incomplete or inconsistent".to_string();
+    if report["schema"] != "continuum-startup-construction-timing/v1"
+        || report["status"] != "menu-observed"
+        || report["clockFrequency"]
+            .as_u64()
+            .filter(|n| *n > 0)
+            .is_none()
+        || report["installedTicks"]
+            .as_u64()
+            .filter(|n| *n > 0)
+            .is_none()
+        || report["stackErrors"].as_u64() != Some(0)
+        || report["databaseReadyAtMenu"].as_bool() != Some(true)
+        || report["childCallsiteInstalled"].as_bool() != Some(true)
+    {
+        return Err(fail());
+    }
+    let initial = report["databaseInitialStateObserved"]
+        .as_bool()
+        .ok_or_else(fail)?;
+    let bootstrap = if initial {
+        "state0-observed-not-earlier-native-bootstrap"
+    } else {
+        "state0-unobserved-no-bootstrap-cost-attribution"
+    };
+    if report["bootstrapCoverage"] != bootstrap {
+        return Err(fail());
+    }
+    for name in ["databaseCompleted", "loaderCompleted"] {
+        report[name].as_bool().ok_or_else(fail)?;
+    }
+    for name in [
+        "firstDatabaseTicks",
+        "lastDatabaseTicks",
+        "databaseOuterActiveTicks",
+        "databaseOuterSteps",
+        "loaderSteps",
+    ] {
+        report[name].as_u64().ok_or_else(fail)?;
+    }
+    for name in ["scopes", "children", "resumes", "readiness"] {
+        let rows = report[name].as_array().ok_or_else(fail)?;
+        if rows.len() > 256 {
+            return Err(fail());
+        }
+    }
+    let children = report["children"].as_array().unwrap();
+    let child_coverage = if children.is_empty() {
+        "installed-no-dispatch-observed"
+    } else {
+        "actual-child-prime-calls-observed-not-asynchronous-worker-cost"
+    };
+    if report["childCoverage"] != child_coverage {
+        return Err(fail());
+    }
+    let scope = |row: &Value| -> Result<()> {
+        if row["name"].as_str().filter(|s| !s.is_empty()).is_none() {
+            return Err(fail());
+        }
+        for key in [
+            "calls",
+            "errors",
+            "inclusiveTicks",
+            "exclusiveTicks",
+            "maximumTicks",
+        ] {
+            row[key].as_u64().ok_or_else(fail)?;
+        }
+        if row["exclusiveTicks"].as_u64() > row["inclusiveTicks"].as_u64()
+            || row["maximumTicks"].as_u64() > row["inclusiveTicks"].as_u64()
+        {
+            return Err(fail());
+        }
+        Ok(())
+    };
+    let expected_scopes = [
+        "GameDatabase.LoadObjects.MoveNext",
+        "LoadingScreen.LoadSystems.MoveNext",
+        "AssemblyLoader.Initialize",
+        "AssemblyLoader.LoadPluginInfo",
+        "AssemblyLoader.LoadPlugin",
+        "AssemblyLoader.LoadAssemblies",
+        "GameDatabase.SetupMainLoaders",
+        "GameDatabase.translateLoadedNodes",
+        "UrlDir..ctor",
+    ];
+    let scopes = report["scopes"].as_array().unwrap();
+    if scopes.len() != expected_scopes.len() {
+        return Err(fail());
+    }
+    for (row, expected) in scopes.iter().zip(expected_scopes) {
+        scope(row)?;
+        if row["name"] != expected {
+            return Err(fail());
+        }
+    }
+    for row in children {
+        scope(&row["synchronous"])?;
+        if row["iteratorType"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .is_none()
+        {
+            return Err(fail());
+        }
+        let complete = row["completed"].as_u64().ok_or_else(fail)?;
+        let suspended = row["suspended"].as_u64().ok_or_else(fail)?;
+        let errors = row["errors"].as_u64().ok_or_else(fail)?;
+        if complete
+            .checked_add(suspended)
+            .and_then(|n| n.checked_add(errors))
+            != row["synchronous"]["calls"].as_u64()
+        {
+            return Err(fail());
+        }
+        if row["synchronous"]["errors"].as_u64() != Some(errors) {
+            return Err(fail());
+        }
+    }
+    for row in report["readiness"].as_array().unwrap() {
+        scope(&row["construction"])?;
+        if row["systemType"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .is_none()
+        {
+            return Err(fail());
+        }
+        for key in ["startObserved", "readyObserved"] {
+            row[key].as_bool().ok_or_else(fail)?;
+        }
+        for key in [
+            "startCalls",
+            "polls",
+            "notReadyPolls",
+            "errors",
+            "firstObservedTicks",
+            "lastObservedTicks",
+            "startTicks",
+            "readyTicks",
+            "pollTicks",
+            "waitGapTicks",
+        ] {
+            row[key].as_u64().ok_or_else(fail)?;
+        }
+        if row["notReadyPolls"].as_u64() > row["polls"].as_u64()
+            || row["startObserved"].as_bool() != Some(row["startCalls"].as_u64().unwrap() > 0)
+            || row["readyObserved"].as_bool() != Some(row["readyTicks"].as_u64().unwrap() > 0)
+        {
+            return Err(fail());
+        }
+    }
+    for row in report["resumes"].as_array().unwrap() {
+        row["state"].as_i64().ok_or_else(fail)?;
+        for key in [
+            "calls",
+            "nullYields",
+            "budgetNullYields",
+            "objectYields",
+            "activeTicks",
+            "wakeTicks",
+            "maximumWakeTicks",
+        ] {
+            row[key].as_u64().ok_or_else(fail)?;
+        }
+        if row["budgetNullYields"].as_u64() > row["nullYields"].as_u64()
+            || row["maximumWakeTicks"].as_u64() > row["wakeTicks"].as_u64()
+        {
+            return Err(fail());
+        }
     }
     Ok(())
 }
