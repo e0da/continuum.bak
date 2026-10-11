@@ -15,6 +15,13 @@ public sealed class WholeCraftRuntime : IDisposable
     sealed class Recipe { public int Texture=-1; public Vector4 ST=new Vector4(1,1,0,0); public Color Tint=Color.white; }
     sealed class Packet { public int Mesh,Submesh,Layer,Recipe; public int[] Sources; public Matrix4x4[] Matrices; public MaterialPropertyBlock Block; }
     Recipe[] recipes; int[] materialRecipes; Packet[] packets; MaterialPropertyBlock[] referenceColors;
+    Texture2D retainedState; CommandBuffer retainedCommands; Camera retainedCamera; RenderTexture retainedColor,retainedDepth; int retainedRows,retainedCalls;
+    public int StateUploadCount { get; private set; }
+    public long StateUploadBytes { get; private set; }
+    public int StateTextureId { get { return retainedState==null?0:retainedState.GetInstanceID(); } }
+    public int CommandBuildCount { get; private set; }
+    public int RetainedCommandCount { get { return retainedCalls; } }
+    public string RetainedScope { get { return "Cold GPU affine/normal/hue state and pass0 commands; all admitted visible rows, no per-row frustum culling, no shadow consumer; submission ticks cover owner control only"; } }
     public string RenderMode { get; private set; }="reference";
     public int RecipeCount { get { return recipes.Length; } }
     public int PacketCount { get { return packets.Length; } }
@@ -92,29 +99,105 @@ public sealed class WholeCraftRuntime : IDisposable
         var list=new List<Packet>(); foreach(var key in keys) { var sources=groups[key]; int start=0; foreach(int count in PacketSlices(sources.Count)) { var first=Manifest.draws[sources[start]]; var packet=new Packet {Mesh=first.meshIndex,Submesh=first.submeshIndex,Layer=first.layer,Recipe=materialRecipes[first.materialIndex],Sources=new int[count],Matrices=new Matrix4x4[count],Block=new MaterialPropertyBlock()}; var colors=new Vector4[count]; for(int j=0;j<count;j++) { int source=sources[start+j]; packet.Sources[j]=source; packet.Matrices[j]=matrices[source]; colors[j]=Color.HSVToRGB((Manifest.draws[source].materialIndex*.61803398875f)%1,.7f,.95f); } packet.Block.SetVectorArray("_MaterialColor",colors); list.Add(packet); start+=count; } } packets=list.ToArray();
     }
     public static int[] PacketSlices(int sources) { if(sources<0||sources>50000) throw new InvalidDataException("Packet source capacity differs."); var result=new int[(sources+1022)/1023]; for(int i=0;i<result.Length;i++) result[i]=Math.Min(1023,sources-i*1023); return result; }
-    public void SetRenderMode(string mode) { if(mode!="reference"&&mode!="grouped") throw new InvalidDataException("Whole render mode reference|grouped required."); if(mode=="grouped"&&!SystemInfo.supportsInstancing) throw new InvalidDataException("Native instancing unavailable."); RenderMode=mode; }
+    static bool Retained(string mode) { return mode=="retained-scalar"||mode=="retained-grouped"; }
+    public void SetRenderMode(string mode)
+    {
+        if(mode!="reference"&&mode!="grouped"&&!Retained(mode)) throw new InvalidDataException("Whole render mode reference|grouped|retained-scalar|retained-grouped required.");
+        if(mode!="reference"&&!SystemInfo.supportsInstancing) throw new InvalidDataException("Native instancing unavailable."); if(mode==RenderMode) return;
+        CommandBuffer next=null; int calls=0; if(Retained(mode)) { EnsureRetainedState(); if(retainedColor!=null) next=PrepareCommands(materials,mode,out calls); }
+        try { ReplaceCommands(next,calls); } catch { if(next!=null) next.Release(); throw; } RenderMode=mode;
+    }
+    public void ConfigureRetainedTargets(RenderTexture color,RenderTexture positiveDepth)
+    {
+        if(color==null||positiveDepth==null||!color.IsCreated()||!positiveDepth.IsCreated()||color.width!=positiveDepth.width||color.height!=positiveDepth.height||color.depth<16||color.antiAliasing!=1||positiveDepth.antiAliasing!=1||positiveDepth.format!=RenderTextureFormat.RFloat||SystemInfo.supportedRenderTargetCount<2) throw new InvalidDataException("Retained MRT requires matching single-sample color/depth targets and native two-target support.");
+        if(retainedColor==color&&retainedDepth==positiveDepth) return;
+        var oldColor=retainedColor; var oldDepth=retainedDepth; retainedColor=color; retainedDepth=positiveDepth;
+        try { if(Retained(RenderMode)) { int calls; var next=PrepareCommands(materials,RenderMode,out calls); try { ReplaceCommands(next,calls); } catch { next.Release(); throw; } } }
+        catch { retainedColor=oldColor; retainedDepth=oldDepth; throw; }
+    }
+    void EnsureRetainedState()
+    {
+        if(retainedState!=null) return;
+        int rows=0; foreach(var p in packets) rows+=p.Sources.Length;
+        if(rows<=0||rows>SystemInfo.maxTextureSize||SystemInfo.maxTextureSize<8||!SystemInfo.SupportsTextureFormat(TextureFormat.RGBAFloat)) throw new InvalidDataException("Bounded vertex state texture unavailable.");
+        var pixels=new Color[rows*8]; int row=0;
+        foreach(var p in packets) foreach(int source in p.Sources)
+        {
+            var m=bases[source]; Check(m); if(!Finite(m.determinant)||m.determinant==0) throw new InvalidDataException("Retained affine inverse singular."); var n=m.inverse.transpose; Check(n);
+            for(int r=0;r<4;r++) { var v=m.GetRow(r); pixels[row*8+r]=new Color(v.x,v.y,v.z,v.w); }
+            for(int r=0;r<3;r++) { var v=n.GetRow(r); pixels[row*8+4+r]=new Color(v.x,v.y,v.z,0); }
+            pixels[row*8+7]=Color.HSVToRGB((Manifest.draws[source].materialIndex*.61803398875f)%1,.7f,.95f); row++;
+        }
+        Texture2D texture=null;
+        try { texture=new Texture2D(8,rows,TextureFormat.RGBAFloat,false,true) {filterMode=FilterMode.Point,wrapMode=TextureWrapMode.Clamp,anisoLevel=0}; texture.SetPixels(pixels); texture.Apply(false,true); retainedState=texture; retainedRows=rows; owned.Add(texture); StateUploadCount++; StateUploadBytes+=(long)rows*8*16; }
+        catch { if(texture!=null) UnityEngine.Object.Destroy(texture); throw; }
+    }
+    CommandBuffer PrepareCommands(Material[] table,string mode,out int calls)
+    {
+        calls=0; var commands=new CommandBuffer {name="Retained whole diagnostic "+mode};
+        try
+        {
+            if(retainedColor==null||retainedDepth==null) throw new InvalidDataException("Retained targets must be configured before command preparation.");
+            commands.SetRenderTarget(new[] {new RenderTargetIdentifier(retainedColor),new RenderTargetIdentifier(retainedDepth)},new RenderTargetIdentifier(retainedColor));
+            commands.ClearRenderTarget(true,true,Color.clear);
+            var identity=new Matrix4x4[1023]; for(int i=0;i<identity.Length;i++) identity[i]=Matrix4x4.identity; int row=0;
+            foreach(var p in packets)
+            {
+                var material=table[Manifest.materials.Length+p.Recipe]; if(!material.HasProperty("_ContinuumRetainedContract")||material.GetFloat("_ContinuumRetainedContract")!=1) throw new InvalidDataException("Retained diagnostic shader contract absent.");
+                int stride=mode=="retained-grouped"?p.Sources.Length:1;
+                for(int i=0;i<p.Sources.Length;i+=stride)
+                {
+                    var block=new MaterialPropertyBlock(); block.SetFloat("_ContinuumRetained",1); block.SetTexture("_ContinuumState",retainedState); block.SetVector("_ContinuumStateShape",new Vector4(8,retainedRows,0,0)); block.SetFloat("_ContinuumStateBase",row+i);
+                    commands.DrawMeshInstanced(meshes[p.Mesh],p.Submesh,material,0,identity,stride,block); calls++;
+                }
+                row+=p.Sources.Length;
+            }
+            commands.SetRenderTarget(BuiltinRenderTextureType.CameraTarget); CommandBuildCount++; return commands;
+        }
+        catch { commands.Release(); throw; }
+    }
+    void ReplaceCommands(CommandBuffer next,int calls)
+    {
+        if(retainedCamera!=null&&next!=null) retainedCamera.AddCommandBuffer(CameraEvent.BeforeForwardOpaque,next);
+        if(retainedCamera!=null&&retainedCommands!=null) retainedCamera.RemoveCommandBuffer(CameraEvent.BeforeForwardOpaque,retainedCommands);
+        if(retainedCommands!=null) retainedCommands.Release(); retainedCommands=next; retainedCalls=calls;
+    }
     public Material[] PrepareDebugShader(Shader shader)
     {
+        if(Retained(RenderMode)) { var probe=new Material(shader); try { if(!probe.HasProperty("_ContinuumRetainedContract")||probe.GetFloat("_ContinuumRetainedContract")!=1) throw new InvalidDataException("Staged shader lacks retained state contract."); } finally { UnityEngine.Object.Destroy(probe); } }
         var next=new Material[Manifest.materials.Length+recipes.Length];
-        try { for(int i=0;i<next.Length;i++) { bool grouped=i>=Manifest.materials.Length; var recipe=recipes[grouped?i-Manifest.materials.Length:materialRecipes[i]]; var m=new Material(shader) {enableInstancing=grouped}; next[i]=m; m.SetFloat("_Mode",DebugMode=="off"?7:ResidentMaterialRuntime.GeometryDebugMode(DebugMode)); m.SetFloat("_Cull",0); m.SetColor("_Tint",recipe.Tint); if(recipe.Texture>=0) m.SetTexture("_MainTex",textures[recipe.Texture]); m.SetTextureScale("_MainTex",new Vector2(recipe.ST.x,recipe.ST.y)); m.SetTextureOffset("_MainTex",new Vector2(recipe.ST.z,recipe.ST.w)); } return next; }
+        try { for(int i=0;i<next.Length;i++) { bool grouped=i>=Manifest.materials.Length; var recipe=recipes[grouped?i-Manifest.materials.Length:materialRecipes[i]]; var m=new Material(shader) {enableInstancing=grouped}; next[i]=m; m.SetFloat("_Mode",DebugMode=="off"?7:ResidentMaterialRuntime.GeometryDebugMode(DebugMode)); m.SetFloat("_Cull",0); m.SetColor("_Tint",recipe.Tint); m.SetVector("_ContinuumRetainedAnchor",lastAnchor); if(recipe.Texture>=0) m.SetTexture("_MainTex",textures[recipe.Texture]); m.SetTextureScale("_MainTex",new Vector2(recipe.ST.x,recipe.ST.y)); m.SetTextureOffset("_MainTex",new Vector2(recipe.ST.z,recipe.ST.w)); } return next; }
         catch { foreach(var m in next) if(m!=null) UnityEngine.Object.Destroy(m); throw; }
     }
-    public void CommitDebugShader(Material[] next) { if(next==null||next.Length!=Manifest.materials.Length+recipes.Length) throw new InvalidDataException("Staged whole debug material table differs."); if(materials!=null) foreach(var m in materials) { owned.Remove(m); UnityEngine.Object.Destroy(m); } materials=next; owned.AddRange(next); }
+    public void CommitDebugShader(Material[] next)
+    {
+        if(next==null||next.Length!=Manifest.materials.Length+recipes.Length) throw new InvalidDataException("Staged whole debug material table differs.");
+        CommandBuffer commands=null; int calls=0;
+        try { if(Retained(RenderMode)) commands=PrepareCommands(next,RenderMode,out calls); ReplaceCommands(commands,calls); }
+        catch { if(commands!=null) commands.Release(); throw; }
+        if(materials!=null) foreach(var m in materials) { owned.Remove(m); UnityEngine.Object.Destroy(m); } materials=next; owned.AddRange(next);
+    }
     public void SetGeometryDebug(string value) { int mode=value=="off"?7:ResidentMaterialRuntime.GeometryDebugMode(value); foreach(var m in materials) m.SetFloat("_Mode",mode); DebugMode=value; }
     public void SetTextureMipBias(float bias) { if(!Finite(bias)) throw new InvalidDataException("Finite whole mip bias required."); if(biasSet&&bias==lastBias) return; for(int i=0;i<textures.Length;i++) textures[i].mipMapBias=Manifest.textures[i].mipBias+bias; lastBias=bias; biasSet=true; }
     public void SetPresentationAnchor(Vector3 anchor)
     {
         Check(anchor); if(anchorSet&&anchor.x==lastAnchor.x&&anchor.y==lastAnchor.y&&anchor.z==lastAnchor.z) return; var bounds=baseBounds; bounds.center+=anchor; Check(bounds.center); Check(bounds.extents);
         for(int i=0;i<matrices.Length;i++) { var candidate=bases[i]; candidate.m03+=anchor.x; candidate.m13+=anchor.y; candidate.m23+=anchor.z; Check(candidate); }
-        for(int i=0;i<matrices.Length;i++) { var m=bases[i]; m.m03+=anchor.x; m.m13+=anchor.y; m.m23+=anchor.z; matrices[i]=m; } foreach(var packet in packets) for(int i=0;i<packet.Sources.Length;i++) packet.Matrices[i]=matrices[packet.Sources[i]]; Bounds=bounds; lastAnchor=anchor; anchorSet=true;
+        for(int i=0;i<matrices.Length;i++) { var m=bases[i]; m.m03+=anchor.x; m.m13+=anchor.y; m.m23+=anchor.z; matrices[i]=m; } foreach(var packet in packets) for(int i=0;i<packet.Sources.Length;i++) packet.Matrices[i]=matrices[packet.Sources[i]]; foreach(var m in materials) m.SetVector("_ContinuumRetainedAnchor",anchor); Bounds=bounds; lastAnchor=anchor; anchorSet=true;
     }
     public Vector3 PresentationInstanceCenter(string id,out float radius) { for(int i=0;i<Manifest.draws.Length;i++) if(Manifest.draws[i].id==id) { var b=meshes[Manifest.draws[i].meshIndex].bounds; var m=bases[i]; radius=(m.GetColumn(0).magnitude*b.extents.x+m.GetColumn(1).magnitude*b.extents.y+m.GetColumn(2).magnitude*b.extents.z); return m.MultiplyPoint3x4(b.center); } throw new InvalidDataException("Unknown whole-craft row identity."); }
     public void Submit(Camera camera)
     {
         if(disposed||lastFrame==Time.frameCount) return; lastFrame=Time.frameCount; long start=System.Diagnostics.Stopwatch.GetTimestamp(); LastSubmissionCalls=0;
-        if(RenderMode=="grouped") foreach(var packet in packets) { Graphics.DrawMeshInstanced(meshes[packet.Mesh],packet.Submesh,materials[Manifest.materials.Length+packet.Recipe],packet.Matrices,packet.Matrices.Length,packet.Block,ShadowCastingMode.On,false,packet.Layer,camera,LightProbeUsage.Off,null); LastSubmissionCalls++; }
+        if(Retained(RenderMode))
+        {
+            if(camera==null||retainedCommands==null||camera.targetTexture!=retainedColor||(camera.cullingMask&LayerMask)!=LayerMask||camera.renderingPath!=RenderingPath.Forward) throw new InvalidDataException("Retained owner requires configured MRT and explicit Forward camera covering every admitted layer.");
+            if(retainedCamera!=camera) { camera.AddCommandBuffer(CameraEvent.BeforeForwardOpaque,retainedCommands); if(retainedCamera!=null) retainedCamera.RemoveCommandBuffer(CameraEvent.BeforeForwardOpaque,retainedCommands); retainedCamera=camera; }
+            LastSubmissionCalls=retainedCalls;
+        }
+        else if(RenderMode=="grouped") foreach(var packet in packets) { Graphics.DrawMeshInstanced(meshes[packet.Mesh],packet.Submesh,materials[Manifest.materials.Length+packet.Recipe],packet.Matrices,packet.Matrices.Length,packet.Block,ShadowCastingMode.On,false,packet.Layer,camera,LightProbeUsage.Off,null); LastSubmissionCalls++; }
         else for(int i=0;i<Manifest.draws.Length;i++) { var a=Manifest.draws[i]; if(!a.enabled||!a.active||a.forceRenderingOff) continue; Graphics.DrawMesh(meshes[a.meshIndex],matrices[i],materials[a.materialIndex],a.layer,camera,a.submeshIndex,referenceColors[i],ShadowCastingMode.On,false,null,LightProbeUsage.Off,null); LastSubmissionCalls++; }
         DrawCalls+=LastSubmissionCalls; SubmissionTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-start; SubmittedFrames++;
     }
-    public void Dispose() { if(disposed) return; disposed=true; foreach(var o in owned) if(o!=null) UnityEngine.Object.Destroy(o); }
+    public void Dispose() { if(disposed) return; disposed=true; ReplaceCommands(null,0); retainedCamera=null; foreach(var o in owned) if(o!=null) UnityEngine.Object.Destroy(o); }
 }
