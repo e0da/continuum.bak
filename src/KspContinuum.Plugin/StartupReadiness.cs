@@ -23,6 +23,7 @@ namespace KspContinuum
         bool exported;
         bool quitting;
         bool stockTargetReadiness;
+        bool generationWitness;
         public sealed class Frame
         {
             public PQS Sphere;
@@ -33,12 +34,16 @@ namespace KspContinuum
             public int StockTargetIdAtReturn;
             public bool ForceCompleted;
             public bool CallerObserved;
+            internal StartupTerrainGenerationWitness.Context Generation;
         }
         public struct MoveState { public Frame Previous; }
 
         public void Awake()
         {
             stockTargetReadiness = Environment.GetCommandLineArgs().Contains("--continuum-startup-stock-terrain-ready");
+            generationWitness = Environment.GetCommandLineArgs().Contains("--continuum-startup-terrain-generation-witness") || Environment.GetEnvironmentVariable("CONTINUUM_STARTUP_TERRAIN_GENERATION_WITNESS") == "1";
+            if (generationWitness && !Environment.GetCommandLineArgs().Contains("--continuum-startup-readiness"))
+            { Debug.LogError(Marker + "status=rejected reason=generation-witness-requires-startup-readiness"); Application.Quit(2); return; }
             if (stockTargetReadiness && !Environment.GetCommandLineArgs().Contains("--continuum-startup-readiness"))
             { Debug.LogError(Marker + "status=rejected reason=stock-terrain-ready-requires-startup-readiness"); Application.Quit(2); return; }
             if (!Environment.GetCommandLineArgs().Contains("--continuum-startup-readiness")) return;
@@ -91,6 +96,7 @@ namespace KspContinuum
             LaunchSite site = active.siteField.GetValue(iterator) as LaunchSite;
             if (StartupDeferredTerrain.Defer(setup, sphere, target, site)) return;
             StartupDeferredTerrain.BeforeStockForce(sphere);
+            if (active.generationWitness) frame.Generation = StartupTerrainGenerationWitness.Begin(sphere, target, site);
             originalForce(setup, sphere, target);
             frame.StockReturnedTarget = sphere == null ? null : sphere.target;
             frame.StockTargetCaptured = sphere != null;
@@ -98,7 +104,21 @@ namespace KspContinuum
             frame.StockTargetLiveAtReturn = frame.StockReturnedTarget != null;
             frame.StockTargetIdAtReturn = frame.StockTargetLiveAtReturn ? frame.StockReturnedTarget.GetInstanceID() : 0;
             frame.ForceCompleted = true;
+            if (active.generationWitness)
+            {
+                StartupTerrainGenerationWitness.Observe(frame.Generation, "force-return");
+                try { active.StartCoroutine(StartupTerrainGenerationWitness.AfterFixed(frame.Generation)); }
+                catch (Exception error) { Debug.LogError("[Continuum terrain generation] serial=" + frame.Generation.Serial + " phase=after-fixed status=invalid reason=" + Uri.EscapeDataString(error.Message)); }
+            }
         }
+        static void BeforeOrientate(object iterator)
+        {
+            Frame frame;
+            if (active.frames.TryGetValue(iterator, out frame) && frame.Generation != null)
+                StartupTerrainGenerationWitness.Observe(frame.Generation, "before-stock-orientate");
+        }
+        static void OrientateCity(PQSCity city, bool allowReposition, object iterator) { BeforeOrientate(iterator); city.Orientate(allowReposition); }
+        static void OrientateCity2(PQSCity2 city, object iterator) { BeforeOrientate(iterator); city.Orientate(); }
         static IEnumerable<CodeInstruction> LaunchTranspile(IEnumerable<CodeInstruction> source)
         {
             var body = source.ToList(); ConstructorInfo wait = typeof(WaitForSeconds).GetConstructor(new[] { typeof(float) });
@@ -123,6 +143,20 @@ namespace KspContinuum
                 call.blocks.AddRange(body[at].blocks);
                 var instance = new CodeInstruction(OpCodes.Ldarg_0); instance.labels.AddRange(body[at].labels);
                 body[at] = instance; body.Insert(at + 1, call);
+            }
+            if (active.generationWitness)
+            {
+                foreach (Type city in new[] { typeof(PQSCity), typeof(PQSCity2) })
+                {
+                    MethodInfo method = AccessTools.DeclaredMethod(city, "Orientate", city == typeof(PQSCity) ? new[] { typeof(bool) } : Type.EmptyTypes);
+                    int[] atSites = body.Select((instruction, index) => new { instruction, index })
+                        .Where(x => (x.instruction.opcode == OpCodes.Call || x.instruction.opcode == OpCodes.Callvirt) && Equals(x.instruction.operand, method)).Select(x => x.index).ToArray();
+                    if (atSites.Length != 1 || method == null || method.ReturnType != typeof(void) || Harmony.GetPatchInfo(method)?.Owners.Count > 0)
+                        throw new InvalidOperationException("Original city orientation witness seam differs or is patched.");
+                    int at = atSites[0]; var instance = new CodeInstruction(OpCodes.Ldarg_0);
+                    instance.labels.AddRange(body[at].labels); instance.blocks.AddRange(body[at].blocks); body[at] = instance;
+                    body.Insert(at + 1, new CodeInstruction(OpCodes.Call, AccessTools.DeclaredMethod(typeof(StartupReadiness), city == typeof(PQSCity) ? nameof(OrientateCity) : nameof(OrientateCity2))));
+                }
             }
             return body;
         }
