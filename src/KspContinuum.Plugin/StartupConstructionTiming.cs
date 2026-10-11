@@ -62,7 +62,7 @@ namespace KspContinuum
 
         public void Awake()
         {
-            if (!Environment.GetCommandLineArgs().Contains("--continuum-startup-construction-timing")) return;
+            if (!Environment.GetCommandLineArgs().Contains("--continuum-startup-construction-timing") && Environment.GetEnvironmentVariable("CONTINUUM_STARTUP_CONSTRUCTION_TIMING") != "1") return;
             DontDestroyOnLoad(gameObject); active = this;
             report = new Report { runId = Environment.GetCommandLineArgs().FirstOrDefault(x => x.StartsWith("--continuum-research-run=", StringComparison.Ordinal))?.Substring("--continuum-research-run=".Length),
                 status = "observing", processId = Process.GetCurrentProcess().Id, clockFrequency = Stopwatch.Frequency, installedTicks = Stopwatch.GetTimestamp() };

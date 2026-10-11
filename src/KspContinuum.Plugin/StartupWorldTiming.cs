@@ -95,11 +95,15 @@ namespace KspContinuum
             if (method == null || method.MetadataToken != token) throw new InvalidOperationException("Pinned timing seam differs: " + token);
             Patches patches = Harmony.GetPatchInfo(method);
             if (patches == null || patches.Owners.Count == 0) return;
+            bool terrainConstructionObserver = token == 100676863 && Environment.GetEnvironmentVariable("CONTINUUM_STARTUP_TERRAIN_BUILD_TIMING") == "1" &&
+                patches.Owners.Count == 1 && patches.Owners[0] == "continuum.startup-terrain-build-timing" && patches.Prefixes.Count == 1 && patches.Finalizers.Count == 1 &&
+                patches.Transpilers.Count == 0 && patches.Postfixes.Count == 0 && patches.Prefixes[0].PatchMethod.DeclaringType == typeof(StartupTerrainBuildTiming) &&
+                patches.Prefixes[0].PatchMethod.Name == "InitPrefix" && patches.Finalizers[0].PatchMethod.DeclaringType == typeof(StartupTerrainBuildTiming) && patches.Finalizers[0].PatchMethod.Name == "InitFinalizer";
             bool deferredOrientation = Environment.GetCommandLineArgs().Contains("--continuum-startup-deferred-terrain") &&
                 (token == 100676987 || token == 100677006) && patches.Owners.Count == 1 && patches.Owners[0] == "continuum.startup-deferred-terrain" &&
                 patches.Prefixes.Count == 1 && patches.Prefixes[0].PatchMethod.DeclaringType == typeof(StartupDeferredTerrain) &&
                 patches.Prefixes[0].PatchMethod.Name == "OrientPrefix" && patches.Postfixes.Count == 0 && patches.Transpilers.Count == 0 && patches.Finalizers.Count == 0;
-            if (!deferredOrientation) throw new InvalidOperationException("Pinned timing seam already owned: " + token);
+            if (!deferredOrientation && !terrainConstructionObserver) throw new InvalidOperationException("Pinned timing seam already owned: " + token);
         }
         void AddScope(Type type, string name, int token)
         {
@@ -164,7 +168,7 @@ namespace KspContinuum
         static void LoadMenu(GameScenes scene) { active.Mark("before-highlogic-load-" + scene); HighLogic.LoadScene(scene); active.Mark("after-highlogic-load-invocation-" + scene); }
         void Mark(string name) { points.Add(new Point { name = name, ticks = Stopwatch.GetTimestamp() - epoch, engineSeconds = Time.realtimeSinceStartup }); }
         void SceneLoaded(Scene scene, LoadSceneMode mode) { Mark("scene-loaded-" + scene.buildIndex + "-" + mode); }
-        public static void ObserveForMenu() { StartupPinnedGameIdentity.ObserveForMenu(); StartupModelTiming.ObserveForMenu(); StartupConstructionTiming.ObserveForMenu(); if (active != null && !active.exported) { active.Mark("owned-mainmenu-observation"); active.Export("menu-observed"); active.Cleanup(); } }
+        public static void ObserveForMenu() { StartupTerrainBuildTiming.ObserveForMenu(); StartupPinnedGameIdentity.ObserveForMenu(); StartupModelTiming.ObserveForMenu(); StartupConstructionTiming.ObserveForMenu(); if (active != null && !active.exported) { active.Mark("owned-mainmenu-observation"); active.Export("menu-observed"); active.Cleanup(); } }
         public void Update() { if (active == this && !exported && HighLogic.LoadedScene == GameScenes.MAINMENU) ObserveForMenu(); }
         void Export(string status)
         {

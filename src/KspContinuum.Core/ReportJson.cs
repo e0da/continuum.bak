@@ -109,7 +109,9 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.StartupWorldTiming+Report" ||
                  type.FullName == "KspContinuum.StartupWorldTiming+Metric" ||
                  type.FullName == "KspContinuum.StartupWorldTiming+Point" ||
-                 type.FullName == "KspContinuum.StartupWorldTiming+Wake");
+                 type.FullName == "KspContinuum.StartupWorldTiming+Wake" ||
+                 type.FullName == "KspContinuum.StartupTerrainBuildTiming+Report" ||
+                 type.FullName == "KspContinuum.StartupTerrainBuildTiming+Metric");
             if (type != typeof(BenchReport) && type != typeof(Sample) && type != typeof(QueuedForceIsolationSample) && type != typeof(VesselReport) &&
                 type != typeof(PartReport) && type != typeof(ProbeReport) && type != typeof(ResearchPanelReport) && type != typeof(MarkerReport) &&
                 type != typeof(CallbackAttributionReport) && type != typeof(CallbackAttributionRow) &&
