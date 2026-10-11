@@ -10,4 +10,14 @@ Admission failure runs the original root without reuse. Unexpected in-root input
 
 Reuse counts alone do not establish a speedup. Compare compatible complete flights with the same helper and frozen inputs, varying only the declared environment mode. Parent/child timing rows overlap and must not be summed. A negative or inconclusive result keeps the treatment experimental and off in ordinary launches.
 
+## Selected native result
+
+The 512-part frontlit atmospheric fixture reached all nine sites and six roles. Two original-return roots checked 30,828 reused values against the original evaluation with zero bit mismatches, faults or fallbacks. The original force calculation ran once per root. A separate query flight completed 151 captured roots: six original evaluations per root and 2,327,514 reused values, with all owned hooks removed.
+
+One clean baseline/query pair used the same helper, frozen profile and 21 inputs. Both captured 3.02 simulated seconds at normal time, 1920×1080, uncapped with VSync disabled, and stable topology. Their starting states differed by one physics step. Mean frame cost was 25.524 → 24.936 ms (39.18 → 40.10 FPS); p95 was 36.942 → 29.468 ms and p99 46.964 → 45.678 ms. Managed fixed work was 7.137 → 7.274 ms per step. This short pair does not establish an attributable gain or tail improvement. The treatment remains experimental and off; no unchanged repetition is needed to choose a larger boundary.
+
+Query context plus original root cost averaged 1.695 ms, including 0.016 ms admission, 1.662 ms root execution and prefix/end bookkeeping. Installation took 71.352 ms, cleanup 53.099 ms, and the first uncaptured invocation 7.259 ms. These are candidate scopes, not a clean original-root comparison. Full frames include their overhead. CPU/RSS and GPU execution were not sampled; FinishFrameRendering is not GPU duration. Actual baseline and query images show the craft, atmosphere, UI and live portraits; long booms extend outside the frame.
+
+The actual assembly metadata and opcode/operand rewrites also passed a private standalone ARM64 Mono preflight without booting KSP. It admitted four shapes and nine sites. This fast loop does not execute the rewritten delegates, preserve original branch labels, install native detours or prove force behavior; those require separate live evidence.
+
 The next larger replacement boundary is one root-level drag transaction: capture mutable inputs into reusable rows, fuse direction and six-face reduction, and publish outputs in original order. Existing complete SetDrag and capture contracts provide donors. A managed flat kernel is the first comparator; native execution must earn its capture, transfer and publication costs. Unsupported providers and Unity force ownership remain explicit boundaries.
