@@ -96,6 +96,40 @@ The admitted mapped material family now preserves original tangents, published t
 
 ## Computation and engine ownership
 
+## Continuous whole-runtime redesign
+
+Continuously redesign while replacing coherent owners. Maintain a broad map of actual execution, authoritative state, readers/writers, readiness dependencies and cost. Deepen reconstruction where it can resolve an implementation choice. The private searchable assembly/asset index is a shared reference; full source reconstruction is not a prerequisite for every useful change. Conversely, replacing isolated functions without understanding their dependency chain can preserve the architectural cause.
+
+The proposed target separates these responsibilities:
+
+```mermaid
+flowchart LR
+  Image[Prepared assets and definitions] --> Build[Construction and activation]
+  Build --> State[Authoritative world state]
+  Input[Controls and external events] --> State
+  State --> Solve[Scheduled force and constraint work]
+  Solve --> State
+  State --> View[Published presentation state]
+  Image --> View
+  View --> Render[Rendering and effects]
+  State --> Save[Save and reconstruction]
+  Save --> Build
+```
+
+This is a target responsibility map, not a claim that Continuum owns live motion today. KSP and its installed providers retain domains until a qualified replacement owns all required inputs, outputs and lifecycle. Compatibility adapters sit at those boundaries. A modern Unity port can host the preserved game logic sooner; a native alternative can progressively own more of the same contracts. Keep those routes comparable rather than requiring one engine choice to precede every experiment.
+
+Do not use authored Part boundaries as the universal compute, mechanical, rendering, storage and scheduling decomposition. Preserve part identity for gameplay and compatibility while choosing compact force rows, coupled constraint groups, render packets and durable save records for their actual jobs. KSP already shares some physicsless bodies; further reduction must respect physical coupling and independently verified behavior. Dirty generations and state validity can remove unnecessary recomputation; asynchronous jobs help only after their true dependencies and publication boundary are understood.
+
+Select the next change by three forms of evidence: the current critical path, unnecessary repeated work, and defects in cross-system ownership/readiness. The mass/center fix is a concrete example of the third: physical placement consumed incomplete construction state. Completing the original owner before packed statistics fixed the selected checkpoint without repairing pose or widening tolerances. Its saved-epoch error improved from about 10.7 cm to 1.7 µm; preventing every destructive loading failure remains an open behavior question.
+
+The immediate coherent performance slice combines six-value reuse with retained complete SetDrag arithmetic in a root-level aerodynamic transaction. The integration goal is one current input capture, fused ordered computation and one publication pass. In parallel, maintain the prepared-startup/PartLoader and renderer/backend routes, and extend reconstruction situations to staging, docking and loading failures. Revisit the whole map when an owner changes, a retained component becomes relevant, or a deeper dependency appears. A fundamental bottleneck may unlock large gains; its existence and magnitude remain hypotheses until measured.
+
+The strongest competing strategy is complete private reconstruction first, then global optimization. It is appropriate when unavailable engine/project state blocks a meaningful boundary or when a whole-game modern Unity migration becomes the selected outcome. It does not win as the default sequence now: current experiments already expose and repair architectural causes, while complete source/project recovery has separate unresolved obligations. Independent subsystem replacements followed by a late redesign also risk incompatible state models and duplicated bridges. A shared responsibility map plus continuous redesign gives each useful checkpoint a path into a larger runtime.
+
+Open questions are the actual CPU/wait/GPU critical path of representative heavy flight, the net contribution of retained candidates after integration, equivalent large-craft constraint decomposition, mod ownership coverage and complete modern-game reconstruction. The authorized boundary remains local private research and reviewable Continuum source. Publication, distribution, main promotion and Gimbal implementation changes are separate decisions.
+
+## Computation ownership experiments
+
 Do not translate every PartModule into Rust independently. Where measurement identifies repeated graph traversal or redundant derived state, compile the relevant flight dependency graph, store persistent contiguous state and schedule work only when its inputs change. Publish compatibility views for existing modules and consume state in batches.
 
 Keep forces, resources, physics, rendering and saving under explicit owners. Replacing one owner requires the supported equations and events, topology invalidation, cancellation, save/reload and independent numerical checks. Native physics is not the dominant measured cost in the current atmospheric case; that does not settle large-craft or warp behavior.
