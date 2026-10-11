@@ -13,17 +13,28 @@ namespace KspContinuum
             public int Polls, Rays, FixedBarriers;
             public float ElapsedSeconds;
             public bool ColliderReady;
+            public bool StockEpoch, OwnerTargetUnchanged;
+            public string OwnerTargetKind;
+            public int OwnerTargetId, TemporaryTargetId;
         }
 
         public static IEnumerator Create(PQS sphere, Transform target, LaunchSite site, float seconds, Action<Result> completed)
         {
             return new Wait(sphere, target, site, seconds, completed);
         }
+        public static object CreateAfterStockForce(PQS sphere, Transform temporary, Transform stockReturnedTarget, LaunchSite site, float seconds, Action<Result> completed)
+        {
+            var wait = new Wait(sphere, temporary, site, seconds, completed, stockReturnedTarget, true);
+            if (wait.Prepare()) return wait;
+            return new WaitForSeconds(seconds);
+        }
 
         sealed class Wait : IEnumerator, IDisposable
         {
             readonly PQS sphere;
             readonly Transform target;
+            readonly Transform ownerTarget;
+            readonly bool stockEpoch;
             readonly LaunchSite site;
             readonly float seconds, started, deadline;
             readonly Action<Result> completed;
@@ -31,14 +42,25 @@ namespace KspContinuum
             readonly Result result;
             int phase, minimumLevel;
             bool finished;
+            bool preAdmitted;
             object current;
             public object Current { get { return current; } }
 
-            public Wait(PQS sphere, Transform target, LaunchSite site, float seconds, Action<Result> completed)
+            public Wait(PQS sphere, Transform target, LaunchSite site, float seconds, Action<Result> completed, Transform stockReturnedTarget = null, bool stockEpoch = false)
             {
                 this.sphere = sphere; this.target = target; this.site = site; this.seconds = seconds;
+                this.stockEpoch = stockEpoch; ownerTarget = stockEpoch ? stockReturnedTarget : target;
                 this.completed = completed; started = Time.time; deadline = started + seconds;
-                result = new Result { Site = site == null ? "unknown" : site.launchSiteName, Body = "unknown" };
+                result = new Result { Site = site == null ? "unknown" : site.launchSiteName, Body = "unknown", StockEpoch = stockEpoch,
+                    OwnerTargetId = ownerTarget == null ? 0 : ownerTarget.GetInstanceID(), TemporaryTargetId = target == null ? 0 : target.GetInstanceID(), OwnerTargetKind = "temporary" };
+            }
+            public bool Prepare()
+            {
+                string reason;
+                try { preAdmitted = Supported(out reason); }
+                catch (Exception error) { preAdmitted = false; reason = "support-error-" + error.GetType().Name; }
+                if (!preAdmitted) { result.Reason = reason; Finish(false, "stock-wait-scheduled"); }
+                return preAdmitted;
             }
 
             public bool MoveNext()
@@ -48,7 +70,7 @@ namespace KspContinuum
                 {
                     string reason;
                     bool supported;
-                    try { supported = Supported(out reason); }
+                    try { reason = "pre-admitted"; supported = preAdmitted || Supported(out reason); }
                     catch (Exception error) { supported = false; reason = "support-error-" + error.GetType().Name; }
                     if (!supported)
                     {
@@ -72,10 +94,23 @@ namespace KspContinuum
             {
                 reason = "unsupported-site";
                 if (sphere == null || target == null || site == null || seconds <= 0 || float.IsNaN(seconds) || float.IsInfinity(seconds)) return false;
+                if (stockEpoch)
+                {
+                    if (ownerTarget == null || sphere.target != ownerTarget) { reason = "stock-returned-target-unavailable-or-changed"; return false; }
+                    Camera main = Camera.main;
+                    if (ownerTarget == target) result.OwnerTargetKind = "temporary";
+                    else if (main != null && ownerTarget == main.transform) result.OwnerTargetKind = "stock-main-camera";
+                    else { result.OwnerTargetKind = "unsupported"; reason = "stock-returned-target-not-pinned-startup-policy"; return false; }
+                    if (sphere.GetType() != typeof(PQS)) { reason = "custom-sphere-stock-wait"; return false; }
+                    foreach (PQSMod mod in sphere.GetComponentsInChildren<PQSMod>(true))
+                        if (mod != null && ReferenceEquals(mod.sphere, sphere) && mod.GetType().Assembly != typeof(PQS).Assembly)
+                        { reason = "custom-terrain-mod-stock-wait"; return false; }
+                }
                 if (site.positionMobileLaunchPad != null) { reason = "mobile-footprint-stock-wait"; return false; }
                 bool city = site.pqsCity != null && site.pqsCity.GetType() == typeof(PQSCity) && ReferenceEquals(site.pqsCity.sphere, sphere);
                 bool city2 = site.pqsCity2 != null && site.pqsCity2.GetType() == typeof(PQSCity2) && ReferenceEquals(site.pqsCity2.sphere, sphere);
                 if (!city && !city2) return false;
+                if (stockEpoch && city && site.pqsCity.randomizeOnSphere) { reason = "randomized-placement-stock-wait"; return false; }
                 if (city2 && site.pqsCity2.setOnWaterSurface) { reason = "water-placement-stock-wait"; return false; }
                 if (sphere.PQSModCBTransform == null || sphere.PQSModCBTransform.body == null ||
                     !ReferenceEquals(sphere.PQSModCBTransform.body.pqsController, sphere)) { reason = "body-owner-unresolved"; return false; }
@@ -97,7 +132,8 @@ namespace KspContinuum
             bool Probe(out string reason)
             {
                 reason = "sphere-target-not-ready";
-                if (sphere == null || target == null || !sphere.isStarted || !sphere.isAlive || sphere.isThinking || sphere.isDisabled || sphere.target != target) return false;
+                result.OwnerTargetUnchanged = sphere != null && ownerTarget != null && sphere.target == ownerTarget;
+                if (sphere == null || target == null || !sphere.isStarted || !sphere.isAlive || sphere.isThinking || sphere.isDisabled || !result.OwnerTargetUnchanged) return false;
                 if (!Ray(target.position, out reason)) return false;
                 if (site.pqsCity2 != null)
                 {

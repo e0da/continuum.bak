@@ -22,10 +22,13 @@ namespace KspContinuum
         int shortened, stockFallbacks, presentationWaits, terrainPolls, terrainRays, fixedBarriers, terrainWaits;
         bool exported;
         bool quitting;
+        bool stockTargetReadiness;
         public sealed class Frame
         {
             public PQS Sphere;
             public Transform Target;
+            public Transform StockReturnedTarget;
+            public bool StockTargetCaptured;
             public bool ForceCompleted;
             public bool CallerObserved;
         }
@@ -33,6 +36,9 @@ namespace KspContinuum
 
         public void Awake()
         {
+            stockTargetReadiness = Environment.GetCommandLineArgs().Contains("--continuum-startup-stock-terrain-ready");
+            if (stockTargetReadiness && !Environment.GetCommandLineArgs().Contains("--continuum-startup-readiness"))
+            { Debug.LogError(Marker + "status=rejected reason=stock-terrain-ready-requires-startup-readiness"); Application.Quit(2); return; }
             if (!Environment.GetCommandLineArgs().Contains("--continuum-startup-readiness")) return;
             DontDestroyOnLoad(gameObject);
             try
@@ -41,6 +47,8 @@ namespace KspContinuum
                     throw new InvalidOperationException("Private laboratory required.");
                 Assembly assembly = typeof(PSystemSetup).Assembly;
                 StartupPinnedGameIdentity.Require(assembly);
+                if (stockTargetReadiness && Environment.GetCommandLineArgs().Contains("--continuum-startup-deferred-terrain"))
+                    throw new InvalidOperationException("Stock-epoch readiness and deferred terrain are distinct treatments.");
                 Type iterator = typeof(PSystemSetup).GetNestedType("<SetupLaunchSites>d__38", BindingFlags.NonPublic);
                 Type screen = typeof(LoadingScreen).GetNestedType("<UpdateLoadingScreen>d__27", BindingFlags.NonPublic);
                 MethodInfo move = iterator == null ? null : AccessTools.DeclaredMethod(iterator, "MoveNext");
@@ -60,7 +68,7 @@ namespace KspContinuum
                 harmony.Patch(move, prefix: new HarmonyMethod(typeof(StartupReadiness), nameof(MovePrefix)), postfix: new HarmonyMethod(typeof(StartupReadiness), nameof(MovePostfix)),
                     finalizer: new HarmonyMethod(typeof(StartupReadiness), nameof(MoveFinalizer)), transpiler: new HarmonyMethod(typeof(StartupReadiness), nameof(LaunchTranspile)));
                 harmony.Patch(display, transpiler: new HarmonyMethod(typeof(StartupReadiness), nameof(DisplayTranspile)));
-                Debug.Log(Marker + "status=installed scope=static-site-terrain-collider-readiness-and-presentation deadline=stock-scaled-2s raycastPolicy=intended-pqs-layer15-after-one-fixed-barrier mobilePolicy=stock-wait");
+                Debug.Log(Marker + "status=installed scope=static-site-terrain-collider-readiness-and-presentation deadline=stock-scaled-2s raycastPolicy=intended-pqs-layer15-after-one-fixed-barrier mobilePolicy=stock-wait stockReturnedTargetReadiness=" + stockTargetReadiness);
             }
             catch (Exception error) { StartupDeferredTerrain.AbortInstallation(); Cleanup(); Debug.LogError(Marker + "status=rejected reason=" + error.Message); Application.Quit(2); }
         }
@@ -77,11 +85,13 @@ namespace KspContinuum
         {
             Frame frame;
             if (!active.frames.TryGetValue(iterator, out frame)) { frame = new Frame(); active.frames.Add(iterator, frame); }
-            frame.Sphere = sphere; frame.Target = target; frame.ForceCompleted = false; frame.CallerObserved = true;
+            frame.Sphere = sphere; frame.Target = target; frame.StockReturnedTarget = null; frame.StockTargetCaptured = false; frame.ForceCompleted = false; frame.CallerObserved = true;
             LaunchSite site = active.siteField.GetValue(iterator) as LaunchSite;
             if (StartupDeferredTerrain.Defer(setup, sphere, target, site)) return;
             StartupDeferredTerrain.BeforeStockForce(sphere);
             originalForce(setup, sphere, target);
+            frame.StockReturnedTarget = sphere == null ? null : sphere.target;
+            frame.StockTargetCaptured = sphere != null;
             frame.ForceCompleted = true;
         }
         static IEnumerable<CodeInstruction> LaunchTranspile(IEnumerable<CodeInstruction> source)
@@ -125,7 +135,9 @@ namespace KspContinuum
             bool sphereMatches = framePresent && spherePresent && ReferenceEquals(frame.Sphere, sphere);
             bool targetMatches = framePresent && temporaryPresent && frame.Target == temporary.transform;
             bool sphereTargetMatches = spherePresent && temporaryPresent && sphere.target == temporary.transform;
-            bool context = sitePresent && spherePresent && temporaryPresent && callerObserved && forceCompleted && sphereMatches && targetMatches && sphereTargetMatches;
+            bool stockTargetMatches = framePresent && spherePresent && frame.StockTargetCaptured && frame.StockReturnedTarget != null && sphere.target == frame.StockReturnedTarget;
+            bool context = sitePresent && spherePresent && temporaryPresent && callerObserved && forceCompleted && sphereMatches && targetMatches &&
+                (active.stockTargetReadiness ? stockTargetMatches : sphereTargetMatches);
             if (!context)
             {
                 active.stockFallbacks++;
@@ -133,11 +145,14 @@ namespace KspContinuum
                     " sitePresent=" + sitePresent + " spherePresent=" + spherePresent + " temporaryPresent=" + temporaryPresent +
                     " framePresent=" + framePresent + " callerObserved=" + callerObserved + " forceCompleted=" + forceCompleted +
                     " sphereMatches=" + sphereMatches + " targetMatches=" + targetMatches + " sphereTargetMatches=" + sphereTargetMatches +
+                    " stockReturnedTargetMatches=" + stockTargetMatches +
                     " currentFrameMatches=" + (framePresent && ReferenceEquals(current, frame)) +
                     " bodyTransformPresent=" + (spherePresent && sphere.PQSModCBTransform != null));
                 return new WaitForSeconds(seconds);
             }
             active.terrainWaits++;
+            if (active.stockTargetReadiness)
+                return StartupTerrainReadiness.CreateAfterStockForce(sphere, temporary.transform, frame.StockReturnedTarget, site, seconds, active.TerrainResult);
             return StartupTerrainReadiness.Create(sphere, temporary.transform, site, seconds, active.TerrainResult);
         }
         void TerrainResult(StartupTerrainReadiness.Result result)
@@ -147,6 +162,8 @@ namespace KspContinuum
             Debug.Log(Marker + "site=" + result.Site + " body=" + result.Body + " decision=" + result.Decision + " reason=" + result.Reason +
                 " scaledElapsedSeconds=" + result.ElapsedSeconds.ToString("R", System.Globalization.CultureInfo.InvariantCulture) +
                 " polls=" + result.Polls + " rays=" + result.Rays + " fixedBarriers=" + result.FixedBarriers +
+                " stockEpoch=" + result.StockEpoch + " ownerTargetKind=" + result.OwnerTargetKind + " ownerTargetId=" + result.OwnerTargetId +
+                " temporaryTargetId=" + result.TemporaryTargetId + " ownerTargetUnchanged=" + result.OwnerTargetUnchanged +
                 " qualification=static-site-collider-boundary-not-mobile-footprint-or-flight-equivalence");
         }
         static IEnumerable<CodeInstruction> DisplayTranspile(IEnumerable<CodeInstruction> source)
