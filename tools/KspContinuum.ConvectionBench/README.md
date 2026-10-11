@@ -1,0 +1,23 @@
+# Convection fold replay
+
+This private-reference tool reads bounded `CCV1` snapshots and calls the pinned original KSP `OcclusionCone.Setup` and `OcclusionData.GetShockStats` methods. It does not launch Unity, install a plugin, or distribute KSP assemblies/source. Set `KSP_MANAGED` to the owner-provided Managed directory; the original assembly SHA256, MVID, declaring types and three method tokens are enforced.
+
+```sh
+KSP_MANAGED=/private/KSP/Managed dotnet build tools/KspContinuum.ConvectionBench
+dotnet tools/KspContinuum.ConvectionBench/bin/Debug/net8.0/KspContinuum.ConvectionBench.dll --admit
+dotnet tools/KspContinuum.ConvectionBench/bin/Debug/net8.0/KspContinuum.ConvectionBench.dll --falsify
+dotnet tools/KspContinuum.ConvectionBench/bin/Debug/net8.0/KspContinuum.ConvectionBench.dll --verify-stock /private/frames.ccv
+dotnet tools/KspContinuum.ConvectionBench/bin/Debug/net8.0/KspContinuum.ConvectionBench.dll --observe /private/frames.ccv index /private/new-receipt.json
+```
+
+`--observe` performs exactly two complete recording folds in a fresh process, without a full-recording warmup. Treatments are `stock`, `index`, `stock-delegate`, `tan` (dictionary), and `tan-two-slot` (two exact angle-bit keys; other angles use original `Math.Tan`). Receipts use CreateNew, bind input/original/tool/Core digests, record runtime/architecture/clock, and gate every final multiplier and accepted cone field bitwise against the captured outputs. Run `--verify-stock` before using those captured outputs as the baseline oracle. No tolerance relaxation is provided.
+
+Fold time includes fresh original input objects, global reset, candidate index construction/insertion/query or tangent cache reset/lookup, original ordered scalar calls and Setup, and result materialization. It excludes projection, FX camera, game publication, receipt encoding and output comparison. Cold JIT is included in the first observation; admission/delegate preparation is reported separately. Fallback restarts the full stock fold and its partial work remains charged, although returned counters describe the completed stock fold.
+
+The index preserves stock accepted-cone order and conservatively unions rectangle and shock-circle receiver envelopes. It widens bounds for original binary32 addition/subtraction and squared-distance rounding. Admission uses input geometry/globals and freshly produced cones; recorded expected outputs are only an oracle. Nonfinite/unsupported input or cone values, and nonpositive/nonfinite intermediate temperature/coefficient multipliers, restart stock enumeration. This is necessary because an apparently disjoint scalar call still executes arithmetic involving cone multipliers and can normalize signed zero or propagate NaN. Dense envelopes can retain nearly every pair, making indexing more expensive.
+
+Tangent treatments emit detached delegates from the pinned original `GetShockStats` IL using the pinned Harmony package. The treatment changes its one radius call; the stock delegate leaves every instruction unchanged. This avoids unsupported native Harmony detours on .NET ARM64. Radius adaptation retains original subtraction, field-read and multiplication/addition order; the remainder of KSP's scalar body is neither authored nor copied here. Dispose drops the delegate/cache and verifies the original patch graph remains untouched. Zero cache requests or zero hits fail coverage.
+
+The retained four-frame, 512-part workload matched stock bitwise on .NET 8 ARM64 despite originating in Unity 2019 Mono/Rosetta x64. Two observations rejected both the dense index (50.7513/44.9620 ms versus direct stock 27.2496/21.4013) and tangent dictionary (35.8185/31.6405 versus unchanged delegate 19.2006/15.9354). Two fixed slots reduced overhead (21.2418/19.0645) but still did not win. Each tangent observation had 366,292 hits and eight misses; the index removed only 8,857 of 366,664 executed pairs. The two-slot binary differs from the retained stock-delegate binary, and the substantial direct/delegate timing difference limits comparisons further. These are fold-only, host-specific observations, with no live FPS or production equivalence claim.
+
+Focused falsifiers cover sparse elimination, shock-only influence, nonfinite zero-times-NaN stock fallback, signed-zero fallback, binary32 distance boundary admission, nonfinite accepted-cone rejection, exact signed-zero/NaN keys, and uncached third-angle behavior. Original projection/order capture and all native qualification remain owner responsibilities.
