@@ -57,7 +57,7 @@ namespace KspContinuum
             public string timingScope = "Query windows charge original root elapsed plus complete context prefix/admission/reset/end bookkeeping; root contains lookup/first-use Evaluate/native force costs. Installation and first invocation retained separately. Verify is original-return same-state numerical proof, not a stock/candidate complete-method speedup comparator; it records at most two captured roots and then runs stock. No FPS claim.";
             public string fallbackScope = "Admission failure runs the entire original root without memoization. Unexpected in-root key/context or nonfinite result stops future reuse and marks this experiment invalid; no synthetic native-force rollback or all-or-none publication claim.";
             public string[] roleOrder = { "surface-tail", "surface", "surface-tip", "surface-multiplier-and-exposure", "cd-power", "body-lift-mach" };
-            public int processId, boundParts, boundStockParts, boundCompoundParts, patchedMethods, shapeAdmissions, transpilerExecutions, cleanupRecompositions, staticCallsites, errors, originalExceptions, recursionStops, safetyStops, verificationMismatches, droppedWindows;
+            public int processId, boundParts, boundStockParts, boundCompoundParts, surfaceFieldToken, patchedMethods, shapeAdmissions, transpilerExecutions, cleanupRecompositions, staticCallsites, errors, originalExceptions, recursionStops, safetyStops, verificationMismatches, droppedWindows;
             public long clockFrequency = Stopwatch.Frequency, installationStartedTicks, installationEndedTicks, cleanupStartedTicks, cleanupEndedTicks;
             public long firstInvocationAdmissionTicks, firstInvocationRootTicks, firstInvocationContextCompleteTicks;
             public bool firstInvocationCaptured;
@@ -210,18 +210,24 @@ namespace KspContinuum
             }
             Report.boundParts = parts.Length;
         }
-        void QualifyGraph()
+        void QualifyGraph(bool checkOwnership = true)
         {
+            FieldInfo surfaceField = AccessTools.DeclaredField(typeof(PhysicsGlobals), "SurfaceCurves");
+            Require(surfaceField != null && surfaceField.DeclaringType == typeof(PhysicsGlobals) && surfaceField.IsStatic &&
+                surfaceField.FieldType == typeof(PhysicsGlobals.SurfaceCurvesList) && surfaceField.Module.ModuleVersionId == ConvectionSparseKernel.Mvid,
+                "Original static PhysicsGlobals.SurfaceCurves field differs.");
+            Report.surfaceFieldToken = surfaceField.MetadataToken;
             var pending = new Stack<MethodBase>(); pending.Push(Integrate); pending.Push(Fixed); pending.Push(ProviderGetter);
             pending.Push(AccessTools.PropertyGetter(typeof(FloatCurve), "Curve"));
-            pending.Push(AccessTools.PropertyGetter(typeof(PhysicsGlobals), "SurfaceCurves"));
             pending.Push(AccessTools.PropertyGetter(typeof(PhysicsGlobals), "DragCurveCdPower"));
             pending.Push(AccessTools.PropertyGetter(typeof(PhysicsGlobals), "BodyLiftCurve"));
             while (pending.Count != 0)
             {
                 MethodBase method = pending.Pop();
+                Require(method != null, "Required original aero graph method/getter is absent.");
                 if (!graph.Add(method)) continue;
-                Require(graph.Count <= MaxMethods && Harmony.GetPatchInfo(method)?.Owners.Any() != true, "Original aero callgraph is too broad or already owned.");
+                Require(graph.Count <= MaxMethods, "Original aero callgraph exceeds its bound.");
+                if (checkOwnership) Require(Harmony.GetPatchInfo(method)?.Owners.Any() != true, "Original aero callgraph method is already owned: " + method);
                 MethodBody body = method.GetMethodBody();
                 if (method.Module.Assembly != typeof(FlightIntegrator).Assembly || SameMethod(method, Fixed)) continue;
                 Require(method.Module.ModuleVersionId == ConvectionSparseKernel.Mvid && body != null && body.ExceptionHandlingClauses.Count == 0,
@@ -492,7 +498,7 @@ namespace KspContinuum
             finally { __state.eligible = false; if (ReferenceEquals(current, __state)) current = null; }
             return __exception;
         }
-        void Fault(Exception error) { Report.errors++; Report.detail = error.GetType().Name + ": " + error.Message; }
+        void Fault(Exception error) { Report.errors++; Report.detail = error.ToString(); }
         void RemoveHooks()
         {
             if (!acquired) { Report.cleanupStatus = "not-installed"; return; }
