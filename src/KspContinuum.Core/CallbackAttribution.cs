@@ -13,6 +13,19 @@ namespace KspContinuum
         public int discoveredMethods, patchedMethods, scanErrors, callbackErrors;
         public CallbackAttributionRow[] callbacks;
         public FeedInputAttributionReport feedInput;
+        public MechJebDriveAttributionReport mechJebDrive;
+    }
+
+    [Serializable] public sealed class MechJebDriveAttributionReport
+    {
+        public string schema = "continuum-mechjeb-drive-attribution/v1", status = "not-started", detail, cleanupStatus = "not-installed", assemblySha256;
+        public string scope = "Observer-lifetime fixed-subtree inclusive wall envelopes. Update and AnalyzeParts are separated inside/outside the matching Core.Drive; Update includes its existing UT cache hits. Controller rows group runtime type and matched Core identity during Drive, including nested controller calls. Original master/Enabled branches, ordering, exceptions and side effects remain untouched. Rows overlap; outermost means recursion of that row only, not exclusive CPU. Harmony, reflection, counters and child observer overhead remain unqualified; timer floor is not total observer tax.";
+        public string[] seamIdentities;
+        public int[] admittedCoreIds, observedCoreIds;
+        public int patchedMethods, controllerTypes, errors;
+        public string observerOverheadStatus = "unqualified-intrusive-observer";
+        public long clockFrequency, admissionStartedTicks, admissionEndedTicks;
+        public CallbackAttributionRow[] rows;
     }
 
     [Serializable] public sealed class FeedInputAttributionReport

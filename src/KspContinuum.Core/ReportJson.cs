@@ -113,7 +113,7 @@ namespace KspContinuum
             if (type != typeof(BenchReport) && type != typeof(Sample) && type != typeof(QueuedForceIsolationSample) && type != typeof(VesselReport) &&
                 type != typeof(PartReport) && type != typeof(ProbeReport) && type != typeof(ResearchPanelReport) && type != typeof(MarkerReport) &&
                 type != typeof(CallbackAttributionReport) && type != typeof(CallbackAttributionRow) &&
-                type != typeof(FeedInputAttributionReport) && type != typeof(InputDelegateChain) && type != typeof(InputDelegateMember) &&
+                type != typeof(FeedInputAttributionReport) && type != typeof(MechJebDriveAttributionReport) && type != typeof(InputDelegateChain) && type != typeof(InputDelegateMember) &&
                 type != typeof(DryBuoyancyReport) && type != typeof(FlightPerturbationReport) &&
                 type != typeof(CoastingAdapterReport) &&
                 type != typeof(ProfileFrame) && type != typeof(ProfileDistribution) && type != typeof(ProfileMarkerSummary) &&
