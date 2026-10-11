@@ -127,7 +127,9 @@ namespace KspContinuum
             mainThread=System.Threading.Thread.CurrentThread.ManagedThreadId;
             report.physicalWitnessRequested=Environment.GetEnvironmentVariable("CONTINUUM_RELOAD_PHYSICAL_WITNESS")=="1"||Environment.GetCommandLineArgs().Contains("--continuum-checkpoint-reload-physical-witness");
             if(report.physicalWitnessRequested)report.physicalWitnessStatus="requested";
-            if(Environment.GetEnvironmentVariable("CONTINUUM_RELOAD_MASS_BARRIER")=="1")report.massInitialization=new ReloadMassInitialization.ReportData{requested=true,status="requested"};
+            string massMode=Environment.GetEnvironmentVariable("CONTINUUM_RELOAD_MASS_BARRIER");
+            if(massMode=="1"||massMode=="packed")report.massInitialization=new ReloadMassInitialization.ReportData{requested=true,status="requested",mode=massMode=="packed"?"packed":"unpacked"};
+            else if(!string.IsNullOrEmpty(massMode))Fail(new InvalidOperationException("Unknown reload mass initialization mode."));
         }
         IEnumerator Start()
         {
@@ -265,7 +267,7 @@ namespace KspContinuum
             if(HighLogic.SaveFolder!=ScaleCheckpointLoadState.Save)throw new InvalidOperationException("Selected save folder changed before reload.");
             if(report.massInitialization!=null)
             {
-                massInitialization=new ReloadMassInitialization(Guid.Parse(before.vesselId),before.instanceId,before.parts.Select(p=>p.flightId).ToArray());
+                massInitialization=new ReloadMassInitialization(Guid.Parse(before.vesselId),before.instanceId,before.parts.Select(p=>p.flightId).ToArray(),report.massInitialization.mode=="packed");
                 report.massInitialization=massInitialization.Report;
             }
             FlightDriver.StartAndFocusVessel(reloadedGame, reloadedGame.flightState.activeVesselIdx);
