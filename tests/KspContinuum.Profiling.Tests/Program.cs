@@ -56,6 +56,7 @@ static class Program
         var attribution = new CallbackAttributionAccumulator(1000);
         int slow = attribution.Register(new CallbackAttributionRow { category = "unity-fixed-callback", assembly = "Game", declaringType = "Slow", method = "FixedUpdate" });
         int fast = attribution.Register(new CallbackAttributionRow { category = "stock-provider-seam", assembly = "Game", declaringType = "Fast", method = "Work" });
+        attribution.Register(new CallbackAttributionRow { assembly = "Game", declaringType = "Unobserved", method = "Work" });
         attribution.Record(fast, 2, true); attribution.Record(slow, 7, true); attribution.Record(slow, 3, false);
         CallbackAttributionRow[] attributed = attribution.Finish(20);
         Check(attributed.Length == 2 && attributed[0].declaringType == "Slow" && attributed[0].calls == 2);
@@ -65,6 +66,13 @@ static class Program
         Near(attributed[0].outermostInclusiveMilliseconds, 7); Near(attributed[0].outermostFractionOfActiveWindow, .35);
         Check(attributed[1].calls == 1 && attributed[1].inclusiveTicks == 2);
         Check(Reject(() => attribution.Record(slow, 1, true)));
+
+        var coverage = new CallbackAttributionAccumulator(1000);
+        coverage.Register(new CallbackAttributionRow { assembly = "Game", declaringType = "Unobserved", method = "Work" });
+        CallbackAttributionRow[] unobserved = coverage.Finish(0, true);
+        Check(unobserved.Length == 1 && unobserved[0].calls == 0);
+        Near(unobserved[0].meanMilliseconds, 0); Near(unobserved[0].outermostMeanMilliseconds, 0);
+        Near(unobserved[0].fractionOfActiveWindow, 0);
 
         var baselinePerformance = Observation("scalar", new[] { 2.0, 4.0, 3.0 }, new long[] { 100, 120, 110 });
         var candidatePerformance = Observation("simd", new[] { 1.0, 2.0, 1.5 }, new long[] { 50, 60, 55 });
