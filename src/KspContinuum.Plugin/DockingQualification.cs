@@ -536,6 +536,7 @@ namespace KspContinuum
                 flightCamera.transform.localPosition = priorFlightPosition; flightCamera.transform.localRotation = priorFlightRotation;
                 Report.cameraRestored &= cameraPivot.localPosition == priorPivotPosition && cameraPivot.localRotation == priorPivotRotation && flightCamera.transform.localPosition == priorFlightPosition && flightCamera.transform.localRotation == priorFlightRotation && flightCamera.Distance == priorCameraDistance;
             }
+            else if (cameraPoses != null) Report.cameraRestored = false;
             if (cameraPoses != null) foreach (CameraPose pose in cameraPoses)
             {
                 if (pose.camera == null) { Report.cameraRestored = false; continue; }
