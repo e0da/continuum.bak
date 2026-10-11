@@ -59,7 +59,7 @@ pub fn catalog() -> Vec<Recipe> {
         row("station-vacuum-4x",Some("station-vacuum"),"micro-situation","Station under 4x physics warp",RequiresPrivatePins,"Same orbital checkpoint; LOW physics warp4; actual effective timestep recorded","Pair with normal-time situation without treating warp as a hidden difference"),
         row("station-pulse",Some("station-vacuum"),"micro-situation","Off-center impulse response",RequiresPrivatePins,"Stock physical forces; bounded pulse and topology witness","Supply the same intact checkpoint; retain quiet baseline"),
         row("station-rendezvous",Some("CSP-STATION"),"situation","Plane, phasing and intercept",Planned,"Two vessels, relative orbit and maneuver execution","Implement owned maneuver/relative-state driver and acceptance before calling this runnable"),
-        row("station-docking",Some("station-rendezvous"),"micro-situation","Short approach and docking",Planned,"Port alignment, relative velocity, contact and vessel merge","Create paired-craft short-approach checkpoint and actual docking driver/proof"),
+        row("station-docking",Some("station-rendezvous"),"micro-situation","Diagnostic docking roundtrip",RequiresPrivatePins,"Controlled diagnostic approach, stock capture/joint merge and stock undocking/split","Supply paired checkpoint, explicit vessel/port identities and declared fixture preparation; RCS and crewed mission remain separate"),
         row("station-undocking",Some("station-docking"),"micro-situation","Undock and separate",Planned,"Vessel split, resource/control ownership and relative motion","Implement undocking driver with identity/resource conservation"),
         row("station-loading",Some("CSP-STATION"),"situation","Multi-vessel packing/loading",Planned,"Packed/unpacked range transitions","Implement range driver and loaded-vessel/physics ownership ledger"),
         row("CSP-ENTRY",Some("CSP"),"mission","Intact atmospheric entry",Catalog,"Transfer from orbit through atmosphere; preserve failures","Freeze craft and approach recipe; breakup is invalid for intact measurement"),
@@ -186,6 +186,8 @@ pub fn list_json() -> Result<String> {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Inputs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docking: Option<crate::docking::Selection>,
     pub profile: PathBuf,
     pub profile_sha256: String,
     pub instance: PathBuf,
@@ -319,6 +321,7 @@ fn compose(id: &str, i: &Inputs, mut selection: ResolvedLaunch) -> Result<Plan> 
         ));
     }
     selection.diagnostics.flight_lighting = None;
+    selection.diagnostics.docking = None;
     let mut options = BTreeMap::from([
         ("--flight-save".into(), i.save.clone()),
         ("--flight-checkpoint".into(), i.checkpoint.clone()),
@@ -333,6 +336,13 @@ fn compose(id: &str, i: &Inputs, mut selection: ResolvedLaunch) -> Result<Plan> 
         ),
     ]);
     match id {
+        "station-docking" => {
+            let docking = i.docking.clone().ok_or("docking recipe requires an explicit pair selection")?;
+            docking.validate()?;
+            selection.diagnostics.docking = Some(docking);
+            options.insert("--flight-seconds".into(), "30".into());
+            options.insert("--flight-research-panel".into(), "hidden".into());
+        }
         "station-vacuum" => {}
         "station-vacuum-4x" => {
             options.insert("--flight-warp".into(), "4".into());
@@ -367,6 +377,9 @@ fn compose(id: &str, i: &Inputs, mut selection: ResolvedLaunch) -> Result<Plan> 
     if let Some(mode) = &selection.diagnostics.flight_lighting {
         player_arguments.push(format!("--continuum-flight-lighting={mode}"));
     }
+    if let Some(docking) = &selection.diagnostics.docking {
+        player_arguments.extend(docking.arguments());
+    }
     selection.flight = Some(request);
     selection.live_play = false;
     selection.timeout_seconds = if id.starts_with("entry-") && id != "entry-normal" {
@@ -395,6 +408,7 @@ mod tests {
     use super::*;
     fn pins() -> Inputs {
         Inputs {
+            docking: None,
             profile: "/private/base.json".into(),
             profile_sha256: "a".repeat(64),
             instance: "/private/instance".into(),
@@ -452,6 +466,14 @@ mod tests {
             .player_arguments
             .contains(&"--continuum-scale-parts=256".into()));
         let warp = compose("station-vacuum-4x", &pins(), base()).unwrap();
+        let mut paired = pins();
+        paired.docking = Some(crate::docking::Selection::parse(
+            "11111111-1111-1111-1111-111111111111,10,22222222-2222-2222-2222-222222222222,20", true,
+        ).unwrap());
+        let roundtrip = compose("station-docking", &paired, base()).unwrap();
+        assert!(roundtrip.player_arguments.contains(&"--continuum-docking-prepare-pair".into()));
+        assert!(roundtrip.player_arguments.contains(&"--continuum-docking-target-port=20".into()));
+        assert!(roundtrip.selection.diagnostics.flight_lighting.is_none());
         assert_eq!(warp.selection.flight.unwrap().warp, 4);
     }
     #[test]
@@ -459,7 +481,7 @@ mod tests {
         assert!(compose("station-docking", &pins(), base())
             .err()
             .unwrap()
-            .contains("driver"));
+            .contains("explicit pair"));
         let mut i = pins();
         i.checkpoint = "../escape".into();
         assert!(compose("station-vacuum", &i, base()).is_err());

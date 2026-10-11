@@ -88,6 +88,8 @@ pub struct Startup {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Diagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docking: Option<crate::docking::Selection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flight_lighting: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub convection_capture: Option<PathBuf>,
@@ -226,6 +228,9 @@ impl ResolvedLaunch {
                 work_scheduler: boolean("--startup-work-scheduler")?,
             },
             diagnostics: Diagnostics {
+                docking: options.get("--flight-docking").map(|value|
+                    crate::docking::Selection::parse(value, boolean("--flight-docking-prepare-pair")?)
+                ).transpose()?,
                 flight_lighting: options.get("--flight-lighting").cloned(),
                 convection_capture: path("--flight-convection-capture"),
                 integrator_update_attribution: boolean("--flight-integrator-update-attribution")?,
@@ -243,6 +248,9 @@ impl ResolvedLaunch {
             native_asset_installation: path("--native-asset-installation"),
             flight: flight::Request::parse(options)?,
         };
+        if boolean("--flight-docking-prepare-pair")? && launch.diagnostics.docking.is_none() {
+            return Err("docking fixture preparation requires a selected docking pair".into());
+        }
         launch.validate()?;
         Ok(launch)
     }
@@ -256,6 +264,21 @@ impl ResolvedLaunch {
             return Err("timeout must be 1..1800 seconds".into());
         }
         let s = &self.startup;
+        if let Some(docking) = &self.diagnostics.docking {
+            docking.validate()?;
+            let f = self.flight.as_ref().ok_or("docking requires a pinned flight checkpoint")?;
+            if self.live_play || f.warp != 1 || f.atmosphere || f.entry_target_altitude.is_some()
+                || f.perturbation != "quiet" || f.expected_parts.is_none()
+                || f.native_sample || f.callback_attribution || f.camera_chain || f.world_draw.is_some()
+                || f.gpu_timing_library.is_some() || f.aero_batch || f.aero_field || f.part_batch
+                || f.hide_vessel || f.no_aero_fx || f.part_reference || f.part_retained
+                || f.aero_field_bundle.is_some() || f.part_shader_bundle.is_some() || f.mechjeb_provider_plan
+                || self.diagnostics.flight_lighting.is_some() || self.diagnostics.convection_capture.is_some()
+                || self.diagnostics.integrator_update_attribution || self.diagnostics.multiscale_scene.is_some()
+            {
+                return Err("docking is an exclusive normal-time stock-rendered diagnostic with explicit initial part count".into());
+            }
+        }
         if let Some(mode) = &self.diagnostics.flight_lighting {
             if !["frontlit", "side-lit", "backlit"].contains(&mode.as_str())
                 || self.flight.as_ref().is_none_or(|flight| flight.entry_target_altitude.is_none())

@@ -12,7 +12,12 @@ internal static class Program
         public int End;
         public readonly List<Node> Children = [];
         public readonly List<Value> Values = [];
-        public string Text(string key) => Values.Single(v => v.Key == key).Text;
+        public string Text(string key)
+        {
+            Value[] matches = Values.Where(v => v.Key == key).ToArray();
+            if (matches.Length != 1) throw new InvalidDataException("Expected one " + Name + " field " + key + ", found " + matches.Length + ".");
+            return matches[0].Text;
+        }
     }
     sealed record Value(string Key, string Text, int Line);
     sealed record Edit(int Start, int End, string Text);
@@ -119,7 +124,7 @@ internal static class Program
     static string[] Resources(Node part) => part.Children.Where(c => c.Name == "RESOURCE").Select(c => string.Join('|', c.Values.Select(v => v.Key + "=" + v.Text))).ToArray();
     static int Main(string[] args)
     {
-        try { Generate(args); return 0; } catch (Exception error) { Console.Error.WriteLine(error.Message); return 2; }
+        try { Generate(args); return 0; } catch (Exception error) { Console.Error.WriteLine(error.ToString()); return 2; }
     }
     static void Generate(string[] args)
     {
@@ -131,8 +136,11 @@ internal static class Program
         if (new FileInfo(source).Length > 16 * 1024 * 1024) throw new InvalidDataException("Source exceeds 16 MiB seed bound.");
         byte[] bytes = File.ReadAllBytes(source); string sha = Hash(bytes); if (sha != options["--expected-sha"].ToLowerInvariant()) throw new InvalidDataException("Source hash mismatch.");
         string[] lines = Lines(Utf8.GetString(bytes)); Node game = Parse(lines), flight = game.Children.Single(c => c.Name == "FLIGHTSTATE"); Node[] oldVessels = flight.Children.Where(c => c.Name == "VESSEL").ToArray();
-        Node donor = oldVessels.Single(v => v.Children.Count(c => c.Name == "PART" && c.Text("name") == "mk2LanderCabin") == 1);
-        Node root = donor.Children.First(c => c.Name == "PART" && c.Text("name") == "mk2LanderCabin");
+        int activeIndex = int.Parse(flight.Text("activeVessel"), Invariant);
+        if (activeIndex < 0 || activeIndex >= oldVessels.Length) throw new InvalidDataException("Source active vessel index is invalid.");
+        Node donor = oldVessels[activeIndex];
+        Node root = donor.Children.First(c => c.Name == "PART");
+        if (root.Text("name") != "mk2LanderCabin" || donor.Text("root") != "0") throw new InvalidDataException("Source active root must be the stock Mk2 lander cabin.");
         Node port = donor.Children.First(c => c.Name == "PART" && c.Text("name") == "dockingPort2" && c.Children.Any(m => m.Name == "MODULE" && m.Text("name") == "ModuleDockingNode" && m.Text("state") == "Ready" && m.Text("dockUId") == "0"));
         string rootConfig = Absolute(Path.Combine(data, "Squad/Parts/Command/mk2LanderCan/mk2LanderCan.cfg")), portConfig = Absolute(Path.Combine(data, "Squad/Parts/Utility/dockingPort/dockingPort.cfg"));
         var rc = Config(rootConfig, "mk2LanderCabin"); var pc = Config(portConfig, "dockingPort2");

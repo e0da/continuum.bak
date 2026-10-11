@@ -17,6 +17,8 @@ namespace KspContinuum
         readonly Dictionary<string, double> resources;
         readonly string[] crew;
         readonly double ecRate;
+        readonly double commandEcRate, dockingEcRate;
+        readonly int activeMotorTargetBits, targetMotorTargetBits;
         readonly List<SetupRow> setup = new List<SetupRow>();
         int stabilizationSteps;
         readonly string directory;
@@ -30,6 +32,7 @@ namespace KspContinuum
         [Serializable] public sealed class ResourceRow { public string name; public double amount; }
         [Serializable] public sealed class EventRow
         {
+            public uint activeLinkedPortId, targetLinkedPortId;
             public string phase, activeVesselId, targetVesselId, activePortState, targetPortState;
             public double universalTime, wallSeconds, distanceMeters, relativeSpeedMetersPerSecond, alignmentDot;
             public int activeParts, targetParts, jointId;
@@ -42,9 +45,10 @@ namespace KspContinuum
             public int processId, initialActiveParts, initialTargetParts, faults, mergeCount, undockCalls, splitCount, controlledBodies, controlCallbacks, ticks;
             public uint activePortId, targetPortId;
             public bool preparationRequested, collisionsRestored, zeroCrewScope, initialSeparate, actualJointObserved, exactPartPartitionsRestored, crewConserved, resourcesConserved, sourceUnchanged, hooksRemoved, controlLockRemoved;
-            public double initialUniversalTime, electricChargeRateBudget, electricChargeConsumed, minimumGapMeters, finalGapMeters, finalSeparationSpeedMetersPerSecond, maxAccelerationMetersPerSecondSquared = .01;
+            public double initialUniversalTime, electricChargeRateBudget, electricChargeCommandRateBudget, electricChargeDockingMotorRateBudget, electricChargeConsumed, minimumGapMeters, finalGapMeters, finalSeparationSpeedMetersPerSecond, maxAccelerationMetersPerSecondSquared = .01;
             public long driverTicks, clockFrequency = System.Diagnostics.Stopwatch.Frequency;
             public uint[] activePartIds, targetPartIds;
+            public uint[] splitActivePartIds, splitTargetPartIds;
             public ResourceRow[] initialResources, finalResources;
             public string[] crewNames, screenshots;
             public EventRow[] events;
@@ -52,6 +56,17 @@ namespace KspContinuum
         }
         public ReportData Report { get; private set; }
         public static bool Requested(string[] args) { return args.Any(arg => arg.StartsWith("--continuum-docking=", StringComparison.Ordinal)); }
+        public static bool PhysicalPortsReady(string[] args)
+        {
+            Guid active = Guid.Parse(Value(args, "--continuum-docking-active-vessel")), target = Guid.Parse(Value(args, "--continuum-docking-target-vessel"));
+            Vessel va = FlightGlobals.Vessels.FirstOrDefault(v => v != null && v.id == active), vb = FlightGlobals.Vessels.FirstOrDefault(v => v != null && v.id == target);
+            if (!Ready(va) || !Ready(vb)) return false;
+            ModuleDockingNode pa = Port(va, uint.Parse(Value(args, "--continuum-docking-active-port"), CultureInfo.InvariantCulture));
+            ModuleDockingNode pb = Port(vb, uint.Parse(Value(args, "--continuum-docking-target-port"), CultureInfo.InvariantCulture));
+            return pa.nodeTransform != null && pb.nodeTransform != null && pa.fsm != null && pb.fsm != null && pa.fsm.Started && pb.fsm.Started &&
+                ReferenceEquals(pa.fsm.CurrentState, pa.st_ready) && ReferenceEquals(pb.fsm.CurrentState, pb.st_ready) &&
+                !pa.IsRotating && !pb.IsRotating && pa.state == "Ready" && pb.state == "Ready";
+        }
         static string Value(string[] args, string name)
         {
             string prefix = name + "="; string[] values = args.Where(v => v.StartsWith(prefix, StringComparison.Ordinal)).ToArray();
@@ -75,6 +90,10 @@ namespace KspContinuum
                 !ScaleCheckpointLoadState.Ready || !ScaleCheckpointLoadState.SourceUnchanged())
                 throw new InvalidOperationException("Docking needs an owned, normal-time paired physical Kerbin orbital checkpoint.");
             a = Port(va, pa); b = Port(vb, pb);
+            if (!PhysicalPortsReady(args) || float.IsNaN(a.targetAngle) || float.IsInfinity(a.targetAngle) || float.IsNaN(b.targetAngle) || float.IsInfinity(b.targetAngle))
+                throw new InvalidOperationException("Docking motors must be initialized, idle and finite.");
+            activeMotorTargetBits = BitConverter.ToInt32(BitConverter.GetBytes(a.targetAngle), 0);
+            targetMotorTargetBits = BitConverter.ToInt32(BitConverter.GetBytes(b.targetAngle), 0);
             groupA = va.parts.ToArray(); groupB = vb.parts.ToArray(); parts = groupA.Concat(groupB).ToArray();
             if (parts.Select(p => p.flightID).Distinct().Count() != parts.Length || a.nodeTransform == null || b.nodeTransform == null ||
                 a.state != "Ready" || b.state != "Ready" || a.otherNode != null || b.otherNode != null || a.dockedPartUId != 0 || b.dockedPartUId != 0 ||
@@ -89,8 +108,10 @@ namespace KspContinuum
                 {
                     if (module is ModuleReactionWheel && ((ModuleReactionWheel)module).wheelState == ModuleReactionWheel.WheelState.Disabled) continue;
                     if (input.rate < 0 || double.IsNaN(input.rate) || double.IsInfinity(input.rate) ||
-                        (input.rate != 0 && (input.name != "ElectricCharge" || !(module is ModuleCommand))))
-                        throw new InvalidOperationException("Only frozen stock command EC consumption is supported; seed reaction wheels must be Disabled.");
+                        (input.rate != 0 && (input.name != "ElectricCharge" || (!(module is ModuleCommand) && !(module is ModuleDockingNode)))))
+                        throw new InvalidOperationException("Only declared stock command and docking-motor EC rates are supported; seed reaction wheels must be Disabled.");
+                    if (module is ModuleCommand) commandEcRate += input.rate;
+                    if (module is ModuleDockingNode) dockingEcRate += input.rate;
                     ecRate += input.rate;
                 }
             bool prepared = args.Contains("--continuum-docking-prepare-pair");
@@ -107,7 +128,8 @@ namespace KspContinuum
                 activePortId = pa, targetPortId = pb, initialActiveParts = groupA.Length, initialTargetParts = groupB.Length, initialSeparate = true,
                 activePartIds = groupA.Select(p => p.flightID).ToArray(), targetPartIds = groupB.Select(p => p.flightID).ToArray(), crewNames = crew,
                 initialResources = Rows(resources), minimumGapMeters = distance, preparationRequested = prepared, collisionsRestored = true,
-                zeroCrewScope = crew.Length == 0, initialUniversalTime = Planetarium.GetUniversalTime(), electricChargeRateBudget = ecRate };
+                zeroCrewScope = crew.Length == 0, initialUniversalTime = Planetarium.GetUniversalTime(), electricChargeRateBudget = ecRate,
+                electricChargeCommandRateBudget = commandEcRate, electricChargeDockingMotorRateBudget = dockingEcRate };
             startedWall = Time.realtimeSinceStartup; phaseUt = Planetarium.GetUniversalTime();
             try { InputLockManager.SetControlLock(ControlTypes.ALL_SHIP_CONTROLS | ControlTypes.TIMEWARP, Lock); lockOwned = true; Attach(va); Attach(vb); Record("seed"); }
             catch { Dispose(); throw; }
@@ -213,6 +235,9 @@ namespace KspContinuum
             if (Time.realtimeSinceStartup - startedWall > 90) throw new InvalidOperationException("Docking roundtrip wall timeout.");
             if (Planetarium.GetUniversalTime() - phaseUt > 65) throw new InvalidOperationException("Docking phase simulation timeout.");
             Attach(a.vessel); Attach(b.vessel); ValidateCallbacks(a.vessel); ValidateCallbacks(b.vessel);
+            if (a.IsRotating || b.IsRotating || activeMotorTargetBits != BitConverter.ToInt32(BitConverter.GetBytes(a.targetAngle), 0) ||
+                targetMotorTargetBits != BitConverter.ToInt32(BitConverter.GetBytes(b.targetAngle), 0))
+                throw new InvalidOperationException("An unowned docking motor command changed the quiet workload.");
             var live = a.vessel == b.vessel ? a.vessel.parts : a.vessel.parts.Concat(b.vessel.parts).ToList();
             if (live.Count != parts.Length || !new HashSet<uint>(live.Select(p => p.flightID)).SetEquals(parts.Select(p => p.flightID)))
                 throw new InvalidOperationException("Unexpected docking part topology.");
@@ -237,7 +262,7 @@ namespace KspContinuum
                 if (a.state == "Ready" && b.state == "Ready")
                 {
                     Vector3 delta = b.nodeTransform.position - a.nodeTransform.position;
-                    Vector3 desired = delta.normalized * .04f;
+                    Vector3 desired = delta.normalized * .1f;
                     Vector3 acceleration = Vector3.ClampMagnitude((desired - Relative()) * .5f, .01f);
                     var bodies = groupA.Select(p => p.Rigidbody).Where(r => r != null && !r.isKinematic).Distinct().ToArray();
                     if (bodies.Length == 0) throw new InvalidOperationException("Docker has no owned dynamic rigidbodies.");
@@ -260,6 +285,7 @@ namespace KspContinuum
                 if (gap >= Math.Max(1.1, splitDistance + .5) && separation > .001)
                 {
                     Report.exactPartPartitionsRestored = true; Report.splitCount++; Report.splitActiveVesselId = a.vessel.id.ToString("D"); Report.splitTargetVesselId = b.vessel.id.ToString("D");
+                    Report.splitActivePartIds = a.vessel.parts.Select(p => p.flightID).ToArray(); Report.splitTargetPartIds = b.vessel.parts.Select(p => p.flightID).ToArray();
                     Report.finalGapMeters = gap; Report.finalSeparationSpeedMetersPerSecond = separation; Record("split"); phase = "split-image";
                 }
             }
@@ -291,7 +317,8 @@ namespace KspContinuum
             events.Add(new EventRow { phase = eventPhase, universalTime = Planetarium.GetUniversalTime(), wallSeconds = Time.realtimeSinceStartup - startedWall,
                 activeVesselId = a.vessel.id.ToString("D"), targetVesselId = b.vessel.id.ToString("D"), activeParts = a.vessel.parts.Count, targetParts = b.vessel.parts.Count,
                 activePortState = a.state, targetPortState = b.state, jointId = joint, distanceMeters = (a.nodeTransform.position - b.nodeTransform.position).magnitude,
-                relativeSpeedMetersPerSecond = Relative().magnitude, alignmentDot = Vector3.Dot(a.nodeTransform.forward, -b.nodeTransform.forward) });
+                relativeSpeedMetersPerSecond = Relative().magnitude, alignmentDot = Vector3.Dot(a.nodeTransform.forward, -b.nodeTransform.forward),
+                activeLinkedPortId = a.otherNode == null ? 0 : a.otherNode.part.flightID, targetLinkedPortId = b.otherNode == null ? 0 : b.otherNode.part.flightID });
         }
         bool TryImage(string stage)
         {
@@ -337,16 +364,31 @@ namespace KspContinuum
             string[] args = Environment.GetCommandLineArgs(); if (!DockingQualification.Requested(args)) yield break;
             directory = Path.Combine(KSPUtil.ApplicationRootPath, "GameData", "KspContinuum", "PluginData", "docking-profile-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(directory); double start = Time.realtimeSinceStartup;
-            while (!ScaleCheckpointLoadState.Ready && Time.realtimeSinceStartup - start < 60) yield return null;
-            try { owner = DockingQualification.Create(args, directory); }
+            while (Time.realtimeSinceStartup - start < 60)
+            {
+                bool ready = false;
+                try { ready = ScaleCheckpointLoadState.Ready && DockingQualification.PhysicalPortsReady(args); }
+                catch (Exception error) { Rejected(args, error); }
+                if (finished) yield break;
+                if (ready) break;
+                yield return null;
+            }
+            try
+            {
+                FlightDiagnosticControls.Apply();
+                owner = DockingQualification.Create(args, directory);
+                if (FlightCamera.fetch != null) FlightCamera.fetch.SetDistanceImmediate(12f);
+            }
             catch (Exception error) { Rejected(args, error); }
             if (owner == null) yield break;
             yield return owner.Run();
+            FlightDiagnosticControls.Restore();
             finished = true;
             Application.Quit(owner.Report.status == "complete-experimental" ? 0 : 2);
         }
         void Rejected(string[] args, Exception error)
         {
+            FlightDiagnosticControls.Restore();
             string runId = args.Where(a => a.StartsWith("--continuum-research-run=", StringComparison.Ordinal)).Select(a => a.Substring("--continuum-research-run=".Length)).FirstOrDefault();
             var report = new DockingQualification.ReportData { runId = runId, processId = System.Diagnostics.Process.GetCurrentProcess().Id, sourceSha256 = ScaleCheckpointLoadState.SourceSha256,
                 status = "invalid", faults = 1, reason = error.GetType().Name + ": " + error.Message, cleanupStatus = "no-owned-controls", hooksRemoved = true, controlLockRemoved = true };
@@ -354,6 +396,7 @@ namespace KspContinuum
         }
         void OnDestroy()
         {
+            FlightDiagnosticControls.Restore();
             if (owner == null) return;
             owner.Dispose();
             if (!finished) { owner.Report.status = "interrupted"; owner.Report.reason = "Owning component destroyed before terminal sequence."; owner.Export(); }

@@ -57,6 +57,8 @@ fn run() -> Result<()> {
             "--project-sha256",
         ],
         "run" | "resolve" => &[
+            "--flight-docking",
+            "--flight-docking-prepare-pair",
             "--flight-lighting",
             "--flight-expected-parts",
             "--flight-convection-capture",
@@ -824,6 +826,7 @@ fn smoke(
         ])
         .arg(&log_path)
         .arg(format!("--continuum-research-run={run_id}"))
+        .args(selection.diagnostics.docking.as_ref().map(|d| d.arguments()).unwrap_or_default())
         .args(selection.diagnostics.flight_lighting.as_ref().map(|mode| vec![format!("--continuum-flight-lighting={mode}")]).unwrap_or_default())
         .args(
             selection
@@ -1117,7 +1120,15 @@ fn smoke(
     let mut flight_error = None;
     let mut flight_summary = None;
     let mut flight_entry = None;
-    if let Some(request) = flight.as_ref().filter(|_| !selection.live_play) {
+    if let Some(docking) = selection.diagnostics.docking.as_ref() {
+        let result = (|| -> Result<Value> {
+            let request = flight.as_ref().ok_or("docking flight selection absent")?;
+            let path = instance.join("saves").join(&request.save).join(format!("{}.sfs", request.checkpoint));
+            let source = flight_inputs.as_ref().and_then(|v| v["files"][path.to_string_lossy().as_ref()].as_str()).ok_or("docking source pin absent")?;
+            continuum_research_lab::docking::retain(docking, &observer_directory, output, &run_id, child.id(), request.expected_parts.ok_or("docking part pin absent")?, source)
+        })();
+        match result { Ok(value) => flight_summary = Some(value), Err(error) => flight_error = Some(error) }
+    } else if let Some(request) = flight.as_ref().filter(|_| !selection.live_play) {
         let result = (|| -> Result<Value> {
             flight_entry = continuum_research_lab::flight::retain_entry(
                 &observer_directory,

@@ -60,6 +60,10 @@ namespace KspContinuum
             bool pluginDiagnostic = type.Assembly == typeof(ReportJson).Assembly &&
                 (type.FullName == "KspContinuum.FlightDiagnosticControlReport" ||
                  type.FullName == "KspContinuum.FlightLighting+ReportData" ||
+                 type.FullName == "KspContinuum.DockingQualification+ReportData" ||
+                 type.FullName == "KspContinuum.DockingQualification+EventRow" ||
+                 type.FullName == "KspContinuum.DockingQualification+ResourceRow" ||
+                 type.FullName == "KspContinuum.DockingQualification+SetupRow" ||
                  type.FullName == "KspContinuum.AssetGenerationReport" ||
                  type.FullName == "KspContinuum.AssetGenerationCapability" ||
                  type.FullName == "KspContinuum.VesselRuntimeCapture+CaptureReport" ||

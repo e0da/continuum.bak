@@ -128,6 +128,8 @@ namespace KspContinuum
         public void Start()
         {
             string[] arguments = Environment.GetCommandLineArgs();
+            foreach (string argument in arguments)
+                if (argument.StartsWith("--continuum-docking=", StringComparison.Ordinal)) return;
             if (Array.IndexOf(arguments, "--continuum-experiment-host") >= 0) { sweepState = "idle"; return; }
             if (Array.IndexOf(arguments, "--continuum-scale-profile") < 0) return;
             if (Array.IndexOf(arguments, "--continuum-live-setdrag-provider") >= 0 &&
