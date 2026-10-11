@@ -11,12 +11,12 @@ if (args.Length == 4 && args[0] == "recompose-player") return RecomposePlayer(ar
 if (args.Length == 5 && args[0] == "recover-menu") return MenuShaderRecovery.Run(args);
 if (args.Length == 4 && args[0] == "menu-materials") return MenuShaderRecovery.Materials(args);
 if (args.Length == 6 && args[0] == "graft-menu") return MenuShaderGraft.Run(args);
-if (args.Length == 4 && args[0] == "prepare-menu-cook") return MenuShaderCook.Run(args);
+if ((args.Length == 4 || args.Length == 5) && args[0] == "prepare-menu-cook") return MenuShaderCook.Run(args);
 
 if (!(args.Length == 3 && args[0] == "inspect") &&
     !(args.Length == 6 && (args[0] == "graft" || args[0] == "graft-list")))
 {
-    Console.Error.WriteLine("Usage: inspect <classdata.tpk> <assets-or-bundle> | inspect-player <classdata.tpk> <player-Data-directory> <new-report.json> | recompose-player <classdata.tpk> <player-Data-directory> <new-output-globalgamemanagers> | graft <classdata.tpk> <target-assets> <donor-bundle> <output-assets> <shader-name> | graft-list <classdata.tpk> <target-assets> <donor-bundle> <output-assets> <names-file> | transplant <classdata.tpk> <original-assets> <original-shader-name> <donor-bundle> <donor-shader-name> <new-output-bundle> | menu-materials <classdata.tpk> <Data-directory> <new-report.json> | recover-menu <classdata.tpk> <Data-directory> <names-file> <new-directory> | prepare-menu-cook <matching-builtin-source-directory> <TMP-essential.unitypackage> <new-private-project-directory> | graft-menu <classdata.tpk> <target-assets> <donor-bundle> <new-output-assets> <names-file>");
+    Console.Error.WriteLine("Usage: inspect <classdata.tpk> <assets-or-bundle> | inspect-player <classdata.tpk> <player-Data-directory> <new-report.json> | recompose-player <classdata.tpk> <player-Data-directory> <new-output-globalgamemanagers> | graft <classdata.tpk> <target-assets> <donor-bundle> <output-assets> <shader-name> | graft-list <classdata.tpk> <target-assets> <donor-bundle> <output-assets> <names-file> | transplant <classdata.tpk> <original-assets> <original-shader-name> <donor-bundle> <donor-shader-name> <new-output-bundle> | menu-materials <classdata.tpk> <Data-directory> <new-report.json> | recover-menu <classdata.tpk> <Data-directory> <names-file> <new-directory> | prepare-menu-cook <matching-builtin-source-directory> <TMP-essential.unitypackage> <new-private-project-directory> <absolute-recovery-directory> | graft-menu <classdata.tpk> <target-assets> <donor-bundle> <new-output-assets> <names-file>");
     return 2;
 }
 
