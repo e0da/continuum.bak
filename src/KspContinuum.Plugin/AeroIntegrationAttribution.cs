@@ -39,7 +39,7 @@ namespace KspContinuum
         readonly Dictionary<ReuseKey, CurveReuseRow> reuse = new Dictionary<ReuseKey, CurveReuseRow>();
         readonly MethodInfo[] pinned = { Fixed, Integrate, Aero, Faces, Surface, SetDrag, Evaluate, Drag, Lift };
         int count, censusCalls;
-        bool disposed;
+        bool disposed, installationComplete, cleanupInProgress;
 
         [Serializable] public sealed class ReportData
         {
@@ -49,7 +49,8 @@ namespace KspContinuum
             public string scope = "Active-vessel original root Integrate callsite inside declared FI.FixedUpdate. Recursive Integrate has no prefix/finalizer. Named rows time direct original callsites, retain original operands/returns/order/exceptions, and include native work reached by those calls. Nested rows overlap and are not additive or exclusive CPU; uninstrumented inline arithmetic, other branches/providers and argument preparation are not attributed.";
             public string windowScope = "Select only completed root windows fully enclosed by Probe capture timestamps. Filter fixedStartedTicks/fixedEndedTicks independently for FixedUpdate inclusive means; those envelopes include other FI work and prefix/admission tax. Root Integrate envelopes contain callsite/census tax; seam admission is also retained separately. No full-frame benchmark or removable-time claim.";
             public string censusScope = "First four captured root invocations only: FloatCurve wrapper and underlying AnimationCurve reference identities plus exact float input bits at reached original Evaluate callsites. Generation is root-window sequence. References/input reuse does not prove immutable curve keys or permit a live cache. No extra Evaluate, curve key reads or force/state writes.";
-            public int processId, patchedMethods, shapeAdmissions, errors, contextErrors, originalExceptions, droppedWindows, droppedCensusCalls, completedWindows, censusWindows;
+            public string shapeScope = "Five unique first method admissions during installation. Owned cleanup may recompose an already admitted method while removing prefix/finalizer patches; every such execution must retain the exact pinned method body and ordered original callsite shape. Reapplication outside owned cleanup is invalid.";
+            public int processId, patchedMethods, shapeAdmissions, transpilerExecutions, cleanupRecompositions, errors, contextErrors, originalExceptions, droppedWindows, droppedCensusCalls, completedWindows, censusWindows;
             public long clockFrequency = Stopwatch.Frequency, timerReadFloorTicks, admissionStartedTicks, admissionEndedTicks, censusTicks;
             public string[] rowOrder = { "UpdateAerodynamics-call", "SetDrag-call", "aero-kinematic-access-calls", "aero-area-drag-scalar-methods", "ApplyAeroDrag-call", "ApplyAeroLift-call", "integration-rigidbody-force-torque-calls", "aero-angular-drag-write-calls", "mach-curve-evaluate-calls", "direction-or-weight-curve-evaluate-calls", "six-face-Pow-call" };
             public MethodRow[] methods;
@@ -59,7 +60,7 @@ namespace KspContinuum
         [Serializable] public sealed class MethodRow
         {
             public string declaringType, method, assemblyMvid, ilSha256;
-            public int metadataToken, instructionCount;
+            public int metadataToken, instructionCount, shapeApplications, cleanupApplications;
             public bool patched;
             public string[] instrumentedCallsiteMethods = new string[0];
             public int[] callsiteSlots = new int[0];
@@ -137,9 +138,16 @@ namespace KspContinuum
                     Report.patchedMethods++;
                 }
                 Require(Report.shapeAdmissions == 5 && OwnedGraph(), "Original aerodynamic callsite admission/owned graph differs.");
+                installationComplete = true;
                 Report.admissionEndedTicks = Stopwatch.GetTimestamp();
             }
-            catch { harmony.UnpatchAll(Owner); active = null; throw; }
+            catch
+            {
+                cleanupInProgress = true;
+                try { harmony.UnpatchAll(Owner); }
+                finally { cleanupInProgress = false; active = null; }
+                throw;
+            }
         }
         public static AeroIntegrationAttribution Create(string[] args, string runId, Func<bool> capturing)
         {
@@ -170,6 +178,10 @@ namespace KspContinuum
         }
         static IEnumerable<CodeInstruction> Transform(IEnumerable<CodeInstruction> source, ILGenerator generator, MethodBase __originalMethod)
         {
+            AeroIntegrationAttribution owner = active;
+            Require(owner != null, "Callsite owner missing.");
+            int methodIndex = Array.FindIndex(owner.pinned, method => Equals(method, __originalMethod));
+            Require(methodIndex >= 0 && methodIndex < 5, "Unexpected original aerodynamic instrumentation method identity.");
             var code = source.Select(item => new CodeInstruction(item)).ToArray(); Require(code.All(item => item.blocks.Count == 0), "Unexpected callsite exception blocks.");
             var result = new List<CodeInstruction>(); var sites = new List<string>(); var slots = new List<int>();
             if (Equals(__originalMethod, Faces) || Equals(__originalMethod, Surface))
@@ -233,10 +245,34 @@ namespace KspContinuum
             if (Equals(__originalMethod, Aero)) Require(setDragSites == 1 && machEvaluates == 1 && slots.Contains(2) && slots.Contains(3) && slots.Contains(4) && slots.Contains(5) && slots.Contains(7), "Original aerodynamic callsites differ.");
             if (Equals(__originalMethod, Faces)) Require(machEvaluates == 2 && otherEvaluates == 2 && slots.Count(slot => slot == 10) == 1, "Original six-face curve/Pow callsites differ.");
             if (Equals(__originalMethod, Surface)) Require(machEvaluates == 6 && otherEvaluates == 0, "Original surface Mach curve callsites differ.");
-            Require(active != null, "Callsite owner missing.");
-            MethodRow row = active.Report.methods.Single(item => item.metadataToken == __originalMethod.MetadataToken);
-            row.instructionCount = code.Length; row.instrumentedCallsiteMethods = sites.ToArray(); row.callsiteSlots = slots.ToArray(); active.Report.shapeAdmissions++;
+            owner.AdmitShape(methodIndex, __originalMethod, code.Length, sites.ToArray(), slots.ToArray());
             return result;
+        }
+        void AdmitShape(int methodIndex, MethodBase method, int instructionCount, string[] sites, int[] slots)
+        {
+            try
+            {
+                MethodRow row = Report.methods[methodIndex]; MethodBody body = method.GetMethodBody();
+                Require(ReferenceEquals(active, this) && Thread.CurrentThread.ManagedThreadId == thread &&
+                    method.Module.ModuleVersionId.ToString("D") == row.assemblyMvid && method.MetadataToken == row.metadataToken &&
+                    body != null && body.ExceptionHandlingClauses.Count == 0 && ConvectionSparseKernel.Hash(body.GetILAsByteArray()) == row.ilSha256,
+                    "Original aerodynamic method identity/body changed during shape admission.");
+                if (row.shapeApplications == 0)
+                {
+                    Require(!installationComplete && !cleanupInProgress && !disposed, "First aerodynamic shape admission outside installation.");
+                    row.instructionCount = instructionCount; row.instrumentedCallsiteMethods = sites; row.callsiteSlots = slots;
+                    Report.shapeAdmissions++;
+                }
+                else
+                {
+                    Require(cleanupInProgress && row.instructionCount == instructionCount &&
+                        row.instrumentedCallsiteMethods.SequenceEqual(sites) && row.callsiteSlots.SequenceEqual(slots),
+                        "Aerodynamic shape reapplication outside owned cleanup or original callsite shape changed.");
+                    row.cleanupApplications++; Report.cleanupRecompositions++;
+                }
+                row.shapeApplications++; Report.transpilerExecutions++;
+            }
+            catch (Exception error) { Fail(error); throw; }
         }
         static void Prefix(FlightIntegrator __instance, out Context __state)
         {
@@ -353,18 +389,24 @@ namespace KspContinuum
             bool owned = OwnedGraph(); if (!owned) { Report.errors++; Report.detail = "Inner callsite ownership changed before cleanup."; }
             try
             {
+                cleanupInProgress = true;
                 harmony.UnpatchAll(Owner);
                 Report.cleanupStatus = pinned.Any(method => Harmony.GetPatchInfo(method)?.Owners.Contains(Owner) == true) ? "cleanup-error" : "removed-owned-hooks";
             }
             catch (Exception error) { Fail(error); Report.cleanupStatus = "cleanup-error"; }
-            finally { if (ReferenceEquals(active, this)) active = null; }
+            finally { cleanupInProgress = false; if (ReferenceEquals(active, this)) active = null; }
             Report.windows = storage.Take(count).ToArray(); Report.curveReuse = reuse.Values.OrderBy(row => row.generation).ThenBy(row => row.slot).ThenBy(row => row.curveWrapperId).ThenBy(row => row.inputBits).ToArray();
             Report.censusStatus = Report.droppedCensusCalls != 0 ? "truncated" : Report.curveReuse.Length == 0 ? "not-reached-no-curve-evaluation-coverage" : "observed-reference-input-reuse-only";
             string reason; Report.status = IsValidFinal(out reason) ? "observed" : "invalid"; if (Report.status == "invalid" && Report.detail == null) Report.detail = reason;
         }
         public bool IsValidFinal(out string reason)
         {
-            if (!disposed || Report.cleanupStatus != "removed-owned-hooks" || Report.patchedMethods != 5 || Report.shapeAdmissions != 5) { reason = "Original callsite shape/cleanup incomplete."; return false; }
+            if (!disposed || !installationComplete || cleanupInProgress || Report.cleanupStatus != "removed-owned-hooks" || Report.patchedMethods != 5 || Report.shapeAdmissions != 5 ||
+                Report.transpilerExecutions != Report.shapeAdmissions + Report.cleanupRecompositions ||
+                Report.methods.Take(5).Any(row => row.shapeApplications != 1 + row.cleanupApplications) ||
+                Report.methods.Skip(5).Any(row => row.shapeApplications != 0 || row.cleanupApplications != 0) ||
+                Report.methods.Sum(row => row.cleanupApplications) != Report.cleanupRecompositions)
+            { reason = "Original callsite shape/cleanup incomplete."; return false; }
             if (Report.errors != 0 || Report.contextErrors != 0 || Report.originalExceptions != 0 || Report.droppedWindows != 0 || Report.droppedCensusCalls != 0) { reason = "Observer context, original exception or storage coverage failed."; return false; }
             if (Report.completedWindows < CensusWindows || Report.censusWindows != CensusWindows || Report.coverageWitness != "passed-original-callsite-counts" ||
                 Report.windows.Any(window => !window.completed || window.elapsedTicks < 0 || window.fixedInclusiveTicks < window.elapsedTicks)) { reason = "Four reached curve census/root windows incomplete."; return false; }
