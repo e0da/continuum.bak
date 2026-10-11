@@ -1635,6 +1635,7 @@ pub struct NativeSample {
     requested: bool,
     attempted: bool,
     child: Option<std::process::Child>,
+    capture: Option<PathBuf>,
     receipt: Value,
 }
 impl NativeSample {
@@ -1643,21 +1644,27 @@ impl NativeSample {
             requested,
             attempted: false,
             child: None,
-            receipt: json!({"requested":requested,"status":if requested {"waiting-for-owned-capture"} else {"not-requested"},
+            capture: None,
+            receipt: json!({"schema":"continuum-flight-native-sample/v2","requested":requested,"status":if requested {"waiting-for-owned-capture"} else {"not-requested"},
                 "perturbation":"Native sampling attaches to the owned game process; this variant is diagnostic and unsuitable as an unprofiled performance comparison.",
-                "durationSeconds":5,"intervalMilliseconds":1,"captureDetectionResolutionSeconds":0.1}),
+                "durationSeconds":2,"intervalMilliseconds":1,"captureDetectionResolutionSeconds":0.1,
+                "enclosureScope":"Entire sampler spawn-to-process-completion-observation envelope must fit between native mach clock brackets at capture boundaries. File publication/absence and Mono Stopwatch frequency do not prove clock equivalence. Samples are statistical stack occupancy, not CPU milliseconds or GPU duration."}),
         }
     }
     pub fn poll(&mut self, directory: &Path, run_id: &str, pid: u32, output: &Path) {
         if !self.requested {
             return;
         }
+        self.observe_capture_end();
         if let Some(child) = self.child.as_mut() {
+            let before = sample_mach_clock();
             match child.try_wait() {
                 Ok(Some(status)) => {
+                    self.receipt["completionObservationBefore"] = before;
+                    self.receipt["completionObservationAfter"] = sample_mach_clock();
                     self.receipt["samplerExitCode"] = json!(status.code());
                     self.receipt["status"] = json!(if status.success() {
-                        "completed"
+                        "process-completed-awaiting-enclosure"
                     } else {
                         "failed"
                     });
@@ -1670,6 +1677,7 @@ impl NativeSample {
                 Ok(None) => {}
                 Err(error) => {
                     self.receipt["error"] = json!(error.to_string());
+                    self.receipt["samplerObservationError"] = json!(error.to_string());
                 }
             }
             return;
@@ -1688,13 +1696,16 @@ impl NativeSample {
             }
         };
         self.attempted = true;
+        self.capture = Some(capture.clone());
         self.receipt["ownedPid"] = json!(pid);
         self.receipt["captureStartSignal"] =
             read::<Value>(&capture.join("capture-start.json")).unwrap_or(Value::Null);
         if capture.join("capture-end.json").exists() {
+            self.observe_capture_end();
             self.receipt["status"] = json!("capture-ended-before-sampling");
             return;
         }
+        self.receipt["spawnEnvelopeBefore"] = sample_mach_clock();
         let result = (|| -> Result<std::process::Child> {
             let log = fs::File::create(output.join("native-flight-sample-process.log"))
                 .map_err(|error| error.to_string())?;
@@ -1705,7 +1716,7 @@ impl NativeSample {
             std::process::Command::new("/usr/bin/sample")
                 .args([
                     pid.to_string(),
-                    "5".into(),
+                    "2".into(),
                     "1".into(),
                     "-file".into(),
                     file.to_string_lossy().into_owned(),
@@ -1715,6 +1726,7 @@ impl NativeSample {
                 .spawn()
                 .map_err(|error| error.to_string())
         })();
+        self.receipt["spawnEnvelopeAfter"] = sample_mach_clock();
         match result {
             Ok(child) => {
                 self.receipt["samplerPid"] = json!(child.id());
@@ -1727,12 +1739,33 @@ impl NativeSample {
             }
         }
     }
+    fn observe_capture_end(&mut self) {
+        if !self.receipt["captureEndSignal"].is_null() { return; }
+        let Some(capture) = &self.capture else { return; };
+        let path = capture.join("capture-end.json");
+        if !path.exists() { return; }
+        match read::<Value>(&path) {
+            Ok(end) if end["runId"] == self.receipt["captureStartSignal"]["runId"]
+                && end["processId"] == self.receipt["ownedPid"] => {
+                    self.receipt["captureEndSignal"] = end;
+                    if self.receipt["captureEndDetectedClock"].is_null() {
+                        self.receipt["captureEndDetectedClock"] = sample_mach_clock();
+                        self.receipt["captureEndDetectedUnixSeconds"] = json!(unix_seconds());
+                    }
+                }
+            Ok(_) => self.receipt["captureEndReadError"] = json!("capture-end owner identity mismatch"),
+            Err(error) => self.receipt["captureEndReadError"] = json!(error),
+        }
+    }
     pub fn finish(mut self, pid: u32, output: &Path) -> Value {
         if let Some(mut child) = self.child.take() {
+            let before = sample_mach_clock();
             match child.try_wait() {
                 Ok(Some(status)) => {
+                    self.receipt["completionObservationBefore"] = before;
+                    self.receipt["completionObservationAfter"] = sample_mach_clock();
                     self.receipt["status"] = json!(if status.success() {
-                        "completed"
+                        "process-completed-awaiting-enclosure"
                     } else {
                         "failed"
                     });
@@ -1752,12 +1785,28 @@ impl NativeSample {
             self.receipt["samplerEndUnixSeconds"] = json!(unix_seconds());
         }
         if self.requested {
+            self.observe_capture_end();
             if self.receipt["psEnd"].is_null() {
                 self.receipt["psEnd"] = owned_ps(pid);
             }
             self.receipt["outputSha256"] =
                 json!(hash(&output.join("native-flight-sample.txt")).ok());
             self.receipt["psScope"]=json!("Raw process snapshots only; end may be unavailable after owned game exit. Percent CPU is ps process accounting, not capture-window exclusive CPU.");
+            if self.receipt["status"] == "process-completed-awaiting-enclosure" {
+                match native_sample_enclosure(&self.receipt) {
+                    Ok(()) => {
+                        self.receipt["status"] = json!("completed");
+                        self.receipt["enclosureStatus"] = json!("proved-native-clock-envelope");
+                    }
+                    Err(error) => {
+                        self.receipt["status"] = json!("enclosure-unresolved");
+                        self.receipt["enclosureStatus"] = json!("rejected");
+                        self.receipt["enclosureError"] = json!(error);
+                    }
+                }
+            } else if self.receipt["status"] == "waiting-for-owned-capture" {
+                self.receipt["status"] = json!("missed-owned-capture");
+            }
         }
         std::mem::take(&mut self.receipt)
     }
@@ -1768,6 +1817,93 @@ impl Drop for NativeSample {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+}
+#[cfg(target_os = "macos")]
+fn sample_mach_clock() -> Value {
+    #[repr(C)]
+    struct Timebase { numerator: u32, denominator: u32 }
+    extern "C" {
+        fn mach_absolute_time() -> u64;
+        fn mach_timebase_info(info: *mut Timebase) -> i32;
+    }
+    let mut timebase = Timebase { numerator: 0, denominator: 0 };
+    // These libSystem calls read the host monotonic clock; no target-process memory is accessed.
+    let result = unsafe { mach_timebase_info(&mut timebase) };
+    if result != 0 || timebase.numerator == 0 || timebase.denominator == 0 {
+        return json!({"status":"failed","returnCode":result});
+    }
+    json!({"status":"available","ticks":unsafe { mach_absolute_time() },
+        "numerator":timebase.numerator,"denominator":timebase.denominator})
+}
+#[cfg(not(target_os = "macos"))]
+fn sample_mach_clock() -> Value { json!({"status":"unsupported"}) }
+
+fn native_sample_enclosure(receipt: &Value) -> Result<()> {
+    if !receipt["captureEndReadError"].is_null() { return Err("capture-end read/identity rejected".into()); }
+    if !receipt["samplerObservationError"].is_null() { return Err("sampler process observation failed".into()); }
+    let start = &receipt["captureStartSignal"];
+    let end = &receipt["captureEndSignal"];
+    if start["schema"] != "continuum-flight-capture-signal/v1" || end["schema"] != start["schema"]
+        || start["status"] != "capturing" || end["status"] != "complete"
+        || start["runId"].as_str().filter(|s| !s.is_empty()).is_none()
+        || end["runId"] != start["runId"] || start["processId"] != receipt["ownedPid"]
+        || end["processId"] != receipt["ownedPid"] {
+        return Err("capture boundary signal shape unavailable".into());
+    }
+    let n = start["machTimebaseNumerator"].as_u64().filter(|v| *v > 0).ok_or("native timebase numerator unavailable")?;
+    let d = start["machTimebaseDenominator"].as_u64().filter(|v| *v > 0).ok_or("native timebase denominator unavailable")?;
+    let signal = |value: &Value| -> Result<(u64,u64)> {
+        if value["machClockStatus"] != "available" || value["machTimebaseNumerator"].as_u64() != Some(n)
+            || value["machTimebaseDenominator"].as_u64() != Some(d) { return Err("native capture clock/timebase unavailable or changed".into()); }
+        let before=value["machAbsoluteBeforeTicks"].as_u64().ok_or("capture native before bound unavailable")?;
+        let after=value["machAbsoluteAfterTicks"].as_u64().ok_or("capture native after bound unavailable")?;
+        if before==0 || before>after { return Err("capture native clock bounds invalid".into()); }
+        Ok((before,after))
+    };
+    let observation = |name: &str| -> Result<u64> {
+        let v=&receipt[name];
+        if v["status"] != "available" || v["numerator"].as_u64()!=Some(n) || v["denominator"].as_u64()!=Some(d) {
+            return Err(format!("runner native clock/timebase unavailable at {name}"));
+        }
+        v["ticks"].as_u64().filter(|v| *v>0).ok_or_else(|| format!("runner clock missing at {name}"))
+    };
+    let (start_before,start_after)=signal(start)?;
+    let (end_before,end_after)=signal(end)?;
+    let spawn_before=observation("spawnEnvelopeBefore")?;
+    let spawn_after=observation("spawnEnvelopeAfter")?;
+    let completed_before=observation("completionObservationBefore")?;
+    let completed_after=observation("completionObservationAfter")?;
+    if !(start_before<=start_after && start_after<=spawn_before && spawn_before<=spawn_after
+        && spawn_after<=completed_before && completed_before<=completed_after && completed_after<=end_before && end_before<=end_after) {
+        return Err("sampler invocation/completion envelope not conservatively enclosed by capture".into());
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod native_sample_alignment_tests {
+    use super::*;
+    fn enclosed() -> Value {
+        let boundary=|status:&str,before:u64,after:u64| json!({
+            "schema":"continuum-flight-capture-signal/v1","status":status,"runId":"owned","processId":42,
+            "machClockStatus":"available","machAbsoluteBeforeTicks":before,"machAbsoluteAfterTicks":after,
+            "machTimebaseNumerator":1,"machTimebaseDenominator":1});
+        let clock=|ticks:u64| json!({"status":"available","ticks":ticks,"numerator":1,"denominator":1});
+        json!({"ownedPid":42,"captureStartSignal":boundary("capturing",10,11),
+            "captureEndSignal":boundary("complete",100,101),"spawnEnvelopeBefore":clock(20),
+            "spawnEnvelopeAfter":clock(21),"completionObservationBefore":clock(80),"completionObservationAfter":clock(81)})
+    }
+    #[test]
+    fn enclosure_requires_native_boundary_not_file_publication() {
+        let good=enclosed(); assert!(native_sample_enclosure(&good).is_ok());
+        let mut late=good.clone(); late["completionObservationAfter"]["ticks"]=json!(102);
+        assert!(native_sample_enclosure(&late).is_err());
+        let mut missing=good.clone(); missing["captureEndSignal"]["machClockStatus"]=json!("unsupported");
+        assert!(native_sample_enclosure(&missing).is_err());
+        let mut changed=good.clone(); changed["spawnEnvelopeAfter"]["denominator"]=json!(2);
+        assert!(native_sample_enclosure(&changed).is_err());
+        let mut foreign=good; foreign["captureEndSignal"]["processId"]=json!(43);
+        assert!(native_sample_enclosure(&foreign).is_err());
     }
 }
 fn unix_seconds() -> f64 {
