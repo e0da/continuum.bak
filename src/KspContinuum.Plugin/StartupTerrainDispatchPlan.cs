@@ -32,6 +32,7 @@ namespace KspContinuum
             public string schema="continuum-startup-terrain-dispatch-plan/v1",runId,status,cleanupStatus;
             public string proof="Only exact unpatched empty base callbacks omitted; ordered virtual calls retain live stock modifier instances and fields, height flag stores and original vertex method tails. Stock modifier-array mutation during a quad is unsupported and invalidates this experiment. No geometric equivalence claimed from counters.";
             public int processId; public long clockFrequency,plansBuilt,planBuildTicks,planAdmissionTicks,quads,quadsFallback,heightDispatches,vertexDispatches,realHeightCalls,realVertexCalls,emptyHeightCallsOmitted,emptyVertexCallsOmitted,errors; public bool hooksRemoved;
+            public bool inheritedProbeRawEqualsBase,inheritedProbeCanonicalMatchesBase;
         }
         public void Awake()
         {
@@ -44,6 +45,9 @@ namespace KspContinuum
                 if(active!=null||!File.Exists(Path.Combine(KSPUtil.ApplicationRootPath,"continuum-lab.local.json"))) throw new InvalidOperationException("One private laboratory owner required.");
                 StartupPinnedGameIdentity.Require(typeof(PQS).Assembly);
                 if(Mods==null||Mods.FieldType!=typeof(PQSMod[])||Count==null||Count.FieldType!=typeof(int)||Override==null||Override.FieldType!=typeof(bool)||!Empty(Height)||!Empty(Vertex)) throw new InvalidOperationException("Stock dispatch fields/base IL differ.");
+                var inherited=typeof(PQSMod_QuadMeshColliders).GetMethod(Vertex.Name,new[] {typeof(PQS.VertexBuildData)});
+                report.inheritedProbeRawEqualsBase=Equals(inherited,Vertex);report.inheritedProbeCanonicalMatchesBase=SameMethod(inherited,Vertex);
+                if(!report.inheritedProbeCanonicalMatchesBase||!SameMethod(typeof(PQSMod_QuadMeshColliders).GetMethod(Height.Name,new[] {typeof(PQS.VertexBuildData)}),Height)) throw new InvalidOperationException("Pinned inherited empty callback identity differs.");
                 build=AccessTools.DeclaredMethod(typeof(PQS),"BuildQuad",new[] {typeof(PQ)});
                 heightMethod=AccessTools.DeclaredMethod(typeof(PQS),"Mod_OnVertexBuildHeight",new[] {typeof(PQS.VertexBuildData),typeof(bool)});
                 vertexMethod=AccessTools.DeclaredMethod(typeof(PQS),"Mod_OnVertexBuild",new[] {typeof(PQS.VertexBuildData)});
@@ -70,6 +74,10 @@ namespace KspContinuum
         static bool Empty(MethodInfo method)
         {return method!=null&&method.DeclaringType==typeof(PQSMod)&&method.ReturnType==typeof(void)&&!method.IsStatic&&method.IsVirtual&&Unpatched(method)&&method.GetMethodBody().GetILAsByteArray().SequenceEqual(new byte[] {0x2a});}
         static bool Unpatched(MethodInfo method) {return Harmony.GetPatchInfo(method)?.Owners.Count>0?false:true;}
+        static bool SameMethod(MethodInfo left,MethodInfo right)
+        {return left!=null&&right!=null&&left.DeclaringType==right.DeclaringType&&left.Module.ModuleVersionId==right.Module.ModuleVersionId&&left.MetadataToken==right.MetadataToken;}
+        static MethodInfo Canonical(MethodInfo method)
+        {return method==null?null:(MethodInfo)method.Module.ResolveMethod(method.MetadataToken);}
         static bool Same(Plan p)
         {
             if(!ReferenceEquals(Mods.GetValue(p.sphere),p.array)||(int)Count.GetValue(p.sphere)!=p.members.Length) return false;
@@ -89,9 +97,9 @@ namespace KspContinuum
                 for(int i=0;i<count;i++)
                 {
                     if(array[i]==null||array[i].GetType().Assembly!=typeof(PQS).Assembly) return null;
-                    var h=array[i].GetType().GetMethod(Height.Name,new[] {typeof(PQS.VertexBuildData)}); var v=array[i].GetType().GetMethod(Vertex.Name,new[] {typeof(PQS.VertexBuildData)});
-                    if(h==null||v==null||!Unpatched(h)||!Unpatched(v)||!Equals(h.GetBaseDefinition(),Height)||!Equals(v.GetBaseDefinition(),Vertex)) return null;
-                    heightReal[i]=!Equals(h,Height); vertexReal[i]=!Equals(v,Vertex);
+                    var h=Canonical(array[i].GetType().GetMethod(Height.Name,new[] {typeof(PQS.VertexBuildData)})); var v=Canonical(array[i].GetType().GetMethod(Vertex.Name,new[] {typeof(PQS.VertexBuildData)}));
+                    if(h==null||v==null||!Unpatched(h)||!Unpatched(v)||!SameMethod(h.GetBaseDefinition(),Height)||!SameMethod(v.GetBaseDefinition(),Vertex)) return null;
+                    heightReal[i]=!SameMethod(h,Height); vertexReal[i]=!SameMethod(v,Vertex);
                     methods.Add(h);methods.Add(v);
                     if(heightReal[i]) p.heightCalls++; else p.heightEmpty++;
                     if(vertexReal[i]) p.vertexCalls++; else p.vertexEmpty++;
