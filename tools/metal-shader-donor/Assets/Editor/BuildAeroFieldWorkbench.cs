@@ -14,6 +14,7 @@ public static class BuildAeroFieldWorkbench
         public string schema = "continuum-aero-workbench-build/v1", unity, editorRevision, graphicsApi, output, workbenchSourceSha256, residentSourceSha256, residentFormatSourceSha256, buildSourceSha256, fixtureShaderSourceSha256, status, toolAssemblySha256, playerAssemblySha256, packagesSha256,multiscaleSourceSha256,multiscaleFormatSourceSha256;
         public string qualification = "Player built; actual rendering, fixture loading and persistent reload require native consumer proof.";
         public string wholeCraftRuntimeSourceSha256,wholeCraftFormatSourceSha256;
+        public string vesselReplaySourceSha256,vesselRuntimeFormatSourceSha256;
         public string instancingStrippingName; public int instancingStrippingValue,diagnosticVariantCount;
     }
     static string Hash(string path) { using(var stream=File.OpenRead(path)) using(var sha=SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-","").ToLowerInvariant(); }
@@ -63,6 +64,7 @@ public static class BuildAeroFieldWorkbench
                 residentSourceSha256=Hash("Assets/ResidentMaterialRuntime.cs"),residentFormatSourceSha256=Hash("Assets/ResidentMaterialFormat.cs"),
                 multiscaleSourceSha256=File.Exists("Assets/MultiscaleWorkbench.cs")?Hash("Assets/MultiscaleWorkbench.cs"):null,multiscaleFormatSourceSha256=File.Exists("Assets/MultiscaleSceneFormat.cs")?Hash("Assets/MultiscaleSceneFormat.cs"):null,
                 wholeCraftRuntimeSourceSha256=File.Exists("Assets/WholeCraftRuntime.cs")?Hash("Assets/WholeCraftRuntime.cs"):null,wholeCraftFormatSourceSha256=File.Exists("Assets/WholeCraftSceneFormat.cs")?Hash("Assets/WholeCraftSceneFormat.cs"):null,
+                vesselReplaySourceSha256=File.Exists("Assets/VesselReplaySession.cs")?Hash("Assets/VesselReplaySession.cs"):null,vesselRuntimeFormatSourceSha256=File.Exists("Assets/VesselRuntimeRecording.cs")?Hash("Assets/VesselRuntimeRecording.cs"):null,
                 instancingStrippingName=strippingName,instancingStrippingValue=effectiveStripping,diagnosticVariantCount=variantCount,
                 toolAssemblySha256=Hash(typeof(BuildAeroFieldWorkbench).Assembly.Location),playerAssemblySha256=Hash(Path.Combine(output,"Contents/Resources/Data/Managed/Assembly-CSharp.dll")),packagesSha256=Hash("Packages/manifest.json") };
             using(var writer=new StreamWriter(new FileStream(output+".build.json",FileMode.CreateNew,FileAccess.Write))) writer.Write(JsonUtility.ToJson(receipt,true));

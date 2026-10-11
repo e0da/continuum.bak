@@ -12,6 +12,12 @@ public sealed class WholeCraftRuntime : IDisposable
     public readonly string ManifestSha256,GeometrySha256;
     readonly List<UnityEngine.Object> owned=new List<UnityEngine.Object>();
     Mesh[] meshes; Texture2D[] textures; Material[] materials; Matrix4x4[] bases,matrices;
+    bool[] visibility; Color[] retainedPixels;
+    public long ReplayFrameCount { get; private set; }
+    public long ReplayApplyTicks { get; private set; }
+    public long DynamicUploadBytes { get; private set; }
+    public int DynamicUploadCount { get; private set; }
+    public bool ReplayGpuFaulted { get; private set; }
     sealed class Recipe { public int Texture=-1; public Vector4 ST=new Vector4(1,1,0,0); public Color Tint=Color.white; }
     sealed class Packet { public int Mesh,Submesh,Layer,Recipe; public int[] Sources; public Matrix4x4[] Matrices; public MaterialPropertyBlock Block; }
     Recipe[] recipes; int[] materialRecipes; Packet[] packets; MaterialPropertyBlock[] referenceColors;
@@ -98,11 +104,58 @@ public sealed class WholeCraftRuntime : IDisposable
     }
     void BuildPackets()
     {
+        visibility=new bool[Manifest.draws.Length]; for(int i=0;i<visibility.Length;i++) visibility[i]=Manifest.draws[i].enabled&&Manifest.draws[i].active&&!Manifest.draws[i].forceRenderingOff;
         referenceColors=new MaterialPropertyBlock[Manifest.draws.Length]; var groups=new Dictionary<string,List<int>>(StringComparer.Ordinal); var keys=new List<string>();
         for(int i=0;i<Manifest.draws.Length;i++) { var a=Manifest.draws[i]; var color=Color.HSVToRGB((a.materialIndex*.61803398875f)%1,.7f,.95f); var block=new MaterialPropertyBlock(); block.SetColor("_MaterialColor",color); referenceColors[i]=block; if(!a.enabled||!a.active||a.forceRenderingOff) continue; string key=a.meshIndex+"/"+a.submeshIndex+"/"+a.layer+"/"+materialRecipes[a.materialIndex]; List<int> sources; if(!groups.TryGetValue(key,out sources)) { sources=new List<int>(); groups.Add(key,sources); keys.Add(key); } sources.Add(i); }
         var list=new List<Packet>(); foreach(var key in keys) { var sources=groups[key]; int start=0; foreach(int count in PacketSlices(sources.Count)) { var first=Manifest.draws[sources[start]]; var packet=new Packet {Mesh=first.meshIndex,Submesh=first.submeshIndex,Layer=first.layer,Recipe=materialRecipes[first.materialIndex],Sources=new int[count],Matrices=new Matrix4x4[count],Block=new MaterialPropertyBlock()}; var colors=new Vector4[count]; for(int j=0;j<count;j++) { int source=sources[start+j]; packet.Sources[j]=source; packet.Matrices[j]=matrices[source]; colors[j]=Color.HSVToRGB((Manifest.draws[source].materialIndex*.61803398875f)%1,.7f,.95f); } packet.Block.SetVectorArray("_MaterialColor",colors); list.Add(packet); start+=count; } } packets=list.ToArray();
     }
     public static int[] PacketSlices(int sources) { if(sources<0||sources>50000) throw new InvalidDataException("Packet source capacity differs."); var result=new int[(sources+1022)/1023]; for(int i=0;i<result.Length;i++) result[i]=Math.Min(1023,sources-i*1023); return result; }
+    Packet[] ReplayPackets(Matrix4x4[] poses,bool[] visible)
+    {
+        var groups=new Dictionary<string,List<int>>(StringComparer.Ordinal); var keys=new List<string>();
+        for(int i=0;i<visible.Length;i++) if(visible[i]) { var d=Manifest.draws[i]; string key=d.meshIndex+"/"+d.submeshIndex+"/"+d.layer+"/"+materialRecipes[d.materialIndex]; List<int> rows; if(!groups.TryGetValue(key,out rows)) { rows=new List<int>(); groups.Add(key,rows); keys.Add(key); } rows.Add(i); }
+        var result=new List<Packet>();
+        foreach(string key in keys) { var rows=groups[key]; int start=0; foreach(int count in PacketSlices(rows.Count)) { var d=Manifest.draws[rows[start]]; var p=new Packet {Mesh=d.meshIndex,Submesh=d.submeshIndex,Layer=d.layer,Recipe=materialRecipes[d.materialIndex],Sources=new int[count],Matrices=new Matrix4x4[count],Block=new MaterialPropertyBlock()}; var hues=new Vector4[count]; for(int k=0;k<count;k++) { int i=rows[start+k]; p.Sources[k]=i; p.Matrices[k]=poses[i]; hues[k]=Color.HSVToRGB((Manifest.draws[i].materialIndex*.61803398875f)%1,.7f,.95f); } p.Block.SetVectorArray("_MaterialColor",hues); result.Add(p); start+=count; } }
+        return result.ToArray();
+    }
+    Color[] ReplayPixels(Matrix4x4[] poses,Packet[] groups)
+    {
+        var pixels=new Color[Manifest.draws.Length*8]; int row=0;
+        foreach(var p in groups) foreach(int i in p.Sources) { var m=poses[i]; if(!Finite(m.determinant)||m.determinant==0) throw new InvalidDataException("Replay inverse singular."); var n=m.inverse.transpose; Check(n); for(int r=0;r<4;r++) { var v=m.GetRow(r); pixels[row*8+r]=new Color(v.x,v.y,v.z,v.w); } for(int r=0;r<3;r++) { var v=n.GetRow(r); pixels[row*8+4+r]=new Color(v.x,v.y,v.z,0); } pixels[row*8+7]=Color.HSVToRGB((Manifest.draws[i].materialIndex*.61803398875f)%1,.7f,.95f); row++; }
+        return pixels;
+    }
+    public void ApplyReplayFrame(VesselRuntimeFrame frame)
+    {
+        long start=System.Diagnostics.Stopwatch.GetTimestamp();
+        VesselRuntimeFormat.ValidateFrame(frame,Manifest.draws.Length,frame==null||frame.loads==null?0:frame.loads.Length/6);
+        if(disposed||frame==null||frame.poses==null||frame.poses.Length!=bases.Length*16||frame.visible==null||frame.visible.Length!=bases.Length||frame.rootToWorld==null||frame.rootToWorld.Length!=16) throw new InvalidDataException("Replay frame shape differs.");
+        var root=Matrix(frame.rootToWorld); if(root.m03!=0||root.m13!=0||root.m23!=0) throw new InvalidDataException("Replay root translation must be zero.");
+        var nextBases=new Matrix4x4[bases.Length]; var nextMatrices=new Matrix4x4[bases.Length]; var visible=(bool[])frame.visible.Clone(); bool changed=false,first=true; int mask=0,hidden=0; var bounds=new Bounds(Vector3.zero,Vector3.zero);
+        for(int i=0;i<bases.Length;i++)
+        {
+            var pose=new Matrix4x4(); for(int r=0;r<4;r++) for(int c=0;c<4;c++) { double value=frame.poses[i*16+r*4+c]; if(double.IsNaN(value)||double.IsInfinity(value)||value>float.MaxValue||value < -float.MaxValue||(value!=0&&(float)value==0)) throw new InvalidDataException("Replay pose is not representable."); pose[r,c]=(float)value; }
+            var m=root*pose; Check(m); if(m.m30!=0||m.m31!=0||m.m32!=0||m.m33!=1||!Finite(m.determinant)||m.determinant==0) throw new InvalidDataException("Replay pose is not invertible affine."); nextBases[i]=m; m.m03+=lastAnchor.x; m.m13+=lastAnchor.y; m.m23+=lastAnchor.z; Check(m); nextMatrices[i]=m;
+            changed|=visible[i]!=visibility[i]; if(!visible[i]) { hidden++; continue; } var d=Manifest.draws[i]; mask|=1<<d.layer; var b=meshes[d.meshIndex].bounds;
+            for(int c=0;c<8;c++) { Vector3 p=nextBases[i].MultiplyPoint3x4(b.center+Vector3.Scale(b.extents,new Vector3((c&1)==0?-1:1,(c&2)==0?-1:1,(c&4)==0?-1:1))); Check(p); if(first) { bounds=new Bounds(p,Vector3.zero); first=false; } else bounds.Encapsulate(p); }
+        }
+        Check(bounds.center); Check(bounds.extents); var publishedBounds=bounds; publishedBounds.center+=lastAnchor; Check(publishedBounds.center);
+        var groups=changed?ReplayPackets(nextMatrices,visible):packets; var pixels=ReplayPixels(nextBases,groups); CommandBuffer nextCommands=null; int calls=0;
+        try
+        {
+            if(changed&&Retained(RenderMode)&&retainedColor!=null) nextCommands=PrepareCommands(materials,RenderMode,out calls,groups);
+            if(retainedState!=null)
+            {
+                try { retainedState.SetPixels(pixels); retainedState.Apply(false,false); }
+                catch { try { retainedState.SetPixels(retainedPixels); retainedState.Apply(false,false); } catch(Exception rollback) { ReplayGpuFaulted=true; throw new InvalidOperationException("Replay GPU rollback failed; renderer must stop.",rollback); } throw; }
+            }
+            if(changed) { ReplaceCommands(nextCommands,calls); nextCommands=null; }
+            bases=nextBases; matrices=nextMatrices; visibility=visible; packets=groups; foreach(var p in packets) for(int k=0;k<p.Sources.Length;k++) p.Matrices[k]=matrices[p.Sources[k]];
+            baseBounds=bounds; Bounds=publishedBounds; LayerMask=mask; NonvisibleDraws=hidden;
+            if(retainedState!=null) { retainedPixels=pixels; DynamicUploadCount++; DynamicUploadBytes+=(long)pixels.Length*16; }
+            ReplayFrameCount++; ReplayApplyTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-start;
+        }
+        finally { if(nextCommands!=null) nextCommands.Release(); }
+    }
     static bool Retained(string mode) { return mode=="retained-scalar"||mode=="retained-grouped"; }
     public void SetRenderMode(string mode)
     {
@@ -131,7 +184,7 @@ public sealed class WholeCraftRuntime : IDisposable
     void EnsureRetainedState()
     {
         if(retainedState!=null) return;
-        int rows=0; foreach(var p in packets) rows+=p.Sources.Length;
+        int rows=Manifest.draws.Length;
         if(rows<=0||rows>SystemInfo.maxTextureSize||SystemInfo.maxTextureSize<8||!SystemInfo.SupportsTextureFormat(TextureFormat.RGBAFloat)) throw new InvalidDataException("Bounded vertex state texture unavailable.");
         var pixels=new Color[rows*8]; int row=0;
         foreach(var p in packets) foreach(int source in p.Sources)
@@ -142,10 +195,10 @@ public sealed class WholeCraftRuntime : IDisposable
             pixels[row*8+7]=Color.HSVToRGB((Manifest.draws[source].materialIndex*.61803398875f)%1,.7f,.95f); row++;
         }
         Texture2D texture=null;
-        try { texture=new Texture2D(8,rows,TextureFormat.RGBAFloat,false,true) {filterMode=FilterMode.Point,wrapMode=TextureWrapMode.Clamp,anisoLevel=0}; texture.SetPixels(pixels); texture.Apply(false,true); retainedState=texture; retainedRows=rows; owned.Add(texture); StateUploadCount++; StateUploadBytes+=(long)rows*8*16; }
+        try { texture=new Texture2D(8,rows,TextureFormat.RGBAFloat,false,true) {filterMode=FilterMode.Point,wrapMode=TextureWrapMode.Clamp,anisoLevel=0}; texture.SetPixels(pixels); texture.Apply(false,false); retainedPixels=pixels; retainedState=texture; retainedRows=rows; owned.Add(texture); StateUploadCount++; StateUploadBytes+=(long)rows*8*16; }
         catch { if(texture!=null) UnityEngine.Object.Destroy(texture); throw; }
     }
-    CommandBuffer PrepareCommands(Material[] table,string mode,out int calls)
+    CommandBuffer PrepareCommands(Material[] table,string mode,out int calls,Packet[] candidates=null)
     {
         calls=0; var commands=new CommandBuffer {name="Retained whole diagnostic "+mode};
         try
@@ -155,7 +208,7 @@ public sealed class WholeCraftRuntime : IDisposable
             commands.SetViewport(new Rect(0,0,retainedColor.width,retainedColor.height));
             commands.ClearRenderTarget(true,true,Color.clear);
             var identity=new Matrix4x4[1023]; for(int i=0;i<identity.Length;i++) identity[i]=Matrix4x4.identity; int row=0;
-            foreach(var p in packets)
+            foreach(var p in candidates??packets)
             {
                 var material=table[Manifest.materials.Length+p.Recipe]; if(!material.HasProperty("_ContinuumRetainedContract")||material.GetFloat("_ContinuumRetainedContract")!=2) throw new InvalidDataException("Retained explicit-view shader contract absent.");
                 int stride=mode=="retained-grouped"?p.Sources.Length:1;
@@ -227,6 +280,7 @@ public sealed class WholeCraftRuntime : IDisposable
     }
     public void Submit(Camera camera)
     {
+        if(ReplayGpuFaulted) throw new InvalidOperationException("Replay GPU recovery failed; no further draw permitted.");
         if(disposed||lastFrame==Time.frameCount) return; lastFrame=Time.frameCount; long start=System.Diagnostics.Stopwatch.GetTimestamp(); LastSubmissionCalls=0;
         if(Retained(RenderMode))
         {
@@ -236,7 +290,7 @@ public sealed class WholeCraftRuntime : IDisposable
             LastSubmissionCalls=retainedCalls;
         }
         else if(RenderMode=="grouped") foreach(var packet in packets) { Graphics.DrawMeshInstanced(meshes[packet.Mesh],packet.Submesh,materials[Manifest.materials.Length+packet.Recipe],packet.Matrices,packet.Matrices.Length,packet.Block,ShadowCastingMode.On,false,packet.Layer,camera,LightProbeUsage.Off,null); LastSubmissionCalls++; }
-        else for(int i=0;i<Manifest.draws.Length;i++) { var a=Manifest.draws[i]; if(!a.enabled||!a.active||a.forceRenderingOff) continue; Graphics.DrawMesh(meshes[a.meshIndex],matrices[i],materials[a.materialIndex],a.layer,camera,a.submeshIndex,referenceColors[i],ShadowCastingMode.On,false,null,LightProbeUsage.Off,null); LastSubmissionCalls++; }
+        else for(int i=0;i<Manifest.draws.Length;i++) { var a=Manifest.draws[i]; if(!visibility[i]) continue; Graphics.DrawMesh(meshes[a.meshIndex],matrices[i],materials[a.materialIndex],a.layer,camera,a.submeshIndex,referenceColors[i],ShadowCastingMode.On,false,null,LightProbeUsage.Off,null); LastSubmissionCalls++; }
         DrawCalls+=LastSubmissionCalls; SubmissionTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-start; SubmittedFrames++;
     }
     public void Dispose() { if(disposed) return; disposed=true; ReplaceCommands(null,0); foreach(var o in owned) if(o!=null) UnityEngine.Object.Destroy(o); }
