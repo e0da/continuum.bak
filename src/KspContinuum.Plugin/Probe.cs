@@ -131,7 +131,7 @@ namespace KspContinuum
                 }
                 if (Array.IndexOf(arguments, "--continuum-callback-attribution") >= 0)
                 {
-                    callbackAttribution = new FixedCallbackAttribution(); callbackAttribution.Start();
+                    callbackAttribution = new FixedCallbackAttribution(convectionReplacement); callbackAttribution.Start();
                     report.callbackAttribution = callbackAttribution.Report;
                 }
                 if (Array.IndexOf(arguments, "--continuum-flight-integrator-update-attribution") >= 0)
@@ -346,6 +346,15 @@ namespace KspContinuum
             if (finished) return;
             finished = true;
             var errors = new List<string>();
+            if (callbackAttribution != null)
+            {
+                try { callbackAttribution.Dispose(); }
+                catch (Exception error) { errors.Add("CallbackAttribution: " + error.GetType().Name); }
+                if (callbackAttribution.Report.cleanupStatus == "cleanup-error") errors.Add("CallbackAttribution: cleanup-error");
+                if (convectionReplacement != null && callbackAttribution.Report.status != "observed")
+                    errors.Add("CallbackAttribution: candidate coexistence " + callbackAttribution.Report.status);
+                callbackAttribution = null;
+            }
             if (convectionReplacement != null)
             {
                 try
@@ -382,13 +391,6 @@ namespace KspContinuum
                 try { writerCensus.Dispose(); }
                 catch (Exception error) { errors.Add("WriterCensus: " + error.GetType().Name); }
                 writerCensus = null;
-            }
-            if (callbackAttribution != null)
-            {
-                try { callbackAttribution.Dispose(); }
-                catch (Exception error) { errors.Add("CallbackAttribution: " + error.GetType().Name); }
-                if (callbackAttribution.Report.cleanupStatus == "cleanup-error") errors.Add("CallbackAttribution: cleanup-error");
-                callbackAttribution = null;
             }
             if (integratorUpdateAttribution != null)
             {

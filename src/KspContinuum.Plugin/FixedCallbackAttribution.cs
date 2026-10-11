@@ -16,8 +16,12 @@ namespace KspContinuum
     internal sealed class FixedCallbackAttribution : IDisposable, IPlayerLoopBracketObserver
     {
         const string Owner = "continuum.fixed-callback-attribution";
+        const string ConvectionOwner = "continuum.convection-sparse-replacement";
         const int MaximumTargets = 4096;
         static readonly Guid StockMvid = new Guid("10657063-2fc3-43a7-84fa-d39e75e877bf");
+        static readonly MethodInfo ConvectionPrefix = AccessTools.DeclaredMethod(typeof(ConvectionReplacement), "Prefix");
+        static readonly MethodInfo ConvectionHook = AccessTools.DeclaredMethod(typeof(ConvectionReplacement), "Hook");
+        static readonly MethodInfo ConvectionFinalizer = AccessTools.DeclaredMethod(typeof(ConvectionReplacement), "Finalizer");
         static readonly string[] StockProviderMethods = { "ThermoPrecalculate", "Integrate", "UpdateThermodynamics",
             "UpdateOcclusion", "UpdateOcclusionConvection", "UpdateOcclusionSolar", "UpdateOcclusionBody",
             "UpdateAerodynamics", "UpdateConvection" };
@@ -25,6 +29,8 @@ namespace KspContinuum
         readonly Harmony harmony = new Harmony(Owner);
         readonly Dictionary<MethodBase, int> slots = new Dictionary<MethodBase, int>();
         readonly CallbackAttributionAccumulator accumulator = new CallbackAttributionAccumulator(Stopwatch.Frequency);
+        readonly ConvectionReplacement convectionReplacement;
+        readonly MethodInfo omittedConvection;
         int[] depths;
         long windowStart, activeWindowTicks;
         int activeThreadId;
@@ -34,10 +40,51 @@ namespace KspContinuum
         public struct CallState { public long Started; public int Slot; public bool Outermost; }
         public CallbackAttributionReport Report { get; private set; }
 
-        public FixedCallbackAttribution()
+        public FixedCallbackAttribution(ConvectionReplacement convectionReplacement = null)
         {
+            this.convectionReplacement = convectionReplacement;
             Report = new CallbackAttributionReport { clockFrequency = Stopwatch.Frequency };
             Report.timerReadFloorTicks = MeasureFloor();
+            if (convectionReplacement != null)
+            {
+                StartupPinnedGameIdentity.Require(typeof(FlightIntegrator).Assembly);
+                omittedConvection = AccessTools.DeclaredMethod(typeof(FlightIntegrator), "UpdateOcclusionConvection", Type.EmptyTypes);
+                if (convectionReplacement.Report.mode != "query" || omittedConvection == null || omittedConvection.DeclaringType != typeof(FlightIntegrator) ||
+                    omittedConvection.Module != typeof(FlightIntegrator).Module || omittedConvection.Module.ModuleVersionId != StockMvid ||
+                    omittedConvection.MetadataToken != 100677506 || omittedConvection.IsStatic || omittedConvection.ReturnType != typeof(void) ||
+                    omittedConvection.GetMethodBody() == null || ConvectionSparseKernel.Hash(omittedConvection.GetMethodBody().GetILAsByteArray()) != convectionReplacement.Report.integratorIlSha256)
+                    throw new InvalidOperationException("Only the pinned installed query convection replacement can coexist with fixed attribution.");
+                Report.omissionPatchOwner = ConvectionOwner;
+                Report.omissionReason = "Pinned FlightIntegrator.UpdateOcclusionConvection is owned by the query replacement. Broad timing hooks are omitted to preserve exclusive candidate seam admission. All instances of this declared body, including other vessels and stock fallback, have no row timing coverage; inclusive parent costs still contain that work and observer tax.";
+                CallbackAttributionRow row = Row(omittedConvection); row.category = "candidate-owned-omission";
+                row.ilSha256 = convectionReplacement.Report.integratorIlSha256; Report.omissions = new[] { row };
+                Report.omittedMethods = 1;
+                if (!ValidateConvectionOwnership()) throw new InvalidOperationException(Report.detail);
+            }
+        }
+
+        bool ValidateConvectionOwnership()
+        {
+            if (omittedConvection == null) return true;
+            try
+            {
+                Patches graph = Harmony.GetPatchInfo(omittedConvection);
+                if (convectionReplacement.Report.status != "installed" || !convectionReplacement.Report.hookShapeVerified ||
+                    graph == null || graph.Owners.Count() != 1 || !graph.Owners.Contains(ConvectionOwner) || graph.Prefixes.Count != 1 ||
+                    graph.Postfixes.Count != 0 || graph.Transpilers.Count != 1 || graph.Finalizers.Count != 1 ||
+                    !Owned(graph.Prefixes[0], ConvectionPrefix) || !Owned(graph.Transpilers[0], ConvectionHook) || !Owned(graph.Finalizers[0], ConvectionFinalizer))
+                    throw new InvalidOperationException("Pinned convection omission lost its exact installed query hook ownership.");
+                Report.omissionOwnershipStatus = Report.omissionOwnershipErrors == 0 ? "installed-validated" : "invalid"; return true;
+            }
+            catch (Exception error)
+            {
+                Report.omissionOwnershipErrors++; Report.omissionOwnershipStatus = "invalid";
+                Report.detail = error.GetType().Name + ": " + error.Message; return false;
+            }
+        }
+        static bool Owned(Patch patch, MethodInfo callback)
+        {
+            return callback != null && patch.owner == ConvectionOwner && Equals(patch.PatchMethod, callback);
         }
 
         public void Start()
@@ -46,6 +93,7 @@ namespace KspContinuum
             activeOwner = this;
             try
             {
+                if (!ValidateConvectionOwnership()) throw new InvalidOperationException(Report.detail);
                 feedInput = new FeedInputAttribution(() => installed && activeWindow && Thread.CurrentThread.ManagedThreadId == activeThreadId);
                 Report.feedInput = feedInput.Report;
                 feedInput.Start();
@@ -62,6 +110,7 @@ namespace KspContinuum
                         new HarmonyMethod(finalizer) { priority = Priority.Last });
                     Report.patchedMethods++;
                 }
+                if (!ValidateConvectionOwnership()) throw new InvalidOperationException(Report.detail);
                 if (Report.patchedMethods == 0) throw new InvalidOperationException("No patchable managed FixedUpdate callbacks were found.");
                 depths = new int[Report.patchedMethods];
                 installed = true; Report.status = "installed"; Report.cleanupStatus = "installed";
@@ -76,6 +125,7 @@ namespace KspContinuum
         IEnumerable<MethodInfo> Discover()
         {
             var result = new List<MethodInfo>();
+            bool foundOmission = false;
             HashSet<MethodInfo> boundedProviders = PinnedProviders();
             foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies().OrderBy(item => item.FullName, StringComparer.Ordinal))
             {
@@ -100,15 +150,21 @@ namespace KspContinuum
                             boundedProviders.Contains(method);
                         if ((!fixedCallback && !stockProvider) || method.IsAbstract || method.IsGenericMethodDefinition ||
                             method.ContainsGenericParameters || method.GetMethodBody() == null) continue;
+                        if (Equals(method, omittedConvection))
+                        {
+                            if (foundOmission) throw new InvalidOperationException("Duplicate pinned convection omission.");
+                            foundOmission = true; continue;
+                        }
                         result.Add(method);
-                        if (result.Count > MaximumTargets) throw new InvalidOperationException("FixedUpdate target bound exceeded.");
+                        if (result.Count + Report.omittedMethods > MaximumTargets) throw new InvalidOperationException("FixedUpdate target bound exceeded.");
                     }
                 }
             }
             foreach (MethodInfo provider in boundedProviders)
                 if (!result.Contains(provider)) throw new InvalidOperationException("Pinned stock attribution seam was not discovered: " + provider.DeclaringType.FullName + "." + provider.Name);
             result.Sort((left, right) => string.CompareOrdinal(Identity(left), Identity(right)));
-            Report.discoveredMethods = result.Count;
+            if (omittedConvection != null && !foundOmission) throw new InvalidOperationException("Pinned convection omission was not discovered.");
+            Report.discoveredMethods = result.Count + Report.omittedMethods;
             return result;
         }
 
@@ -156,6 +212,7 @@ namespace KspContinuum
         {
             if (!installed || scope != typeof(FixedLoop.ScriptRunBehaviourFixedUpdate).FullName) return;
             if (activeWindow) { Report.callbackErrors++; return; }
+            if (ValidateConvectionOwnership() && omittedConvection != null) Report.omissionOwnershipWindows++;
             activeWindow = true; activeThreadId = Thread.CurrentThread.ManagedThreadId; windowStart = Stopwatch.GetTimestamp();
         }
         public void After(string scope, int frame, double time)
@@ -164,6 +221,7 @@ namespace KspContinuum
             if (!activeWindow) { Report.callbackErrors++; return; }
             long end = Stopwatch.GetTimestamp(); activeWindow = false;
             if (end < windowStart) Report.callbackErrors++; else activeWindowTicks += end - windowStart;
+            ValidateConvectionOwnership();
         }
         public void Fault(string scope, Exception error) { if (scope == typeof(FixedLoop.ScriptRunBehaviourFixedUpdate).FullName) Report.callbackErrors++; }
 
@@ -218,13 +276,18 @@ namespace KspContinuum
         {
             if (disposed) return; disposed = true;
             if (activeWindow) { activeWindow = false; Report.callbackErrors++; }
+            bool ownershipValid = ValidateConvectionOwnership();
             Remove();
             Report.activeWindowTicks = activeWindowTicks;
             Report.callbacks = accumulator.Finish(activeWindowTicks);
             if (Report.status != "unavailable") Report.status = Report.cleanupStatus == "removed-owned-patches" &&
-                Report.callbackErrors == 0 && Report.scanErrors == 0 && Report.patchedMethods == Report.discoveredMethods &&
+                Report.callbackErrors == 0 && Report.scanErrors == 0 && Report.omissionOwnershipErrors == 0 && ownershipValid &&
+                (Report.omittedMethods == 0 || Report.omissionOwnershipWindows > 0) && Report.omittedMethods == Report.omissions.Length &&
+                Report.patchedMethods + Report.omittedMethods == Report.discoveredMethods &&
                 Report.callbacks.Length > 0 && Report.feedInput != null && Report.feedInput.status == "observed" &&
                 Report.mechJebDrive != null && (Report.mechJebDrive.status == "observed" || Report.mechJebDrive.status == "not-present") ? "observed" : "invalid";
+            if (omittedConvection != null && ownershipValid && Report.omissionOwnershipErrors == 0)
+                Report.omissionOwnershipStatus = "observed-unchanged";
         }
     }
 

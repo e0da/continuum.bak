@@ -290,9 +290,9 @@ impl ResolvedLaunch {
             if !["query", "verify"].contains(&mode.as_str()) || !f.atmosphere || f.warp != 1
                 || self.diagnostics.checkpoint_reload || self.diagnostics.docking.is_some()
                 || self.diagnostics.convection_capture.is_some() || self.diagnostics.integrator_update_attribution
-                || f.callback_attribution || self.live_play
+                || (mode == "verify" && f.callback_attribution) || self.live_play
             {
-                return Err("convection replacement requires query or verify, exclusive normal-time atmospheric flight".into());
+                return Err("convection replacement requires query or verify in normal-time atmospheric flight; only query admits broad fixed callback attribution".into());
             }
         }
         if let Some(docking) = &self.diagnostics.docking {
@@ -571,6 +571,25 @@ const FLIGHT_KEYS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn query_allows_fixed_attribution_but_verify_and_narrow_observers_stay_exclusive() {
+        let mut input = options(&[
+            ("--flight-save", "lab"), ("--flight-checkpoint", "checkpoint"),
+            ("--flight-expected-parts", "512"), ("--flight-atmosphere", "true"),
+            ("--flight-convection-replacement", "query"), ("--flight-callback-attribution", "true"),
+        ]);
+        let launch = ResolvedLaunch::parse(&input).unwrap();
+        assert!(launch.flight.as_ref().unwrap().callback_attribution);
+        assert_eq!(launch.diagnostics.convection_replacement.as_deref(), Some("query"));
+        let replay = ResolvedLaunch::parse_from_json(&launch.identity_json().unwrap()).unwrap();
+        assert!(replay.flight.as_ref().unwrap().callback_attribution);
+        assert_eq!(replay.diagnostics.convection_replacement.as_deref(), Some("query"));
+        input.insert("--flight-convection-replacement".into(), "verify".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input.insert("--flight-convection-replacement".into(), "query".into());
+        input.insert("--flight-integrator-update-attribution".into(), "true".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+    }
     #[test]
     fn replacement_and_reload_admit_only_their_owned_flight_boundary() {
         let mut input = BTreeMap::from([

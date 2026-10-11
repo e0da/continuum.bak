@@ -8,9 +8,13 @@ namespace KspContinuum
         public string schema = "ksp-continuum-fixed-callback-attribution/v1";
         public string status = "not-started", cleanupStatus = "not-installed", detail;
         public string measurementScope = "Inclusive elapsed wall time for patched managed MonoBehaviour FixedUpdate methods while Unity's ScriptRunBehaviourFixedUpdate subtree is active. Rows can overlap when callbacks invoke one another and must not be summed blindly.";
-        public string coverageScope = "Loaded, non-dynamic assemblies referencing Unity and patchable zero-argument instance void FixedUpdate methods declared by MonoBehaviour types.";
+        public string coverageScope = "Loaded, non-dynamic assemblies referencing Unity: patchable zero-argument instance void FixedUpdate methods declared by MonoBehaviour types and the selected stock provider seams. Explicit candidate-owned omissions have no timing coverage; parent rows still include their work. Discovered methods equal patched plus explicitly omitted methods.";
+        public string observerOverheadStatus = "unqualified-intrusive-observer";
+        public string omissionReason, omissionPatchOwner, omissionOwnershipStatus = "not-requested";
         public long clockFrequency, timerReadFloorTicks, activeWindowTicks;
-        public int discoveredMethods, patchedMethods, scanErrors, callbackErrors;
+        public long omissionOwnershipWindows;
+        public int discoveredMethods, patchedMethods, omittedMethods, omissionOwnershipErrors, scanErrors, callbackErrors;
+        public CallbackAttributionRow[] omissions = new CallbackAttributionRow[0];
         public CallbackAttributionRow[] callbacks;
         public FeedInputAttributionReport feedInput;
         public MechJebDriveAttributionReport mechJebDrive;
