@@ -26,6 +26,7 @@ namespace KspContinuum
         long windowStart, activeWindowTicks;
         int activeThreadId;
         bool activeWindow, installed, disposed;
+        FeedInputAttribution feedInput;
         public struct CallState { public long Started; public int Slot; public bool Outermost; }
         public CallbackAttributionReport Report { get; private set; }
 
@@ -41,6 +42,9 @@ namespace KspContinuum
             activeOwner = this;
             try
             {
+                feedInput = new FeedInputAttribution(() => installed && activeWindow && Thread.CurrentThread.ManagedThreadId == activeThreadId);
+                Report.feedInput = feedInput.Report;
+                feedInput.Start();
                 MethodInfo prefix = AccessTools.DeclaredMethod(typeof(FixedCallbackAttribution), "Prefix");
                 MethodInfo finalizer = AccessTools.DeclaredMethod(typeof(FixedCallbackAttribution), "Finalizer");
                 foreach (MethodInfo target in Discover())
@@ -190,6 +194,7 @@ namespace KspContinuum
 
         void Remove()
         {
+            if (feedInput != null) feedInput.Dispose();
             try
             {
                 harmony.UnpatchAll(Owner);
@@ -210,7 +215,7 @@ namespace KspContinuum
             Report.callbacks = accumulator.Finish(activeWindowTicks);
             if (Report.status != "unavailable") Report.status = Report.cleanupStatus == "removed-owned-patches" &&
                 Report.callbackErrors == 0 && Report.scanErrors == 0 && Report.patchedMethods == Report.discoveredMethods &&
-                Report.callbacks.Length > 0 ? "observed" : "invalid";
+                Report.callbacks.Length > 0 && Report.feedInput != null && Report.feedInput.status == "observed" ? "observed" : "invalid";
         }
     }
 }

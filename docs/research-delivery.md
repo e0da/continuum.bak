@@ -121,3 +121,9 @@ Keep proprietary source/assets/saves/distributions and detailed receipts in priv
 - [Strangler fig](https://martinfowler.com/bliki/StranglerFigApplication.html): incremental boundary replacement, alongside whole-game migration.
 - [REA](https://github.com/morluto/rea) and its [reconstruction obligations](https://github.com/morluto/rea/blob/main/docs/reconstruction-obligation-ledgers.md): traceable evidence and explicit unknowns; no MCP dependency.
 - [Unity architecture API](https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Build.OSArchitecture.html): verify architecture support against the actual pinned editor before build qualification.
+
+## Heavy-flight input ownership
+
+The capacity fixture supports 512 parts by extending four physical girder booms. This stresses long structural chains and does not represent all 512-part module distributions. Stock physics warp changes integration timestep; requested simulation rate and visible frame rate remain separate observations.
+
+The opt-in callback diagnostic also records the four original `Vessel.FeedInputFeed` multicast chains and their ordered registered subscribers before capture and at disposal. Each original multicast executes once; target/method identities, assembly digests and subscriber drift are explicit. Handler timing is limited to registered methods and targets inside the corresponding active-vessel chain. Zero-call registered handlers remain coverage gaps. Nested handler, chain and enclosing fixed-step scopes overlap and cannot be summed as exclusive CPU. Cold inventory/hashing stays outside the hot path. A new subscriber attribution run answers ownership absent from earlier enclosing timers; it is not another clean FPS comparison.

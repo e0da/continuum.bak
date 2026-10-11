@@ -100,10 +100,14 @@ internal static class Program
         var options = new Dictionary<string, string>(StringComparer.Ordinal);
         if (args.Length % 2 != 0) throw new ArgumentException("Expected named option/value pairs.");
         for (int i = 0; i < args.Length; i += 2) if (!options.TryAdd(args[i], args[i + 1])) throw new ArgumentException("Duplicate option.");
-        string[] allowed = ["--source", "--expected-sha", "--game-data", "--output", "--report", "--title"];
+        string[] allowed = ["--source", "--expected-sha", "--game-data", "--output", "--report", "--title", "--parts"];
         if (options.Keys.Any(k => !allowed.Contains(k))) throw new ArgumentException("Unknown option.");
         string source = Absolute(options["--source"]), gameData = Absolute(options["--game-data"]), output = Absolute(options["--output"]), reportPath = Absolute(options["--report"]);
-        string title = options.GetValueOrDefault("--title", "Continuum Capacity 256");
+        string requestedParts = options.GetValueOrDefault("--parts", "256");
+        int targetParts = requestedParts == "256" ? 256 : requestedParts == "512" ? 512 : throw new ArgumentException("--parts must be 256 or 512.");
+        int addedParts = targetParts - 196, perArm = addedParts / Docks.Length;
+        if (addedParts % Docks.Length != 0) throw new InvalidDataException("Unequal boom recipe.");
+        string title = options.GetValueOrDefault("--title", "Continuum Capacity " + targetParts);
         if (title.Contains('\r') || title.Contains('\n') || title.Contains("//", StringComparison.Ordinal) || title.Length == 0) throw new ArgumentException("Single-line title required.");
         if (output == source || output == reportPath || File.Exists(output) || Directory.Exists(output) || File.Exists(reportPath) || Directory.Exists(reportPath)) throw new InvalidOperationException("New distinct output and report paths required.");
         byte[] originalBytes = File.ReadAllBytes(source); string sourceSha = HashBytes(originalBytes);
@@ -126,10 +130,10 @@ internal static class Program
             Node docking = parent.Children.Single(n => n.Name == "MODULE" && n.Text("name") == "ModuleDockingNode");
             if (docking.Text("state") != "Ready" || uint.Parse(docking.Text("dockUId"), Invariant) != 0) throw new InvalidDataException("Dock retains linked state/ownership; no unlinking permitted.");
             Value top = parent.Values.Single(v => v.Key == "attN" && v.Text.Split(',')[0].Trim() == "top"); if (top.Text.Split(',')[1].Trim() != "-1") throw new InvalidDataException("Dock top already occupied.");
-            int first = 196 + arm * 15; edits.Add(new Edit(top.Line, top.Line + 1, Replacement(lines[top.Line], "top, " + first)));
+            int first = 196 + arm * perArm; edits.Add(new Edit(top.Line, top.Line + 1, Replacement(lines[top.Line], "top, " + first)));
             Vector3 dockPosition = Vector(parent.Text("position")); Quaternion rotation = Rotation(parent.Text("rotation"));
-            recipes.Add(new { dockIndex = parentIndex, firstIndex = first, count = 15, dockPosition = parent.Text("position"), rotation = parent.Text("rotation") });
-            for (int j = 0; j < 15; j++)
+            recipes.Add(new { dockIndex = parentIndex, firstIndex = first, count = perArm, dockPosition = parent.Text("position"), rotation = parent.Text("rotation") });
+            for (int j = 0; j < perArm; j++)
             {
                 while (used.Contains(nextUid)) { if (nextUid == uint.MaxValue) throw new InvalidOperationException("UID space exhausted."); nextUid++; }
                 uint uid = nextUid; used.Add(uid); int index = first + j, previous = j == 0 ? parentIndex : index - 1;
@@ -142,7 +146,7 @@ internal static class Program
                     if (value.Key == "attN")
                     {
                         string node = value.Text.Split(',')[0].Trim(); if (node == "bottom") { bottomCount++; clones.Append(Replacement(lines[line], "bottom, " + previous)); }
-                        else if (node == "top") { topCount++; clones.Append(Replacement(lines[line], "top, " + (j == 14 ? -1 : index + 1))); }
+                        else if (node == "top") { topCount++; clones.Append(Replacement(lines[line], "top, " + (j == perArm - 1 ? -1 : index + 1))); }
                         else throw new InvalidDataException("Unexpected donor attach node.");
                     }
                     else clones.Append(changes.TryGetValue(value.Key, out string? changed) ? Replacement(lines[line], changed) : lines[line]);
@@ -156,9 +160,9 @@ internal static class Program
         foreach (Edit edit in edits.OrderBy(e => e.Start)) { if (edit.Start < cursor) throw new InvalidDataException("Overlapping edits."); for (; cursor < edit.Start; cursor++) result.Append(lines[cursor]); result.Append(edit.Text); cursor = edit.End; }
         for (; cursor < lines.Length; cursor++) result.Append(lines[cursor]);
         string generated = result.ToString(); Node outputGame = Parse(Lines(generated)).Single(n => n.Name == "GAME"); Node outputVessel = Descendants(outputGame).Single(n => n.Name == "VESSEL" && n.Text("pid") == vessel.Text("pid"));
-        Node[] outputParts = outputVessel.Children.Where(n => n.Name == "PART").ToArray(); if (outputParts.Length != 256) throw new InvalidDataException("Output station count differs.");
+        Node[] outputParts = outputVessel.Children.Where(n => n.Name == "PART").ToArray(); if (outputParts.Length != targetParts) throw new InvalidDataException("Output station count differs.");
         uint[] outputIds = Descendants(outputGame).Where(n => n.Name == "PART").Select(n => uint.Parse(n.Text("uid"), Invariant)).ToArray();
-        if (outputIds.Length != originalPartCount + 60 || outputIds.Distinct().Count() != outputIds.Length) throw new InvalidDataException("Output full-save UID/count proof failed.");
+        if (outputIds.Length != originalPartCount + addedParts || outputIds.Distinct().Count() != outputIds.Length) throw new InvalidDataException("Output full-save UID/count proof failed.");
         string[] outputLines = Lines(generated);
         for (int i = 0; i < 196; i++)
         {
@@ -167,7 +171,7 @@ internal static class Program
             if (arm >= 0)
             {
                 Value top = parts[i].Values.Single(v => v.Key == "attN" && v.Text.Split(',')[0].Trim() == "top");
-                expected[top.Line - parts[i].Start] = Replacement(lines[top.Line], "top, " + (196 + arm * 15));
+                expected[top.Line - parts[i].Start] = Replacement(lines[top.Line], "top, " + (196 + arm * perArm));
             }
             if (string.Concat(expected) != string.Concat(outputLines[outputParts[i].Start..(outputParts[i].End + 1)])) throw new InvalidDataException("Original station part block drifted.");
         }
@@ -178,10 +182,13 @@ internal static class Program
             if (string.Concat(lines[other.Start..(other.End + 1)]) != string.Concat(outputLines[actual.Start..(actual.End + 1)])) throw new InvalidDataException("Other vessel block drifted.");
         }
         double maxNodeError = 0;
-        for (int i = 196; i < 256; i++)
+        for (int i = 196; i < targetParts; i++)
         {
             Node child = outputParts[i]; int parentIndex = int.Parse(child.Text("parent"), Invariant); Node parent = outputParts[parentIndex];
-            if (parentIndex != ((i - 196) % 15 == 0 ? Docks[(i - 196) / 15] : i - 1)) throw new InvalidDataException("Added parent recipe mismatch.");
+            if (parentIndex != ((i - 196) % perArm == 0 ? Docks[(i - 196) / perArm] : i - 1)) throw new InvalidDataException("Added parent recipe mismatch.");
+            if (child.Text("name") != girder.Part || Number(child.Text("mass")) != girder.Mass || child.Text("autostrutMode") != "Off" || child.Text("rigidAttachment") != "False") throw new InvalidDataException("Generated physical part recipe mismatch.");
+            int expectedTop = (i - 196) % perArm == perArm - 1 ? -1 : i + 1;
+            if (!child.Values.Any(v => v.Key == "attN" && v.Text == "top, " + expectedTop)) throw new InvalidDataException("Generated terminal/forward link mismatch.");
             if (!child.Values.Any(v => v.Key == "attN" && v.Text == "bottom, " + parentIndex) || !parent.Values.Any(v => v.Key == "attN" && v.Text == "top, " + i)) throw new InvalidDataException("Reciprocal stack reference mismatch.");
             double parentTop = parentIndex < 196 ? dock.Top : girder.Top;
             Vector3 a = Vector(parent.Text("position")) + Vector3.Transform(Vector3.UnitY * (float)parentTop, Rotation(parent.Text("rotation")));
@@ -190,7 +197,7 @@ internal static class Program
         }
         if (Hash(source) != sourceSha || Hash(dock.Path) != dock.Sha256 || Hash(girder.Path) != girder.Sha256) throw new InvalidDataException("Inputs changed during preparation.");
         byte[] outputBytes = Encoding.UTF8.GetBytes(generated);
-        var receipt = new { schema = "continuum-flight-fixture/v1", status = "generated-node-alignment-verified", source, sourceSha256 = sourceSha, output, outputSha256 = HashBytes(outputBytes), title, vesselId = vessel.Text("pid"), originalStationParts = 196, stationParts = 256, addedParts = 60, originalSaveParts = originalPartCount, outputSaveParts = outputIds.Length, preservedOriginalStationPartBlocks = 192, changedOnlyTopReferencePartBlocks = 4, preservedOtherVesselBlocks = vessels.Length - 1, addedMassTonnes = 60 * girder.Mass, spacing, nodeToleranceMeters = Tolerance, maxNodeErrorMeters = maxNodeError, dock, girder, recipes, additions, scope = "Ordered source blocks preserved except GAME.Title and four free dock top references; adds stock physical girders. Node alignment is not a collider/self-contact, load, rigidbody, joint, behavior or warp qualification." };
+        var receipt = new { schema = "continuum-flight-fixture/v1", status = "generated-node-alignment-verified", source, sourceSha256 = sourceSha, output, outputSha256 = HashBytes(outputBytes), title, vesselId = vessel.Text("pid"), originalStationParts = 196, stationParts = targetParts, addedParts, partsPerBoom = perArm, originalSaveParts = originalPartCount, outputSaveParts = outputIds.Length, preservedOriginalStationPartBlocks = 192, changedOnlyTopReferencePartBlocks = 4, preservedOtherVesselBlocks = vessels.Length - 1, addedMassTonnes = addedParts * girder.Mass, spacing, nodeToleranceMeters = Tolerance, maxNodeErrorMeters = maxNodeError, dock, girder, recipes, additions, scope = "Ordered source blocks preserved except GAME.Title and four free dock top references; adds stock physical girders. Node alignment is not a collider/self-contact, load, rigidbody, joint, behavior or warp qualification." };
         string receiptJson = JsonSerializer.Serialize(receipt, new JsonSerializerOptions { WriteIndented = true });
         Directory.CreateDirectory(Path.GetDirectoryName(output)!); Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
         using (var file = new FileStream(output, FileMode.CreateNew, FileAccess.Write)) file.Write(outputBytes);

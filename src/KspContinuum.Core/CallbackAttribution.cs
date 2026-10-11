@@ -12,6 +12,29 @@ namespace KspContinuum
         public long clockFrequency, timerReadFloorTicks, activeWindowTicks;
         public int discoveredMethods, patchedMethods, scanErrors, callbackErrors;
         public CallbackAttributionRow[] callbacks;
+        public FeedInputAttributionReport feedInput;
+    }
+
+    [Serializable] public sealed class FeedInputAttributionReport
+    {
+        public string status = "not-started", vesselId, seamIdentity, cleanupStatus, patchOwner;
+        public string coverage = "Four pinned original multicast callsites of the captured active vessel; ordered subscribers captured before instrumentation and at disposal. Handler timing requires registered method and exact registered target identity in that chain; static targets are null. Unobserved registered methods retain explicit zero rows and are not execution evidence. Other vessels and calls outside the fixed subtree are excluded. Per-target costs are not separated when registered targets share a method.";
+        public string scope = "Observer-lifetime fixed-subtree inclusive multicast and registered-handler timings. Original multicast Invoke order and exceptions retained. Chain, handler, FeedInputFeed and FixedUpdate rows overlap; no exclusive CPU or exact Probe-window claim. Handler rows aggregate identical methods/targets within each chain.";
+        public long snapshotStartTicks, snapshotEndTicks;
+        public int driftErrors, contextErrors;
+        public InputDelegateChain[] chains;
+    }
+    [Serializable] public sealed class InputDelegateChain
+    {
+        public string name; public int calls, errors, registeredMethods, observedMethods, unobservedMethods; public long inclusiveTicks, maximumTicks;
+        public bool snapshotUnchanged;
+        public InputDelegateMember[] members, endMembers;
+        public CallbackAttributionRow[] handlers;
+    }
+    [Serializable] public sealed class InputDelegateMember
+    {
+        public int order, targetId, targetUnityId, metadataToken;
+        public string targetType, assembly, assemblyMvid, assemblySha256, declaringType, method, ilSha256;
     }
 
     [Serializable] public sealed class CallbackAttributionRow
@@ -63,7 +86,7 @@ namespace KspContinuum
             }
         }
 
-        public CallbackAttributionRow[] Finish(long activeWindowTicks)
+        public CallbackAttributionRow[] Finish(long activeWindowTicks, bool includeZeroCalls = false)
         {
             if (finished || activeWindowTicks < 0) throw new ArgumentException("Invalid callback attribution completion.");
             finished = true;
@@ -71,9 +94,9 @@ namespace KspContinuum
             foreach (Slot slot in slots)
             {
                 CallbackAttributionRow row = slot.Row;
-                if (row.calls == 0) continue;
+                if (row.calls == 0 && !includeZeroCalls) continue;
                 row.inclusiveMilliseconds = row.inclusiveTicks * (1000.0 / frequency);
-                row.meanMilliseconds = row.inclusiveMilliseconds / row.calls;
+                row.meanMilliseconds = row.calls == 0 ? 0 : row.inclusiveMilliseconds / row.calls;
                 row.maximumMilliseconds = row.maximumTicks * (1000.0 / frequency);
                 row.fractionOfActiveWindow = activeWindowTicks == 0 ? 0 : (double)row.inclusiveTicks / activeWindowTicks;
                 row.outermostInclusiveMilliseconds = row.outermostInclusiveTicks * (1000.0 / frequency);
