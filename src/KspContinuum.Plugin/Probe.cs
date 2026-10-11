@@ -28,7 +28,6 @@ namespace KspContinuum
         FixedCallbackAttribution callbackAttribution;
         FlightIntegratorUpdateAttribution integratorUpdateAttribution;
         ConvectionCapture convectionCapture;
-        ConvectionTanReuse convectionTanReuse;
         DryBuoyancyRuntime dryBuoyancy;
         VesselRuntimeCapture vesselRuntime;
         Action<ProbeReport> completion;
@@ -111,8 +110,6 @@ namespace KspContinuum
                 string[] arguments = Environment.GetCommandLineArgs();
                 convectionCapture = ConvectionCapture.Create(arguments, report.runId, () => captureActive);
                 if (convectionCapture != null) report.convectionCapture = convectionCapture.Report;
-                convectionTanReuse = ConvectionTanReuse.Create(arguments);
-                if (convectionTanReuse != null) report.convectionTanReuse = convectionTanReuse.Report;
                 string canaryReason;
                 bool canaryRequested = ActiveVesselPhysicsSubstitutionCanary.RequestedAndQualified(arguments, out canaryReason);
                 if (canaryRequested && canaryReason != null)
@@ -344,13 +341,6 @@ namespace KspContinuum
             if (finished) return;
             finished = true;
             var errors = new List<string>();
-            if (convectionTanReuse != null)
-            {
-                try { convectionTanReuse.Dispose(); }
-                catch (Exception error) { errors.Add("ConvectionTanReuse: " + error.GetType().Name); }
-                if (convectionTanReuse.Report.status != "complete-experimental") errors.Add("ConvectionTanReuse: " + convectionTanReuse.Report.status);
-                convectionTanReuse = null;
-            }
             if (convectionCapture != null)
             {
                 try { convectionCapture.Dispose(); }

@@ -55,7 +55,6 @@ fn run() -> Result<()> {
             "--project-sha256",
         ],
         "run" | "resolve" => &[
-            "--flight-convection-tan-reuse",
             "--flight-convection-capture",
             "--live-play",
             "--flight-integrator-update-attribution",
@@ -797,11 +796,6 @@ fn smoke(
         ])
         .arg(&log_path)
         .arg(format!("--continuum-research-run={run_id}"))
-        .args(if selection.diagnostics.convection_tan_reuse {
-            vec!["--continuum-convection-tan-reuse"]
-        } else {
-            vec![]
-        })
         .args(
             selection
                 .diagnostics

@@ -815,9 +815,6 @@ pub fn analyze(
         summary["convectionCapture"] = report["convectionCapture"].clone();
         summary["intrusiveDiagnosticsRequested"] = Value::Bool(true);
     }
-    if !report["convectionTanReuse"].is_null() {
-        summary["convectionTanReuse"] = report["convectionTanReuse"].clone();
-    }
     Ok(summary)
 }
 pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> {

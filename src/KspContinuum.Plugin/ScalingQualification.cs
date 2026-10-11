@@ -483,14 +483,6 @@ namespace KspContinuum
             { reason = "callback-attribution-invalid"; return false; }
             string integratorReason;
             if (!IntegratorAttributionComplete(report, out integratorReason)) { reason = integratorReason; return false; }
-            if (Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-convection-tan-reuse") >= 0)
-            {
-                var reuse = report.convectionTanReuse as ConvectionTanReuse.ReportData;
-                if (reuse == null || reuse.status != "complete-experimental" || reuse.cleanupStatus != "removed-owned-hooks" ||
-                    reuse.faults != 0 || reuse.originalExceptions != 0 || reuse.convectionCalls <= 0 || reuse.cacheHits <= 0 ||
-                    reuse.tangentRequests != reuse.cacheHits + reuse.cacheMisses)
-                { reason = "convection-tan-reuse-incomplete"; return false; }
-            }
             if (Array.Exists(Environment.GetCommandLineArgs(), arg => arg.StartsWith("--continuum-convection-capture=", StringComparison.Ordinal)))
             {
                 var capture = report.convectionCapture as ConvectionCapture.CaptureReport;
