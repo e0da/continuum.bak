@@ -4,7 +4,7 @@
 
 The driver waits for continuous physical readiness over the declared settling interval, admits one active physical vessel with normal time and inactive SAS/RCS/autopilot, and uses stock shutdown for any armed zero-throttle engines. Their actual part/module identity and ignition readbacks are recorded before the baseline. A nonzero throttle or another physical vessel fails admission.
 
-It captures a visible baseline, writes a unique checkpoint into the selected writable save folder with stock `SaveGame`, and deliberately changes root velocity by 0.25 m/s using stock `SetWorldVelocity`. It then follows stock quickload completion: fresh `LoadGame`, scenario update, post-load event and `StartAndFocusVessel`. A persistent coordinator releases the old camera/input lease before dispatch, reacquires the fresh physical vessel, and never reads the old live objects after reload.
+It captures a visible baseline, writes a unique checkpoint into the selected writable save folder with stock `SaveGame`, and deliberately changes root velocity by 0.25 m/s using stock `SetWorldVelocity`. The default coordinator follows the declared quickload completion sequence: fresh `LoadGame`, scenario update, post-load event and `StartAndFocusVessel`. `CONTINUUM_RELOAD_DRIVER=stock` instead invokes the actual pinned `QuickSaveLoad.quickLoad` producer, including its upgrade pipeline. A persistent coordinator releases the old camera/input lease before dispatch, reacquires the fresh physical vessel, and never reads the old live objects after reload.
 
 Stock `Game.Updated` selects the space-center start scene for this game mode. The driver follows stock quicksave by notifying `onGameAboutToQuicksave`, temporarily setting the serialized scene to `FLIGHT` and restoring the live scene value in a `finally` block. The loaded scene and whole-game partition are retained as independent readbacks.
 
@@ -25,6 +25,10 @@ The images show the portrait transition overlay and a changed stage delta-V disp
 Event coordinates provide lifecycle latency; this driver does not collect exclusive serialization cost or a flight FPS distribution. No unchanged roundtrip replay is needed before observing physical placement/center-of-mass reconstruction.
 
 ## Construction-order experiments
+
+The stock driver observes the actual producer's scenario update, post-load notification and dispatch, and admits the same produced `Game` before original flight dispatch. Mission-start persistence branches are unsupported. A requested physical witness waits for the first original `TrackRigidbody` input and complete output within the existing wall and simulation limits; physical readiness alone does not establish that transition. Stock pause state remains unchanged.
+
+The selected 256-part stock-produced quickload passed with the packed treatment: one original mass invocation, all 170 packed body publications, saved-epoch position error 0.000001718 m and velocity error 1.321e-9 m/s. Original physical tracking, fresh owners, crew, modules, fields, resources and whole-game membership passed unchanged gates, with owned hooks, camera and locks restored. An earlier attempt remains invalid because verification removed the observer before that first physical transition. This supports the selected actual stock pipeline; arbitrary mods, every entry point and ordinary enabled deployment remain unqualified.
 
 `CONTINUUM_RELOAD_PHYSICAL_WITNESS=1` records saved/live/canonical centers and the first original `OrbitDriver.TrackRigidbody` call. It preserves the original call and all numerical gates. Its geometry and timestamps diagnose ownership; they are not deterministic replay or performance qualification.
 
