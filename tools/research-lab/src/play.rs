@@ -76,22 +76,28 @@ fn mutable_paths(profile: &crate::profile::FrozenLaunch) -> Vec<std::path::PathB
 }
 
 pub fn immutable_unchanged(profile: &crate::profile::FrozenLaunch) -> bool {
-    let mutable = mutable_paths(profile);
-    profile
-        .inputs
-        .iter()
-        .filter(|(path, _)| !mutable.contains(path))
-        .all(|(path, expected)| hash(path).is_ok_and(|actual| actual == *expected))
+    profile.unchanged_except(&mutable_paths(profile))
 }
 
 pub fn mutable_readbacks(profile: &crate::profile::FrozenLaunch) -> Value {
     json!(mutable_paths(profile).iter().map(|path| json!({"path":path,"initialSha256":profile.inputs.get(path),"finalSha256":hash(path).ok(),"scope":"operator-writable; initial hashes remain frozen admission inputs for later launches"})).collect::<Vec<_>>())
 }
 
+fn session_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .and_then(|name| name.strip_prefix("live-"))
+        .is_some_and(|id| {
+            id.len() == 32
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+}
+
 pub fn ready(output: &Path, run_id: &str, pid: u32) -> Result<bool> {
     for entry in fs::read_dir(output).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
-        if !entry.file_name().to_string_lossy().starts_with("live-") {
+        if !session_name(&entry.file_name()) {
             continue;
         }
         let path = entry.path().join("ready.json");
@@ -100,6 +106,9 @@ pub fn ready(output: &Path, run_id: &str, pid: u32) -> Result<bool> {
         }
         let row: Value = read(&path)?;
         if row["schema"] == "continuum-flight-aero-live/v1"
+            && row["sessionId"]
+                .as_str()
+                .is_some_and(|id| entry.file_name().to_str() == Some(format!("live-{id}").as_str()))
             && row["runId"] == run_id
             && row["processId"].as_u64() == Some(u64::from(pid))
             && row["state"] == "stock-ready"
@@ -116,7 +125,7 @@ pub fn retain(output: &Path, run_id: &str, pid: u32) -> Result<Value> {
     let mut sessions = Vec::new();
     for entry in fs::read_dir(output).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
-        if !entry.file_name().to_string_lossy().starts_with("live-") {
+        if !session_name(&entry.file_name()) {
             continue;
         }
         if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
@@ -135,6 +144,9 @@ pub fn retain(output: &Path, run_id: &str, pid: u32) -> Result<Value> {
         let session_id = first["sessionId"]
             .as_str()
             .ok_or("live session identity absent")?;
+        if entry.file_name().to_str() != Some(format!("live-{session_id}").as_str()) {
+            return Err("live session directory identity differs".into());
+        }
         if rows.iter().any(|row| {
             row["schema"] != "continuum-flight-aero-live/v1"
                 || row["processId"].as_u64() != Some(u64::from(pid))
@@ -198,6 +210,20 @@ mod tests {
         ])
     }
     #[test]
+    fn session_names_exclude_runner_markers() {
+        for name in [
+            "live-session.json",
+            "live-play-proof.json",
+            "live-abc",
+            "live-",
+        ] {
+            assert!(!session_name(std::ffi::OsStr::new(name)));
+        }
+        assert!(session_name(std::ffi::OsStr::new(
+            "live-1ad54e928abb42e18442b5b97ebff320"
+        )));
+    }
+    #[test]
     fn live_mode_preserves_operator_camera_and_avoids_benchmark_quit() {
         let launch = ResolvedLaunch::parse(&options()).unwrap();
         assert!(launch.live_play);
@@ -249,6 +275,7 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
         fs::create_dir_all(root.join("saves/scenarios")).unwrap();
         let paths = [
             root.join("settings.cfg"),
@@ -284,6 +311,13 @@ mod tests {
         );
         fs::write(&paths[2], b"unexpected binary change").unwrap();
         assert!(!immutable_unchanged(&profile));
+        #[cfg(unix)]
+        {
+            fs::rename(&paths[2], root.join("moved-game.dll")).unwrap();
+            fs::write(root.join("moved-game.dll"), b"initial").unwrap();
+            std::os::unix::fs::symlink(root.join("moved-game.dll"), &paths[2]).unwrap();
+            assert!(!immutable_unchanged(&profile));
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }

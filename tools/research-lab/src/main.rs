@@ -137,6 +137,8 @@ fn run() -> Result<()> {
             "--startup-screen",
         ],
         "qualify" => &["--receipt", "--output"],
+        "revalidate-live" => &["--run", "--output"],
+        "summarize-integrator" => &["--markers", "--output"],
         "verify-backend-proof" => &["--receipt", "--output"],
         "recovery" => &[
             "--catalog",
@@ -159,6 +161,19 @@ fn run() -> Result<()> {
     };
     let output = Path::new(get("--output")?);
     match operation.as_str() {
+        "summarize-integrator" => {
+            let path = Path::new(get("--markers")?);
+            let before = hash(path)?;
+            let mut summary = continuum_research_lab::integrator_summary::summarize(&read(path)?)?;
+            if hash(path)? != before {
+                return Err("integrator markers changed during summarization".into());
+            }
+            summary["markersSha256"] = json!(before);
+            write_new(output, &summary)?;
+        }
+        "revalidate-live" => {
+            continuum_research_lab::live_revalidation::retain(Path::new(get("--run")?), output)?;
+        }
         "verify-backend-proof" => {
             backend_pixel::verify_offline(Path::new(get("--receipt")?), output)?
         }

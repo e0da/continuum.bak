@@ -301,9 +301,16 @@ impl FrozenLaunch {
         Ok(())
     }
     pub fn unchanged(&self) -> bool {
-        self.inputs.iter().all(|(path, expected)| {
-            canonical_file(path).is_ok() && hash(path).is_ok_and(|actual| actual == *expected)
-        })
+        self.unchanged_except(&[])
+    }
+
+    pub fn unchanged_except(&self, mutable: &[PathBuf]) -> bool {
+        self.inputs
+            .iter()
+            .filter(|(path, _)| !mutable.contains(path))
+            .all(|(path, expected)| {
+                canonical_file(path).is_ok() && hash(path).is_ok_and(|actual| actual == *expected)
+            })
     }
 }
 

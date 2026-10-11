@@ -807,6 +807,10 @@ pub fn analyze(
     summary["researchPanelRequested"] = Value::String(request.research_panel.as_str().into());
     summary["localCameraRequested"] = Value::String(request.local_camera.as_str().into());
     summary["researchPanel"] = research_panel;
+    if !report["flightIntegratorUpdateAttribution"].is_null() {
+        summary["flightIntegratorUpdateAttribution"] = crate::integrator_summary::summarize(report)?;
+        summary["intrusiveDiagnosticsRequested"] = Value::Bool(true);
+    }
     Ok(summary)
 }
 pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> {
