@@ -4,11 +4,12 @@ using System.Security.Cryptography;
 using System.Text.Json;
 
 if (args.Length == 7 && args[0] == "transplant") return Transplant(args);
+if (args.Length == 4 && args[0] == "inspect-player") return InspectPlayer(args);
 
 if (!(args.Length == 3 && args[0] == "inspect") &&
     !(args.Length == 6 && (args[0] == "graft" || args[0] == "graft-list")))
 {
-    Console.Error.WriteLine("Usage: inspect <classdata.tpk> <assets-or-bundle> | graft <classdata.tpk> <target-assets> <donor-bundle> <output-assets> <shader-name> | graft-list <classdata.tpk> <target-assets> <donor-bundle> <output-assets> <names-file> | transplant <classdata.tpk> <original-assets> <original-shader-name> <donor-bundle> <donor-shader-name> <new-output-bundle>");
+    Console.Error.WriteLine("Usage: inspect <classdata.tpk> <assets-or-bundle> | inspect-player <classdata.tpk> <player-Data-directory> <new-report.json> | graft <classdata.tpk> <target-assets> <donor-bundle> <output-assets> <shader-name> | graft-list <classdata.tpk> <target-assets> <donor-bundle> <output-assets> <names-file> | transplant <classdata.tpk> <original-assets> <original-shader-name> <donor-bundle> <donor-shader-name> <new-output-bundle>");
     return 2;
 }
 
@@ -249,3 +250,88 @@ static int Transplant(string[] arguments)
 }
 
 static string FileHash(string path) { using var stream = File.OpenRead(path); return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant(); }
+
+static int InspectPlayer(string[] arguments)
+{
+    string data = Path.GetFullPath(arguments[2]), output = Path.GetFullPath(arguments[3]);
+    string classData = Path.GetFullPath(arguments[1]), input = Path.Combine(data, "globalgamemanagers");
+    if (!Directory.Exists(data) || !File.Exists(input) || !Path.IsPathRooted(arguments[3]) || File.Exists(output) ||
+        output.StartsWith(data + Path.DirectorySeparatorChar, StringComparison.Ordinal) || output == classData)
+        throw new InvalidOperationException("Existing player Data directory and new absolute report outside inputs required.");
+    string inputHash = FileHash(input), classHash = FileHash(classData);
+    var manager = new AssetsManager(); manager.LoadClassPackage(classData);
+    var file = manager.LoadAssetsFile(input, false); manager.LoadClassDatabaseFromPackage(file.file.Metadata.UnityVersion);
+    var settings = file.file.GetAssetsOfType(141);
+    if (settings.Count != 1) throw new InvalidOperationException("Exactly one class141 BuildSettings required.");
+    var asset = settings[0]; var root = manager.GetBaseField(file, asset);
+    var fields = new List<(string Path, string Name, string Type, object? Value)>();
+    var summarizedPayloads = new List<(string Path, int Length, string Sha256)>();
+    var summarizedArrays = new List<(string Path, string Type, int Children)>();
+    void Read(AssetTypeValueField field, string path, int depth, bool graphicsApi)
+    {
+        graphicsApi |= field.TemplateField.Name.Contains("graphicsAPI", StringComparison.OrdinalIgnoreCase);
+        if (depth > 32 || fields.Count + summarizedArrays.Count >= 10000)
+            throw new InvalidOperationException("BuildSettings field bound exceeded at " + path + "; type=" + field.TemplateField.Type + "; valueType=" + field.TemplateField.ValueType + "; children=" + field.Children.Count + "; depth=" + depth);
+        if (field.TemplateField.Name.Contains("token", StringComparison.OrdinalIgnoreCase) ||
+            field.TemplateField.Name.Contains("password", StringComparison.OrdinalIgnoreCase) ||
+            field.TemplateField.Name.Contains("secret", StringComparison.OrdinalIgnoreCase))
+        {
+            fields.Add((path, field.TemplateField.Name, field.TemplateField.Type, "[redacted]"));
+            return;
+        }
+        if (!graphicsApi && (field.TemplateField.IsArray || field.TemplateField.ValueType == AssetValueType.Array))
+        {
+            summarizedArrays.Add((path, field.TemplateField.Type, field.Children.Count));
+            return;
+        }
+        if (field.TemplateField.ValueType == AssetValueType.ByteArray)
+        {
+            byte[] bytes = field.AsByteArray;
+            summarizedPayloads.Add((path, bytes.Length, Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()));
+            fields.Add((path, field.TemplateField.Name, field.TemplateField.Type, null));
+            if (graphicsApi)
+            {
+                if (bytes.Length > 256) throw new InvalidOperationException("graphicsAPI byte payload exceeds256 at " + path);
+                for (int i = 0; i < bytes.Length; i++) fields.Add((path + "/byte[" + i + "]", "byte", "UInt8", bytes[i]));
+            }
+            return;
+        }
+        object? value = field.TemplateField.ValueType switch
+        {
+            AssetValueType.Bool => field.AsBool,
+            AssetValueType.Int8 => field.AsSByte,
+            AssetValueType.UInt8 => field.AsByte,
+            AssetValueType.Int16 => field.AsShort,
+            AssetValueType.UInt16 => field.AsUShort,
+            AssetValueType.Int32 => field.AsInt,
+            AssetValueType.UInt32 => field.AsUInt,
+            AssetValueType.Int64 => field.AsLong,
+            AssetValueType.UInt64 => field.AsULong,
+            AssetValueType.Float => field.AsFloat,
+            AssetValueType.Double => field.AsDouble,
+            AssetValueType.String => field.AsString,
+            _ => null
+        };
+        fields.Add((path, field.TemplateField.Name, field.TemplateField.Type, value));
+        if (value != null) return;
+        for (int i = 0; i < field.Children.Count; i++) Read(field.Children[i], path + "/" + field.Children[i].TemplateField.Name + "[" + i + "]", depth + 1, graphicsApi);
+    }
+    Read(root, "BuildSettings", 0, false);
+    var apiFields = fields.Where(f => f.Path.Contains("graphicsAPI", StringComparison.OrdinalIgnoreCase)).ToArray();
+    if (apiFields.Length == 0) throw new InvalidOperationException("No readable graphicsAPI field; backend admission remains unresolved.");
+    if (FileHash(input) != inputHash || FileHash(classData) != classHash) throw new InvalidOperationException("Player inspection input changed.");
+    var receipt = new { schema = "continuum-player-build-settings/v1", dataDirectory = data, source = input, sourceSha256 = inputHash,
+        classDataSha256 = classHash, unity = file.file.Metadata.UnityVersion, serializedVersion = file.file.Header.Version,
+        metadataTargetPlatform = file.file.Metadata.TargetPlatform, classId = asset.GetTypeId(file.file), pathId = asset.PathId,
+        graphicsApiFields = apiFields.Select(f => new { path = f.Path, name = f.Name, type = f.Type, value = f.Value }),
+        buildSettingsFields = fields.Select(f => new { path = f.Path, name = f.Name, type = f.Type, value = f.Value }),
+        summarizedPayloads = summarizedPayloads.Select(p => new { path = p.Path, bytes = p.Length, sha256 = p.Sha256 }),
+        summarizedArrays = summarizedArrays.Select(p => new { path = p.Path, type = p.Type, materializedChildCount = p.Children, sourceSha256 = inputHash }),
+        rootFields = root.Children.Select(p => new { name = p.TemplateField.Name, type = p.TemplateField.Type, valueType = p.TemplateField.ValueType.ToString(), materializedChildCount = p.Children.Count }),
+        inspectionScope = "graphicsAPI-named subtree expanded; other semantic scalar flags retained with token/password/secret-named fields redacted; non-graphics arrays summarized without enumerating preload/reference elements. Array summaries bind the complete source-file digest, not an independently hashed array payload.",
+        interpretation = "Raw serialized BuildSettings values only. No platform enum mapping, binary backend availability, shader coverage or native rendering qualification inferred." };
+    using (var stream = new FileStream(output, FileMode.CreateNew, FileAccess.Write))
+    using (var writer = new StreamWriter(stream)) writer.Write(JsonSerializer.Serialize(receipt, new JsonSerializerOptions { WriteIndented = true }));
+    Console.WriteLine("Inspected class141 BuildSettings: " + apiFields.Length + " graphicsAPI fields.");
+    return 0;
+}

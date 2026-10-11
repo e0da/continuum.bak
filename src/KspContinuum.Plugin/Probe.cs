@@ -160,6 +160,8 @@ namespace KspContinuum
                 report.captureStartUtc = DateTime.UtcNow.ToString("o"); captureStartUt = Planetarium.GetUniversalTime();
                 ProfileFrame previous = Context();
                 report.clockFrequency=Stopwatch.Frequency; report.captureStartClockTimestamp=Stopwatch.GetTimestamp();
+                report.researchPanel = ResearchPanelPresentation.BeginCapture(report.captureStartClockTimestamp);
+                FlightLocalCamera.BeginWindow(report.captureStartClockTimestamp);
                 FlightPartBatcher.CaptureStart(report.captureStartClockTimestamp);
                 captureStartWall=clock.Elapsed.TotalSeconds; previous.boundaryWallSeconds=captureStartWall; capturedFixedCallbacks=fixedCallbacks;
                 Signal("capture-start", null);
@@ -199,6 +201,9 @@ namespace KspContinuum
                     if (completed < report.requestedFrames) previous = Context();
                 }
                 captureActive=false; report.captureEndClockTimestamp=Stopwatch.GetTimestamp();
+                ResearchPanelPresentation.EndCapture(report.researchPanel, report.captureEndClockTimestamp);
+                if (report.researchPanel.status != "complete") { report.status = "invalid"; report.completionReason = "research-panel-visibility-or-callback-invalid"; }
+                FlightLocalCamera.EndWindow(report.captureEndClockTimestamp);
                 FlightPartBatcher.CaptureEnd(report.captureEndClockTimestamp);
                 if(simulationSeconds > 0 && completed > 0)
                 {
@@ -394,6 +399,9 @@ namespace KspContinuum
                 if(report.captureStartClockTimestamp>0)
                 {
                     if(report.captureEndClockTimestamp==0) report.captureEndClockTimestamp=Stopwatch.GetTimestamp();
+                    ResearchPanelPresentation.EndCapture(report.researchPanel, report.captureEndClockTimestamp);
+                    if (report.researchPanel != null && report.researchPanel.status != "complete") { report.status = "invalid"; report.completionReason = "research-panel-visibility-or-callback-invalid"; }
+                    FlightLocalCamera.EndWindow(report.captureEndClockTimestamp);
                     FlightPartBatcher.CaptureEnd(report.captureEndClockTimestamp);
                     Signal("capture-end", report.completionReason);
                 }

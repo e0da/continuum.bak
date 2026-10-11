@@ -212,11 +212,12 @@ namespace KspContinuum
         public void FixedUpdate() { Probe.ObserveFixedCallback(); }
         Probe NewProbe()
         {
-            FlightDiagnosticControls.Record(directory);
             string runId = null;
             foreach (string argument in Environment.GetCommandLineArgs())
                 if (argument.StartsWith("--continuum-research-run=", StringComparison.Ordinal))
                     runId = argument.Substring("--continuum-research-run=".Length);
+            FlightLocalCamera.Start(FlightGlobals.ActiveVessel, directory, runId);
+            FlightDiagnosticControls.Record(directory);
             FlightAeroBatcher.Report batch = FlightAeroBatcher.Start(FlightGlobals.ActiveVessel, directory, runId);
             if (batch != null && batch.status != "installed-experimental")
                 throw new InvalidOperationException("Aero batch preparation rejected: " + batch.reason);
@@ -331,6 +332,7 @@ namespace KspContinuum
                 File.WriteAllText(Path.Combine(directory, "markers.json"), ReportJson.Encode(report));
                 string reason; bool valid = atmosphericStress ? AtmosphericStressComplete(report, out reason) :
                     Stable(report, physicsWarp ? RequestedPhysicsWarp : 1, out reason, normalAtmosphere);
+                if (FlightLocalCamera.FailureReason != null) { valid = false; reason = "local-camera-invalid: " + FlightLocalCamera.FailureReason; }
                 if (FlightCameraChain.FailureReason != null) { valid = false; reason = "camera-chain-invalid: " + FlightCameraChain.FailureReason; }
                 if (FlightWorldDraw.FailureReason != null) { valid = false; reason = "world-draw-invalid: " + FlightWorldDraw.FailureReason; }
                 if (setDragStressCandidate && !AeroSetDragProviderQualification.EndStressWindow())
@@ -499,6 +501,8 @@ namespace KspContinuum
             active = false;
             try { if (probe != null) probe.Dispose(); } catch (Exception error) { Debug.LogException(error); code = 2; }
             probe = null;
+            try { FlightLocalCamera.Finish(status); if (FlightLocalCamera.FailureReason != null) code = 2; }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
             try { FlightAeroFieldRenderer.Finish(); }
             catch (Exception error) { Debug.LogException(error); code = 2; }
             try { FlightAeroBatcher.Finish(); }

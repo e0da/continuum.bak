@@ -87,8 +87,18 @@ namespace KspContinuum
         public bool[] available;
         public ProfileMarkerSummary summary;
     }
+    [Serializable] public sealed class ResearchPanelReport
+    {
+        public string schema = "continuum-research-panel/v1", mode, status = "capturing";
+        public string scope = "Enclosed IMGUI callbacks inside the Probe capture window; nested wall duration, not additive to whole-frame timing.";
+        public bool startVisible, endVisible, startComponentPresent, endComponentPresent;
+        public int captureStartFrame, captureEndFrame, modeChanges, errors, blockedModeChangeAttempts;
+        public long captureStartClockTimestamp, captureEndClockTimestamp, clockFrequency;
+        public long guiCalls, layoutCalls, repaintCalls, otherCalls, guiTicks, layoutTicks, repaintTicks, otherTicks, serviceUpdateCalls, serviceFixedCalls;
+    }
     [Serializable] public sealed class ProbeReport
     {
+        public ResearchPanelReport researchPanel;
         public string captureMode = "rendered-frame-count", completionReason, runId, captureStartUtc, captureEndUtc;
         public double requestedSimulatedSeconds, actualSimulatedSeconds, captureWallSeconds, wallTimeoutSeconds, settleSeconds;
         public double? requestedCatchupSeconds;

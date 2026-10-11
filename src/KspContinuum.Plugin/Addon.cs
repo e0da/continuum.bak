@@ -35,6 +35,7 @@ namespace KspContinuum
         static bool Supported { get { return Versioning.version_major == 1 && Versioning.version_minor == 12 && Versioning.Revision == 5; } }
         public void Start()
         {
+            ResearchPanelPresentation.Attach(this);
             if (!IsMenu && Supported && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-rigid-cluster-shadow") >= 0) BeginRigidClusterShadowCapture();
             else if (!IsMenu && Supported && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-shadow") >= 0) BeginShadowCapture();
             if (!IsMenu && Supported && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-lifecycle-trace") >= 0) BeginLifecycleTrace();
@@ -46,6 +47,8 @@ namespace KspContinuum
         }
         public void Update()
         {
+            ResearchPanelPresentation.ObserveService(this, false);
+            ResearchPanelPresentation.PollToggle(this);
             if (lifecycleTrace != null)
             {
                 lifecycleTrace.ObserveUpdate();
@@ -66,6 +69,7 @@ namespace KspContinuum
         }
         public void FixedUpdate()
         {
+            ResearchPanelPresentation.ObserveService(this, true);
             if (shadow != null) shadow.FixedBoundary();
             if (lifecycleTrace != null) lifecycleTrace.ObserveFixedUpdate();
         }
@@ -275,9 +279,9 @@ namespace KspContinuum
                 running = false;
             }
         }
-        public void OnGUI()
+        internal void RenderResearchView()
         {
-            GUILayout.BeginArea(new Rect(20, 80, 430, IsMenu ? 195 : 700), "KSP Continuum — research prototype", GUI.skin.window);
+            GUILayout.BeginArea(new Rect(20, 80, 430, IsMenu ? 195 : 700), "KSP Continuum — research prototype (Ctrl+`)", GUI.skin.window);
             GUILayout.Label(Supported ? status : "Unsupported KSP version; requires 1.12.5.");
             bool old = GUI.enabled; GUI.enabled = old && Supported && !running;
             if (IsMenu)
@@ -381,6 +385,7 @@ namespace KspContinuum
         public void OnDisable() { StopStructuralExperiment(); StopLifecycleTrace(); StopPhysicsBoundaryQualification(); StopAeroCapture(); }
         public void OnDestroy()
         {
+            ResearchPanelPresentation.Detach(this);
             StopStructuralExperiment();
             StopLifecycleTrace();
             StopPhysicsBoundaryQualification();

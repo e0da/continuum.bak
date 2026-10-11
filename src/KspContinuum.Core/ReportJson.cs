@@ -61,6 +61,9 @@ namespace KspContinuum
                 (type.FullName == "KspContinuum.FlightDiagnosticControlReport" ||
                  type.FullName == "KspContinuum.AssetGenerationReport" ||
                  type.FullName == "KspContinuum.AssetGenerationCapability" ||
+                 type.FullName == "KspContinuum.FlightLocalCamera+Report" ||
+                 type.FullName == "KspContinuum.FlightLocalCamera+CameraRow" ||
+                 type.FullName == "KspContinuum.FlightLocalCamera+State" ||
                  type.FullName == "KspContinuum.FlightCameraChain+Report" ||
                  type.FullName == "KspContinuum.FlightCameraChain+CamRow" ||
                  type.FullName == "KspContinuum.FlightCameraChain+SceneRow" ||
@@ -96,7 +99,7 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.StartupWorldTiming+Point" ||
                  type.FullName == "KspContinuum.StartupWorldTiming+Wake");
             if (type != typeof(BenchReport) && type != typeof(Sample) && type != typeof(QueuedForceIsolationSample) && type != typeof(VesselReport) &&
-                type != typeof(PartReport) && type != typeof(ProbeReport) && type != typeof(MarkerReport) &&
+                type != typeof(PartReport) && type != typeof(ProbeReport) && type != typeof(ResearchPanelReport) && type != typeof(MarkerReport) &&
                 type != typeof(CallbackAttributionReport) && type != typeof(CallbackAttributionRow) &&
                 type != typeof(DryBuoyancyReport) && type != typeof(FlightPerturbationReport) &&
                 type != typeof(CoastingAdapterReport) &&

@@ -108,6 +108,8 @@ fn run() -> Result<()> {
             "--flight-part-batch",
             "--flight-part-mapped-only",
             "--flight-part-reference",
+            "--flight-research-panel",
+            "--flight-local-camera",
             "--flight-part-retained",
             "--flight-part-shader-bundle",
             "--flight-part-standard-fallback",
@@ -1000,6 +1002,7 @@ fn smoke(
                 output,
                 &report,
             )?;
+            summary["localCamera"] = continuum_research_lab::flight::local_camera_summary(request, &read::<Value>(&output.join("local-camera.json"))?, &report, &run_id, child.id())?;
             if let Some(library) = &request.gpu_timing_library {
                 summary["gpuTiming"] = continuum_research_lab::gpu_timing::retain_summary(
                     output,
@@ -1059,7 +1062,8 @@ fn smoke(
     if flight_error.is_some() {
         let mut retained = json!({});
         type Recover = fn(&Path, &str, u32, &Path) -> Result<()>;
-        let recoveries: [(&str, &str, Recover); 3] = [
+        let recoveries: [(&str, &str, Recover); 4] = [
+            ("local-camera.json", "localCamera", continuum_research_lab::flight::recover_failed_local_camera),
             (
                 "aero-batch.json",
                 "aeroBatch",

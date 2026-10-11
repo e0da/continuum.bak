@@ -296,6 +296,8 @@ impl ResolvedLaunch {
 }
 
 const FLIGHT_KEYS: &[(&str, &str)] = &[
+    ("researchPanel", "research-panel"),
+    ("localCamera", "local-camera"),
     ("save", "save"),
     ("checkpoint", "checkpoint"),
     ("maximumDelta", "max-delta"),

@@ -10,6 +10,10 @@ use std::{
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Request {
+    #[serde(default)]
+    pub research_panel: ResearchPanelMode,
+    #[serde(default)]
+    pub local_camera: LocalCameraMode,
     pub save: String,
     pub checkpoint: String,
     pub maximum_delta: f64,
@@ -49,11 +53,37 @@ pub struct Request {
     pub screenshot: bool,
     pub entry_target_altitude: Option<f64>,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResearchPanelMode { #[default] Visible, Hidden }
+impl ResearchPanelMode {
+    pub fn as_str(self) -> &'static str { match self { Self::Visible => "visible", Self::Hidden => "hidden" } }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LocalCameraMode { #[default] Stock, Merged }
+impl LocalCameraMode {
+    pub fn as_str(self) -> &'static str { match self { Self::Stock => "stock", Self::Merged => "merged" } }
+}
 impl Request {
+    pub fn local_camera_applicable(&self) -> bool {
+        !self.atmosphere && self.entry_target_altitude.is_none() && self.warp == 1 && self.perturbation == "quiet"
+            && !self.part_retained && !self.camera_chain && self.gpu_timing_library.is_none()
+    }
     pub fn parse(options: &BTreeMap<String, String>) -> Result<Option<Self>> {
         if !options.keys().any(|key| key.starts_with("--flight-")) {
             return Ok(None);
         }
+        let research_panel = match options.get("--flight-research-panel").map(String::as_str).unwrap_or("visible") {
+            "visible" => ResearchPanelMode::Visible,
+            "hidden" => ResearchPanelMode::Hidden,
+            _ => return Err("research panel mode must be visible or hidden".into()),
+        };
+        let local_camera = match options.get("--flight-local-camera").map(String::as_str).unwrap_or("stock") {
+            "stock" => LocalCameraMode::Stock,
+            "merged" => LocalCameraMode::Merged,
+            _ => return Err("local camera mode must be stock or merged".into()),
+        };
         let name = |key: &str| -> Result<String> {
             let value = options.get(key).ok_or(format!("missing {key}"))?;
             if value.is_empty()
@@ -195,6 +225,10 @@ impl Request {
         if part_standard_fallback && !part_batch {
             return Err("part standard fallback requires part batch".into());
         }
+        if local_camera == LocalCameraMode::Merged && (boolean("--flight-atmosphere")? || entry_target_altitude.is_some()
+            || warp != 1 || perturbation != "quiet" || part_retained || boolean("--flight-camera-chain")? || gpu_timing_library.is_some()) {
+            return Err("merged local camera requires quiet vacuum normal-time flight without entry, retained rendering, camera-chain or GPU observers".into());
+        }
         if let Some(bundle) = &part_shader_bundle {
             if !part_batch || !bundle.is_absolute() || !bundle.is_file()
                 || bundle.canonicalize().map_err(|error| error.to_string())? != *bundle {
@@ -202,6 +236,8 @@ impl Request {
             }
         }
         Ok(Some(Self {
+            research_panel,
+            local_camera,
             save: name("--flight-save")?,
             checkpoint: name("--flight-checkpoint")?,
             maximum_delta: number("--flight-max-delta", 0.04, 0.001, 1.0)?,
@@ -237,6 +273,8 @@ impl Request {
     }
     pub fn arguments(&self) -> Vec<String> {
         let mut args = vec![
+            format!("--continuum-research-panel={}", self.research_panel.as_str()),
+            format!("--continuum-flight-local-camera={}", self.local_camera.as_str()),
             "--continuum-scale-profile".into(),
             "--continuum-playerloop".into(),
             "--continuum-flight-diagnostic".into(),
@@ -464,6 +502,47 @@ fn distribution(mut values: Vec<f64>) -> Result<Value> {
         json!({"count":values.len(),"mean":values.iter().sum::<f64>()/values.len() as f64,"p50":percentile(0.5),"p95":percentile(0.95),"p99":percentile(0.99),"minimum":values[0],"maximum":values[values.len()-1]}),
     )
 }
+fn research_panel_summary(request: &Request, report: &Value, frames: &[Value]) -> Result<Value> {
+    let panel = &report["researchPanel"];
+    let visible = request.research_panel == ResearchPanelMode::Visible;
+    if panel["schema"] != "continuum-research-panel/v1" || panel["status"] != "complete"
+        || panel["mode"] != request.research_panel.as_str()
+        || panel["startVisible"].as_bool() != Some(visible) || panel["endVisible"].as_bool() != Some(visible)
+        || panel["startComponentPresent"].as_bool() != Some(visible) || panel["endComponentPresent"].as_bool() != Some(visible)
+        || panel["modeChanges"].as_u64() != Some(0) || panel["errors"].as_u64() != Some(0)
+        || panel["serviceUpdateCalls"].as_u64().unwrap_or(0) == 0 || panel["serviceFixedCalls"].as_u64().unwrap_or(0) == 0
+        || panel["captureStartClockTimestamp"] != report["captureStartClockTimestamp"]
+        || panel["captureEndClockTimestamp"] != report["captureEndClockTimestamp"]
+        || panel["clockFrequency"] != report["clockFrequency"] {
+        return Err("research panel mode/window/effective state absent or invalid".into());
+    }
+    let first = frames.first().ok_or("research panel frame window empty")?["contextFrame"].as_u64().ok_or("research panel first frame absent")?;
+    let after_last = frames.last().unwrap()["contextFrame"].as_u64().and_then(|id| id.checked_add(1)).ok_or("research panel final frame invalid")?;
+    if panel["captureStartFrame"].as_u64() != Some(first) || panel["captureEndFrame"].as_u64() != Some(after_last) {
+        return Err("research panel frame bounds differ from capture".into());
+    }
+    let count = |key: &str| -> Result<u64> { panel[key].as_u64().ok_or(format!("research panel counter absent/invalid: {key}")) };
+    let gui_calls = count("guiCalls")?; let gui_ticks = count("guiTicks")?;
+    let mut calls = 0u64; let mut ticks = 0u64;
+    for (call_key, tick_key) in [("layoutCalls","layoutTicks"),("repaintCalls","repaintTicks"),("otherCalls","otherTicks")] {
+        calls = calls.checked_add(count(call_key)?).ok_or("research panel call sum overflow")?;
+        ticks = ticks.checked_add(count(tick_key)?).ok_or("research panel tick sum overflow")?;
+    }
+    if calls != gui_calls || ticks != gui_ticks || (!visible && (gui_calls != 0 || gui_ticks != 0))
+        || (visible && (gui_calls == 0 || count("layoutCalls")? == 0 || count("repaintCalls")? == 0)) {
+        return Err("research panel GUI witness/count conservation differs".into());
+    }
+    let frequency = panel["clockFrequency"].as_u64().filter(|value| *value > 0).ok_or("research panel frequency invalid")? as f64;
+    let start = panel["captureStartClockTimestamp"].as_u64().ok_or("research panel start timestamp invalid")?;
+    let end = panel["captureEndClockTimestamp"].as_u64().filter(|value| *value > start).ok_or("research panel end timestamp invalid")?;
+    if gui_ticks > end-start { return Err("research panel enclosed costs exceed window".into()); }
+    let to_ms = |ticks: u64| ticks as f64 * 1000.0 / frequency;
+    Ok(json!({"report":panel,"completedFrameDenominator":frames.len(),"guiMilliseconds":to_ms(gui_ticks),
+        "guiMillisecondsPerCompletedFrame":to_ms(gui_ticks)/frames.len() as f64,
+        "layoutMilliseconds":to_ms(count("layoutTicks")?),"repaintMilliseconds":to_ms(count("repaintTicks")?),"otherMilliseconds":to_ms(count("otherTicks")?),
+        "eventMillisecondsPerCompletedFrame":{"layout":to_ms(count("layoutTicks")?)/frames.len() as f64,"repaint":to_ms(count("repaintTicks")?)/frames.len() as f64,"other":to_ms(count("otherTicks")?)/frames.len() as f64},
+        "scope":"Enclosed owned research-panel OnGUI wall scopes; event classes partition GUI total. Already included in full frames/PlayerLoop; do not add again. Not GPU duration."}))
+}
 pub fn analyze(
     request: &Request,
     run_id: &str,
@@ -492,6 +571,7 @@ pub fn analyze(
     if frames.len() < 2 || report["completedFrames"].as_u64() != Some(frames.len() as u64) {
         return Err("incomplete frame array".into());
     }
+    let research_panel = research_panel_summary(request, report, frames)?;
     let requested = finite(report, "requestedSimulatedSeconds")?;
     let simulation = finite(report, "actualSimulatedSeconds")?;
     let wall = finite(report, "captureWallSeconds")?;
@@ -686,8 +766,7 @@ pub fn analyze(
     let prelate = costs.get(prelate_name).copied().unwrap_or(costs[late]);
     let scoped = costs[fixed] + costs[update] + prelate + renderer + early + pre;
 
-    Ok(
-        json!({"schema":"continuum-flight-profile-summary/v1","status":"capture-validated","runId":run_id,"request":request,
+    let mut summary = json!({"schema":"continuum-flight-profile-summary/v1","status":"capture-validated","runId":run_id,"request":request,
         "intrusiveDiagnosticsRequested":request.native_sample || request.callback_attribution || request.camera_chain || request.gpu_timing_library.is_some(),
         "cameraChainRequested":request.camera_chain,
         "worldDrawModeRequested":request.world_draw,
@@ -716,8 +795,11 @@ pub fn analyze(
         "fixedParentOtherMilliseconds":costs[fixed]-costs[native]-costs[managed],
         "physicsStepScope":"Fully enclosed PhysicsFixedUpdate invocations; owned FixedUpdate callbacks are separate coroutine-boundary cadence observations.",
         "effectiveFirstFrame":frames[0],"effectiveLastFrame":frames.last(),
-        "accounting":"FixedUpdate parent contains native and managed children; use Fixed parent+script Update+PreLateUpdate parent (otherwise script Late)+PostLateUpdate parent+optional EarlyUpdate/PreUpdate once; PreLate and PostLate children overlap their parents. Missing enclosing phases remain in the remainder. Remainder is wall waiting/rendering/other work and overhead, not GPU duration or exclusive CPU attribution."}),
-    )
+        "accounting":"FixedUpdate parent contains native and managed children; use Fixed parent+script Update+PreLateUpdate parent (otherwise script Late)+PostLateUpdate parent+optional EarlyUpdate/PreUpdate once; PreLate and PostLate children overlap their parents. Missing enclosing phases remain in the remainder. Remainder is wall waiting/rendering/other work and overhead, not GPU duration or exclusive CPU attribution."});
+    summary["researchPanelRequested"] = Value::String(request.research_panel.as_str().into());
+    summary["localCameraRequested"] = Value::String(request.local_camera.as_str().into());
+    summary["researchPanel"] = research_panel;
+    Ok(summary)
 }
 pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> {
     let mut values = Vec::new();
@@ -732,6 +814,7 @@ pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> 
         values.push(value);
     }
     for name in [
+        "local-camera.json",
         "diagnostic-controls.json",
         "diagnostic-controls-end.json",
         "aero-batch.json",
@@ -1159,6 +1242,64 @@ mod tests {
         assert!(validate_part_batch(&request, &missing_provider, "run", 123, &json!("vessel")).is_err());
     }
     #[test]
+    fn local_camera_contract_rejects_conflicts_drift_and_missing_restore() {
+        let mut options=BTreeMap::from([("--flight-save".into(),"Lab".into()),("--flight-checkpoint".into(),"vacuum".into())]);
+        let mut request=Request::parse(&options).unwrap().unwrap(); assert_eq!(request.local_camera,LocalCameraMode::Stock);
+        let mut historical=serde_json::to_value(&request).unwrap(); historical.as_object_mut().unwrap().remove("localCamera");
+        assert_eq!(serde_json::from_value::<Request>(historical).unwrap().local_camera,LocalCameraMode::Stock);
+        options.insert("--flight-local-camera".into(),"typo".into()); assert!(Request::parse(&options).is_err());
+        options.insert("--flight-local-camera".into(),"merged".into()); options.insert("--flight-atmosphere".into(),"true".into()); assert!(Request::parse(&options).is_err());
+        options.remove("--flight-atmosphere"); request=Request::parse(&options).unwrap().unwrap();
+        assert!(request.arguments().contains(&"--continuum-flight-local-camera=merged".into()));
+        let state=json!({"enabled":true,"activeSelf":true,"activeInHierarchy":true,"isPQS":false,"nearClip":0.1,"farClip":1000.0,"fieldOfView":60.0,"depth":0.0,"cullingMask":-1,"clearFlags":1,"depthTextureMode":1,"renderingPath":1,"targetId":0});
+        let row=|id,index|json!({"instanceId":id,"name":"native-local","flightCameraIndex":index,"original":state,"effective":state,"restored":state,"componentTypes":["Camera"],"commandNames":[],"preCullCount":2,"preRenderCount":2,"postRenderCount":2});
+        let mut camera=json!({"schema":"continuum-flight-local-camera/v1","mode":"merged","runId":"run","processId":123,"vesselId":"v","parts":16,"status":"completed-experimental","faults":0,"hooksRemoved":true,"restorationComplete":true,"cleanupStatus":"removed-owned-hooks-restored-original-camera-state","observedFrames":2,"coverageChecks":2,"observerTicks":2,"clockFrequency":1000,"windowStartFrame":1,"windowEndFrame":3,"windowStartClockTimestamp":100,"windowEndClockTimestamp":200,"camera00":row(10,0),"camera01":row(11,1)});
+        camera["globalsUnchanged"]=json!(true);
+        for key in ["originalLocalCameraPosBits","originalLocalCameraDirBits","endLocalCameraPosBits","endLocalCameraDirBits"] { camera[key]=json!([0x3f800000,0x3f800000,0x3f800000,if key.contains("Pos") {0x7f800000} else {0}]); }
+        camera["maxProjectionError"]=json!(0.0);
+        for name in ["camera00","camera01"] { for key in ["originalProjection","effectiveProjection","restoredProjection"] { camera[name][key]=json!([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]); } }
+        camera["camera01"]["original"]["isPQS"]=json!(true); camera["camera01"]["restored"]["isPQS"]=json!(true);
+        camera["camera00"]["effective"]["farClip"]=json!(750000); camera["camera00"]["effective"]["isPQS"]=json!(true);
+        for key in ["activeSelf","activeInHierarchy","isPQS"] { camera["camera01"]["effective"][key]=json!(false); }
+        for key in ["preCullCount","preRenderCount","postRenderCount"] { camera["camera01"][key]=json!(0); }
+        let report=json!({"captureStartClockTimestamp":100,"captureEndClockTimestamp":200,"clockFrequency":1000,"frames":[{"contextFrame":1,"parts":16,"vesselId":"v"},{"contextFrame":2,"parts":16,"vesselId":"v"}]});
+        assert!(local_camera_summary(&request,&camera,&report,"run",123).is_ok());
+        let mut drift=camera.clone(); drift["camera00"]["effective"]["fieldOfView"]=json!(70); assert!(local_camera_summary(&request,&drift,&report,"run",123).is_err());
+        let mut missing=camera.clone(); missing["camera01"].as_object_mut().unwrap().remove("restored"); assert!(local_camera_summary(&request,&missing,&report,"run",123).is_err());
+        let mut unpaired=camera.clone(); unpaired["camera01"]["preCullCount"]=json!(1); assert!(local_camera_summary(&request,&unpaired,&report,"run",123).is_err());
+        request.local_camera=LocalCameraMode::Stock; request.warp=4;
+        let skipped=json!({"schema":"continuum-flight-local-camera/v1","mode":"stock","runId":"run","processId":123,"vesselId":"v","parts":16,"status":"not-applicable","reason":"declared-unsupported-stock-workload","cleanupStatus":"not-applicable-no-owned-hooks-or-mutations","hooksRemoved":true,"restorationComplete":true,"camera00":null,"camera01":null,"faults":0,"observedFrames":0,"coverageChecks":0,"observerTicks":0,"windowStartFrame":0,"windowEndFrame":0,"windowStartClockTimestamp":0,"windowEndClockTimestamp":0});
+        assert!(local_camera_summary(&request,&skipped,&report,"run",123).is_ok());
+        request.warp=1; assert!(local_camera_summary(&request,&skipped,&report,"run",123).is_err());
+    }
+    #[test]
+    fn research_panel_contract_rejects_drift_missing_and_hidden_work() {
+        let mut options = BTreeMap::from([("--flight-save".into(),"Lab".into()),("--flight-checkpoint".into(),"vacuum".into())]);
+        let mut request = Request::parse(&options).unwrap().unwrap();
+        assert_eq!(request.research_panel, ResearchPanelMode::Visible);
+        let mut historical = serde_json::to_value(&request).unwrap(); historical.as_object_mut().unwrap().remove("researchPanel");
+        assert_eq!(serde_json::from_value::<Request>(historical).unwrap().research_panel, ResearchPanelMode::Visible);
+        options.insert("--flight-research-panel".into(),"typo".into()); assert!(Request::parse(&options).is_err());
+        options.insert("--flight-research-panel".into(),"hidden".into()); request = Request::parse(&options).unwrap().unwrap();
+        assert!(request.arguments().contains(&"--continuum-research-panel=hidden".into()));
+        let frames = vec![json!({"contextFrame":5}),json!({"contextFrame":6})];
+        let mut report = json!({"captureStartClockTimestamp":100,"captureEndClockTimestamp":200,"clockFrequency":1000,"researchPanel":{
+            "schema":"continuum-research-panel/v1","status":"complete","mode":"hidden","startVisible":false,"endVisible":false,"startComponentPresent":false,"endComponentPresent":false,
+            "captureStartFrame":5,"captureEndFrame":7,"captureStartClockTimestamp":100,"captureEndClockTimestamp":200,"clockFrequency":1000,
+            "modeChanges":0,"errors":0,"serviceUpdateCalls":2,"serviceFixedCalls":1,"guiCalls":0,"layoutCalls":0,"repaintCalls":0,"otherCalls":0,"guiTicks":0,"layoutTicks":0,"repaintTicks":0,"otherTicks":0}});
+        assert!(research_panel_summary(&request,&report,&frames).is_ok());
+        for (key,value) in [("endVisible",json!(true)),("captureEndFrame",json!(8)),("repaintCalls",json!(1))] {
+            let mut bad=report.clone(); bad["researchPanel"][key]=value; assert!(research_panel_summary(&request,&bad,&frames).is_err());
+        }
+        let mut missing=report.clone(); missing["researchPanel"].as_object_mut().unwrap().remove("errors"); assert!(research_panel_summary(&request,&missing,&frames).is_err());
+        request.research_panel=ResearchPanelMode::Visible;
+        report["researchPanel"]["mode"]=json!("visible");
+        for key in ["startVisible","endVisible","startComponentPresent","endComponentPresent"] { report["researchPanel"][key]=json!(true); }
+        report["researchPanel"]["guiCalls"]=json!(2); report["researchPanel"]["layoutCalls"]=json!(1); report["researchPanel"]["repaintCalls"]=json!(1);
+        report["researchPanel"]["guiTicks"]=json!(3); report["researchPanel"]["layoutTicks"]=json!(1); report["researchPanel"]["repaintTicks"]=json!(2);
+        let summary=research_panel_summary(&request,&report,&frames).unwrap(); assert_eq!(summary["guiMillisecondsPerCompletedFrame"],json!(1.5));
+    }
+    #[test]
     fn mapped_reference_selection_requires_provider_and_excludes_retirement() {
         let mut options = BTreeMap::from([("--flight-save".into(),"Lab".into()),("--flight-checkpoint".into(),"vacuum".into()),("--flight-part-reference".into(),"true".into())]);
         assert!(Request::parse(&options).is_err());
@@ -1287,6 +1428,8 @@ mod tests {
     #[test]
     fn menu_observation_and_partial_capture_never_pass() {
         let request = Request {
+            research_panel: ResearchPanelMode::Visible,
+            local_camera: LocalCameraMode::Stock,
             save: "Lab".into(),
             checkpoint: "vacuum".into(),
             maximum_delta: 0.04,
@@ -1382,6 +1525,8 @@ mod tests {
     #[test]
     fn timed_window_excludes_warmup_and_straddlers_and_accepts_normal_high_mode() {
         let request = Request {
+            research_panel: ResearchPanelMode::Visible,
+            local_camera: LocalCameraMode::Stock,
             save: "Lab".into(),
             checkpoint: "vacuum".into(),
             maximum_delta: 0.04,
@@ -1417,6 +1562,9 @@ mod tests {
         let frame = |id| json!({"contextFrame":id,"contextAligned":true,"scene":"FLIGHT","paused":false,"packed":false,"loaded":true,"vesselId":"vessel","parts":16,"rigidbodies":16,"joints":15,"colliders":16,"loadedVessels":1,"warpRate":1.0,"warpMode":"HIGH","fixedDeltaSeconds":0.02,"maximumDeltaSeconds":0.04,"physicsFrameLimitSeconds":0.04,"wallMilliseconds":50.0,"fixedCallbacksPerFrame":2,"altitudeMeters":100000.0,"atmosphereDepthMeters":70000.0});
         let scopes:Vec<_> = ["UnityEngine.PlayerLoop.FixedUpdate","UnityEngine.PlayerLoop.FixedUpdate+PhysicsFixedUpdate","UnityEngine.PlayerLoop.FixedUpdate+ScriptRunBehaviourFixedUpdate","UnityEngine.PlayerLoop.Update+ScriptRunBehaviourUpdate","UnityEngine.PlayerLoop.PreLateUpdate+ScriptRunBehaviourLateUpdate"].iter().map(|name|json!({"name":name,"status":"observed","droppedSamples":0,"sequenceErrors":0,"samples":[{"frame":0,"startedTicks":1,"endedTicks":5,"elapsedTicks":4},{"frame":1,"startedTicks":95,"endedTicks":105,"elapsedTicks":10},{"frame":2,"startedTicks":120,"endedTicks":121,"elapsedTicks":1}]})).collect();
         let mut report = json!({"schema":"ksp-continuum-markers/v2","status":"complete","captureMode":"simulation-duration","completionReason":"simulation-duration-reached","runId":"run","completedFrames":2,"requestedSimulatedSeconds":0.1,"actualSimulatedSeconds":0.1,"captureWallSeconds":0.1,"vSyncCount":0,"targetFrameRate":-1,"captureStartClockTimestamp":100,"captureEndClockTimestamp":200,"clockFrequency":1000,"frames":[frame(1),frame(2)],"playerLoop":{"schema":"ksp-continuum-playerloop/v2","status":"observed","integrityStatus":"verified-at-boundaries","cleanupStatus":"removed-owned-hooks","clockFrequency":1000,"scopes":scopes}});
+        report["researchPanel"]=json!({"schema":"continuum-research-panel/v1","status":"complete","mode":"visible","startVisible":true,"endVisible":true,"startComponentPresent":true,"endComponentPresent":true,
+            "captureStartFrame":1,"captureEndFrame":3,"captureStartClockTimestamp":100,"captureEndClockTimestamp":200,"clockFrequency":1000,"modeChanges":0,"errors":0,"serviceUpdateCalls":2,"serviceFixedCalls":1,
+            "guiCalls":2,"layoutCalls":1,"repaintCalls":1,"otherCalls":0,"guiTicks":2,"layoutTicks":1,"repaintTicks":1,"otherTicks":0});
         let start = json!({"schema":"continuum-flight-capture-signal/v1","status":"capturing","runId":"run","processId":1,"clockFrequency":1000,"clockTimestamp":100,"universalTime":1.0});
         let end = json!({"schema":"continuum-flight-capture-signal/v1","status":"complete","runId":"run","processId":1,"clockFrequency":1000,"clockTimestamp":200,"universalTime":1.1});
         let summary = analyze(&request, "run", 1, &report, &start, &end).unwrap();
@@ -1606,6 +1754,102 @@ fn owned_ps(pid: u32) -> Value {
     }
 }
 
+pub fn local_camera_summary(request: &Request, camera: &Value, report: &Value, run_id: &str, pid: u32) -> Result<Value> {
+    let frames = report["frames"].as_array().filter(|frames| !frames.is_empty()).ok_or("local camera capture frames absent")?;
+    let first = frames[0]["contextFrame"].as_u64().ok_or("local camera first frame absent")?;
+    let after_last = frames.last().unwrap()["contextFrame"].as_u64().and_then(|id| id.checked_add(1)).ok_or("local camera final frame invalid")?;
+    let parts = frames[0]["parts"].as_u64().filter(|value| *value > 0).ok_or("local camera captured parts absent")?;
+    if frames[0]["vesselId"].as_str().filter(|value| !value.is_empty()).is_none() { return Err("local camera captured vessel absent".into()); }
+    if camera["schema"] != "continuum-flight-local-camera/v1" || camera["mode"] != request.local_camera.as_str() || camera["runId"] != run_id
+        || camera["processId"].as_u64() != Some(pid as u64) || camera["vesselId"] != frames[0]["vesselId"] || camera["parts"].as_u64() != Some(parts) {
+        return Err("local camera declared identity differs".into());
+    }
+    if request.local_camera == LocalCameraMode::Stock && !request.local_camera_applicable() {
+        if camera["status"] != "not-applicable" || camera["reason"] != "declared-unsupported-stock-workload"
+            || camera["cleanupStatus"] != "not-applicable-no-owned-hooks-or-mutations" || camera["hooksRemoved"].as_bool() != Some(true) || camera["restorationComplete"].as_bool() != Some(true)
+            || !camera["camera00"].is_null() || !camera["camera01"].is_null() { return Err("unsupported stock camera fallback did not abstain cleanly".into()); }
+        for key in ["faults","observedFrames","coverageChecks","observerTicks","windowStartFrame","windowEndFrame","windowStartClockTimestamp","windowEndClockTimestamp"] {
+            if camera[key].as_u64() != Some(0) { return Err("unsupported stock camera acquired ownership or observations".into()); }
+        }
+        return Ok(json!({"report":camera,"proof":"not-observed-declared-unsupported-stock-workload","scope":"Stock rendering unchanged; local-camera diagnostic not applicable to declared workload."}));
+    }
+    if camera["schema"] != "continuum-flight-local-camera/v1" || camera["mode"] != request.local_camera.as_str()
+        || camera["runId"] != run_id || camera["processId"].as_u64() != Some(pid as u64) || camera["vesselId"] != frames[0]["vesselId"]
+        || camera["parts"].as_u64() != Some(parts)
+        || camera["status"] != "completed-experimental" || camera["faults"].as_u64() != Some(0)
+        || camera["globalsUnchanged"].as_bool() != Some(true)
+        || camera["hooksRemoved"].as_bool() != Some(true) || camera["restorationComplete"].as_bool() != Some(true)
+        || camera["cleanupStatus"] != "removed-owned-hooks-restored-original-camera-state"
+        || camera["windowStartClockTimestamp"] != report["captureStartClockTimestamp"] || camera["windowEndClockTimestamp"] != report["captureEndClockTimestamp"]
+        || camera["clockFrequency"] != report["clockFrequency"] || camera["windowStartFrame"].as_u64() != Some(first) || camera["windowEndFrame"].as_u64() != Some(after_last)
+        || camera["observedFrames"].as_u64().unwrap_or(0) == 0 || camera["coverageChecks"].as_u64().unwrap_or(0) == 0 {
+        return Err("local camera owned lifecycle/window proof absent or invalid".into());
+    }
+    for key in ["originalLocalCameraPosBits","originalLocalCameraDirBits","endLocalCameraPosBits","endLocalCameraDirBits"] {
+        let bits = camera[key].as_array().filter(|bits| bits.len() == 4).ok_or("local camera fog bit vector absent")?;
+        let w = if key.contains("Pos") { 0x7f800000 } else { 0 };
+        if bits.iter().enumerate().any(|(index,value)| value.as_i64() != Some(if index == 3 { w } else { 0x3f800000 })) {
+            return Err("local camera inactive fog global changed or not at pinned defaults".into());
+        }
+    }
+    let zero = request.local_camera == LocalCameraMode::Merged;
+    let mut ids = Vec::new();
+    for (index, name) in [(0,"camera00"),(1,"camera01")] {
+        let row = &camera[name]; let id = row["instanceId"].as_i64().filter(|value| *value != 0).ok_or("local camera identity absent")?;
+        if ids.contains(&id) || row["flightCameraIndex"].as_u64() != Some(index) || row["name"].as_str().filter(|name| !name.is_empty()).is_none()
+            || row["componentTypes"].as_array().filter(|rows| !rows.is_empty() && rows.iter().all(|value| value.as_str().is_some())).is_none()
+            || row["commandNames"].as_array().filter(|rows| rows.iter().all(|value| value.as_str().is_some())).is_none() { return Err("local camera inventory identity invalid".into()); }
+        ids.push(id);
+        for key in ["originalProjection","effectiveProjection","restoredProjection"] {
+            let projection=row[key].as_array().filter(|values| values.len()==16).ok_or("local camera actual projection absent")?;
+            if projection.iter().any(|value| value.as_f64().filter(|value| value.is_finite()).is_none()) { return Err("local camera projection nonfinite".into()); }
+        }
+        if row["originalProjection"] != row["restoredProjection"] { return Err("local camera projection not restored".into()); }
+        for axis in 0..16 {
+            if (!zero || index==1 || (axis!=10 && axis!=14)) && row["originalProjection"][axis] != row["effectiveProjection"][axis] { return Err("local camera projection changed outside far-depth entries".into()); }
+        }
+        for state_name in ["original","effective","restored"] {
+            let state = &row[state_name];
+            for field in ["enabled","activeSelf","activeInHierarchy","isPQS"] { if state[field].as_bool().is_none() { return Err("local camera state boolean absent".into()); } }
+            for field in ["cullingMask","clearFlags","depthTextureMode","renderingPath","targetId"] { if state[field].as_i64().is_none() { return Err("local camera integer state absent".into()); } }
+            for field in ["nearClip","farClip","fieldOfView","depth"] { finite(state,field)?; }
+            if finite(state,"nearClip")? <= 0.0 || finite(state,"farClip")? <= finite(state,"nearClip")? || finite(state,"fieldOfView")? <= 0.0 || finite(state,"fieldOfView")? >= 180.0 { return Err("local camera clipping/FOV invalid".into()); }
+        }
+        for field in ["enabled","activeSelf","activeInHierarchy"] { if row["original"][field] != true { return Err("stock local camera was not active at admission".into()); } }
+        if row["original"]["isPQS"].as_bool() != Some(index == 1) || row["original"]["targetId"].as_i64() != Some(0) { return Err("stock local camera fog/screen ownership differs".into()); }
+        if row["original"] != row["restored"] { return Err("local camera original state not restored exactly".into()); }
+        let mut expected = row["original"].clone();
+        if zero {
+            if index == 0 {
+                if finite(&row["effective"],"farClip")? != 750000.0 { return Err("merged camera far clip differs".into()); }
+                expected["farClip"] = row["effective"]["farClip"].clone(); expected["isPQS"] = json!(true);
+            }
+            else { expected["activeSelf"] = json!(false); expected["activeInHierarchy"] = json!(false); expected["isPQS"] = json!(false); }
+        }
+        if row["effective"] != expected { return Err("local camera changed undeclared state or missed requested treatment".into()); }
+        let before = row["preCullCount"].as_u64().ok_or("local camera preCull witness absent")?;
+        let pre = row["preRenderCount"].as_u64().ok_or("local camera preRender witness absent")?;
+        let after = row["postRenderCount"].as_u64().ok_or("local camera postRender witness absent")?;
+        if before != pre || before != after || (zero && index == 1 && before != 0) || ((!zero || index == 0) && before == 0) { return Err("local camera native callback ownership incomplete".into()); }
+    }
+    let frequency = camera["clockFrequency"].as_u64().filter(|value| *value > 0).ok_or("local camera clock invalid")? as f64;
+    if finite(camera,"maxProjectionError")? < 0.0 || finite(camera,"maxProjectionError")? > 0.00001 { return Err("local camera native projection guard differs".into()); }
+    let ticks = camera["observerTicks"].as_u64().ok_or("local camera observer cost absent")?;
+    let start = camera["windowStartClockTimestamp"].as_u64().ok_or("local camera start timestamp absent")?;
+    camera["windowEndClockTimestamp"].as_u64().filter(|value| *value > start).ok_or("local camera end timestamp invalid")?;
+    Ok(json!({"report":camera,"observerMilliseconds":ticks as f64*1000.0/frequency,"observerAmortizedMillisecondsPerCompletedFrame":ticks as f64*1000.0/frequency/frames.len() as f64,
+        "observerCostScope":"Lifecycle and capture audit aggregate, amortized over completed capture frames; not exact capture-window exclusive CPU.",
+        "scope":"Explicit local-camera draw counterfactual with same stock computation; whole-flight wall timings include observer. No GPU duration or visual-equivalence claim."}))
+}
+fn validate_panel_controls(request: &Request, controls: &Value) -> Result<()> {
+    let visible = request.research_panel == ResearchPanelMode::Visible;
+    if controls["researchPanelMode"] != request.research_panel.as_str()
+        || controls["researchPanelVisible"].as_bool() != Some(visible)
+        || controls["researchPanelComponentPresent"].as_bool() != Some(visible) {
+        return Err("research panel control mode/effective visibility differs".into());
+    }
+    Ok(())
+}
 fn validate_frozen_camera(controls: &Value, end: bool) -> Result<()> {
     if controls["cameraFrozen"] != true
         || !controls["cameraContract"].as_str().unwrap_or("").starts_with("continuum-root-relative-camera/v1:")
@@ -1644,6 +1888,7 @@ pub fn validate_controls(
             return Err("diagnostic control evidence identity or effective controls differ".into());
         }
         validate_frozen_camera(&controls, false)?;
+        validate_panel_controls(request, &controls)?;
         if aero_treatment {
             if controls["phase"] != "capture-start" {
                 return Err("aero start control phase differs".into());
@@ -1663,6 +1908,7 @@ pub fn validate_controls(
             return Err("end diagnostic control evidence identity differs".into());
         }
         validate_frozen_camera(&end, true)?;
+        validate_panel_controls(request, &end)?;
         if aero_treatment {
             validate_aero_boundary(request, &end)?;
         }
@@ -2055,6 +2301,9 @@ pub fn recover_failed_aero_field(directory: &Path, run_id: &str, pid: u32, outpu
 }
 pub fn recover_failed_part_batch(directory: &Path, run_id: &str, pid: u32, output: &Path) -> Result<()> {
     recover_failed_render_batch(directory, run_id, pid, output, "part-batch.json", "continuum-flight-part-batch/v1")
+}
+pub fn recover_failed_local_camera(directory: &Path, run_id: &str, pid: u32, output: &Path) -> Result<()> {
+    recover_failed_render_batch(directory, run_id, pid, output, "local-camera.json", "continuum-flight-local-camera/v1")
 }
 fn recover_failed_render_batch(directory: &Path, run_id: &str, pid: u32, output: &Path, name: &str, schema: &str) -> Result<()> {
     let destination = output.join(name);

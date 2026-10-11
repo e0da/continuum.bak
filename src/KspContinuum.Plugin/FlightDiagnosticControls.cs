@@ -21,6 +21,7 @@ namespace KspContinuum
         {
             string[] arguments = Environment.GetCommandLineArgs();
             if (applied || Array.IndexOf(arguments, "--continuum-flight-diagnostic") < 0) return;
+            ResearchPanelPresentation.FreezeDiagnosticMode();
             originalVSync = QualitySettings.vSyncCount;
             originalFrameRate = Application.targetFrameRate;
             originalAntialiasing = QualitySettings.antiAliasing;
@@ -118,6 +119,9 @@ namespace KspContinuum
                 hiddenVesselRenderers = hiddenRenderers.Count,
                 aeroFxQuality = GameSettings.AERO_FX_QUALITY, originalAeroFxQuality = originalAeroQuality
             };
+            report.researchPanelMode = ResearchPanelPresentation.Mode;
+            report.researchPanelVisible = ResearchPanelPresentation.Visible;
+            report.researchPanelComponentPresent = ResearchPanelPresentation.ComponentPresent;
             RecordAeroState(report);
             FlightCameraFreeze.Record(report);
             recorded = report;
@@ -136,6 +140,9 @@ namespace KspContinuum
             recorded.cameraHeading = FlightCamera.CamHdg;
             recorded.cameraFieldOfView = FlightCamera.fetch == null ? float.NaN : FlightCamera.fetch.FieldOfView;
             recorded.aeroFxQuality = GameSettings.AERO_FX_QUALITY;
+            recorded.researchPanelMode = ResearchPanelPresentation.Mode;
+            recorded.researchPanelVisible = ResearchPanelPresentation.Visible;
+            recorded.researchPanelComponentPresent = ResearchPanelPresentation.ComponentPresent;
             RecordAeroState(recorded);
             FlightCameraFreeze.Record(recorded);
             File.WriteAllText(Path.Combine(directory, "diagnostic-controls-end.json"), ReportJson.Encode(recorded));
@@ -203,7 +210,8 @@ namespace KspContinuum
     [Serializable] internal sealed class FlightDiagnosticControlReport
     {
         public string schema = "continuum-flight-controls/v1", runId, renderer, colorSpace, aeroReplacementShader;
-        public string phase = "capture-start";
+        public string phase = "capture-start", researchPanelMode;
+        public bool researchPanelVisible, researchPanelComponentPresent;
         public string cameraScope = "Root-relative view and projection frozen throughout capture, with native camera pre-cull observations; input locked.";
         public string cameraContract, cameraFailure;
         public bool cameraFrozen;
