@@ -30,6 +30,7 @@ namespace KspContinuum
         ConvectionCapture convectionCapture;
         ConvectionReplacement convectionReplacement;
         AeroIntegrationAttribution aeroIntegrationAttribution;
+        AeroStepContext aeroStepContext;
         DryBuoyancyRuntime dryBuoyancy;
         VesselRuntimeCapture vesselRuntime;
         Action<ProbeReport> completion;
@@ -112,6 +113,12 @@ namespace KspContinuum
                 string[] arguments = Environment.GetCommandLineArgs();
                 convectionReplacement = ConvectionReplacement.Create(arguments, report.runId, () => captureActive);
                 if (convectionReplacement != null) report.convectionReplacement = convectionReplacement.Report;
+                aeroStepContext = AeroStepContext.Create(arguments, report.runId, () => captureActive);
+                if (aeroStepContext != null)
+                {
+                    report.aeroStepContext = aeroStepContext.Report;
+                    if (aeroStepContext.Report.status != "installed") throw new InvalidOperationException("AeroStepContext: " + aeroStepContext.Report.detail);
+                }
                 aeroIntegrationAttribution = AeroIntegrationAttribution.Create(arguments, report.runId, () => captureActive);
                 if (aeroIntegrationAttribution != null) report.aeroIntegrationAttribution = aeroIntegrationAttribution.Report;
                 convectionCapture = ConvectionCapture.Create(arguments, report.runId, () => captureActive);
@@ -349,6 +356,17 @@ namespace KspContinuum
             if (finished) return;
             finished = true;
             var errors = new List<string>();
+            if (aeroStepContext != null)
+            {
+                try
+                {
+                    aeroStepContext.Dispose();
+                    string reason;
+                    if (!aeroStepContext.IsValidFinal(out reason)) errors.Add("AeroStepContext: " + reason);
+                }
+                catch (Exception error) { errors.Add("AeroStepContext: " + error.GetType().Name); }
+                aeroStepContext = null;
+            }
             if (aeroIntegrationAttribution != null)
             {
                 try
