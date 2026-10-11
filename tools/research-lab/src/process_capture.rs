@@ -23,14 +23,16 @@ pub fn summarize(report: &Value, run_id: &str, pid: u32) -> Result<Value> {
     let before_cpu = tick(first, "processCpuTicks")?; let after_cpu = tick(last, "processCpuTicks")?;
     if after_cpu < before_cpu { return Err("process CPU cumulative count regressed".into()); }
     for row in [first, last] {
-        if tick(row, "rssReadBeforeTicks")? < tick(row, "cpuReadAfterTicks")?
+        if tick(row, "readBeforeTicks")? > tick(row, "cpuReadBeforeTicks")?
+            || tick(row, "rssReadBeforeTicks")? < tick(row, "cpuReadAfterTicks")?
             || tick(row, "rssReadAfterTicks")? < tick(row, "rssReadBeforeTicks")? || tick(row, "workingSetBytes")? == 0
         { return Err("process RSS brackets/value invalid".into()); }
     }
     let cpu = (after_cpu - before_cpu) as f64 / 10_000_000.0;
     let lower = (eb - sa) as f64 / frequency; let upper = (ea - sb) as f64 / frequency;
     let wall = (lower + upper) * 0.5;
-    let observer_ms = ((tick(first, "rssReadAfterTicks")? - sb) + (tick(last, "rssReadAfterTicks")? - eb)) as f64 * 1000.0 / frequency;
+    let observer_ms = ((tick(first, "rssReadAfterTicks")? - tick(first, "readBeforeTicks")?) +
+        (tick(last, "rssReadAfterTicks")? - tick(last, "readBeforeTicks")?)) as f64 * 1000.0 / frequency;
     for (key, expected) in [("processCpuSeconds", cpu), ("cpuReadMidpointWallSeconds", wall),
         ("averageOccupiedCores", cpu / wall), ("snapshotReadMilliseconds", observer_ms)] {
         let value = capture[key].as_f64().filter(|v| v.is_finite()).ok_or_else(|| format!("process {key} invalid"))?;
@@ -45,7 +47,7 @@ pub fn summarize(report: &Value, run_id: &str, pid: u32) -> Result<Value> {
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn validates_resource_intervals_and_rejects_foreign_or_regressed_counters() {
-        let row = |b, a, cpu| json!({"status":"available","cpuReadBeforeTicks":b,"cpuReadAfterTicks":a,
+        let row = |b, a, cpu| json!({"status":"available","readBeforeTicks":b,"cpuReadBeforeTicks":b,"cpuReadAfterTicks":a,
             "rssReadBeforeTicks":a,"rssReadAfterTicks":a+1,"processCpuTicks":cpu,"workingSetBytes":4096});
         let mut report = json!({"clockFrequency":1000,"captureStartClockTimestamp":100,"captureEndClockTimestamp":1100,
             "processCapture":{"schema":"continuum-process-capture/v1","status":"complete","runId":"run","processId":42,

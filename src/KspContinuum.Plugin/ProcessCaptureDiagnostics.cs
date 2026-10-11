@@ -15,7 +15,7 @@ namespace KspContinuum
         [Serializable] public sealed class Snapshot
         {
             public string status, detail;
-            public long cpuReadBeforeTicks, cpuReadAfterTicks, rssReadBeforeTicks, rssReadAfterTicks;
+            public long readBeforeTicks, cpuReadBeforeTicks, cpuReadAfterTicks, rssReadBeforeTicks, rssReadAfterTicks;
             public long processCpuTicks, workingSetBytes;
         }
         [Serializable] public sealed class ReportData
@@ -68,7 +68,7 @@ namespace KspContinuum
         }
         Snapshot Read()
         {
-            var snapshot = new Snapshot();
+            var snapshot = new Snapshot { readBeforeTicks = Stopwatch.GetTimestamp() };
             try
             {
                 process.Refresh();
@@ -96,8 +96,8 @@ namespace KspContinuum
             Report.cpuReadMidpointWallSeconds = ((end.cpuReadBeforeTicks - start.cpuReadBeforeTicks) +
                 (end.cpuReadAfterTicks - start.cpuReadAfterTicks)) * .5 / Stopwatch.Frequency;
             Report.averageOccupiedCores = Report.processCpuSeconds / Report.cpuReadMidpointWallSeconds;
-            Report.snapshotReadMilliseconds = ((start.rssReadAfterTicks - start.cpuReadBeforeTicks) +
-                (end.rssReadAfterTicks - end.cpuReadBeforeTicks)) * 1000.0 / Stopwatch.Frequency;
+            Report.snapshotReadMilliseconds = ((start.rssReadAfterTicks - start.readBeforeTicks) +
+                (end.rssReadAfterTicks - end.readBeforeTicks)) * 1000.0 / Stopwatch.Frequency;
             Report.status = completed ? "complete" : "interrupted";
         }
         public void Dispose() { if (disposed) return; disposed = true; process.Dispose(); }

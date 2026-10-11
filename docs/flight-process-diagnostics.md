@@ -33,3 +33,13 @@ brackets. Sampling tree occurrences describe statistical thread occupancy, not
 exclusive CPU milliseconds, GPU duration or proof of why a thread waited.
 PlayerLoop parents overlap children and cannot be added together. Sampling
 perturbs scheduling and its flight cannot be compared as an uninstrumented arm.
+
+`CONTINUUM_PROCESS_CAPTURE=1` enables the boundary observer. It reads the owned
+process's cumulative `TotalProcessorTime` and `WorkingSet64`, warms the accessors
+outside capture, and retains preparation and snapshot read costs. The two CPU
+read brackets define a slightly different interval from the flight boundaries;
+the runner independently validates arithmetic and reports lower/upper wall and
+average occupied-core estimates. These estimates include all process threads and
+observers. Endpoint RSS is not peak memory, and occupied cores is not main-thread
+utilization. Unsupported resource reads remain explicit. Only requested capture
+observation performs native clock or resource reads.
