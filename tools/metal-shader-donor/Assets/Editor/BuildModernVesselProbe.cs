@@ -39,7 +39,7 @@ public static class BuildModernVesselProbe
         if(architecture=="ARM64") selected=OSArchitecture.ARM64;
         else if(architecture=="x64") selected=OSArchitecture.x64;
         else throw new InvalidOperationException("Explicit ARM64 or x64 architecture required; no Universal treatment.");
-        const string mappedPath="Assets/FlightPartMappedInstanced.shader";
+        const string mappedPath="Assets/ContinuumShaders/FlightPartMapped.shader";
         var mapped=AssetDatabase.LoadAssetAtPath<Shader>(mappedPath);
         if(mapped==null||mapped.name!="Continuum/FlightPartMappedInstanced"||ShaderUtil.ShaderHasError(mapped)) throw new InvalidOperationException("Exact mapped shader source required.");
         var priorArchitecture=UnityEditor.OSXStandalone.UserBuildSettings.architecture;
