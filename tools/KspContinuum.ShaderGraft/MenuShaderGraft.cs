@@ -9,6 +9,19 @@ static class MenuShaderGraft
     static string Hex(byte[] bytes) => Convert.ToHexString(bytes).ToLowerInvariant();
     static string Name(AssetTypeValueField field) => field["m_ParsedForm"]["m_Name"].AsString;
     static int[] Platforms(AssetTypeValueField field) => field["platforms"].Children.SelectMany(c => c.Children).Select(c => c.AsInt).ToArray();
+    static string[] PropertyContract(AssetTypeValueField properties)
+    {
+        var values = properties["m_Props"];
+        if (values.IsDummy || values.Children.Count != 1) throw new InvalidDataException("Pinned shader property vector absent.");
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        return values.Children[0].Children.Select(value =>
+        {
+            string name = value["m_Name"].AsString;
+            int type = value["m_Type"].AsInt;
+            if (string.IsNullOrEmpty(name) || !names.Add(name)) throw new InvalidDataException("Shader property name missing or duplicated.");
+            return name + ":" + type + ":" + (type == 4 ? value["m_DefTexture"]["m_TexDim"].AsInt : 0);
+        }).ToArray();
+    }
     static byte[] Raw(AssetsFileInstance file, AssetFileInfo asset)
     {
         file.file.Reader.Position = asset.GetAbsoluteByteOffset(file.file);
@@ -26,7 +39,10 @@ static class MenuShaderGraft
         string classData = Path.GetFullPath(args[1]), sourcePath = Path.GetFullPath(args[2]), donorPath = Path.GetFullPath(args[3]), output = Path.GetFullPath(args[4]);
         if (!Path.IsPathRooted(args[4]) || File.Exists(output) || File.Exists(output + ".receipt.json") || output == sourcePath || output == donorPath || output.StartsWith(Path.GetDirectoryName(sourcePath)! + Path.DirectorySeparatorChar, StringComparison.Ordinal))
             throw new InvalidOperationException("New absolute output outside source Data required.");
-        string[] names = File.ReadAllLines(args[5]).Where(v => v.Length > 0 && !v.StartsWith('#')).ToArray();
+        string[][] mappings = File.ReadAllLines(args[5]).Where(v => v.Length > 0 && !v.StartsWith('#')).Select(v => v.Split('\t')).ToArray();
+        if (mappings.Any(v => v.Length < 1 || v.Length > 2 || v.Any(string.IsNullOrWhiteSpace))) throw new InvalidDataException("One exact target name and optional tab-separated donor name required.");
+        string[] names = mappings.Select(v => v[0]).ToArray();
+        var donorNames = mappings.ToDictionary(v => v[0], v => v.Length == 2 ? v[1] : v[0], StringComparer.Ordinal);
         if (names.Length == 0 || names.Length > 64 || names.Distinct(StringComparer.Ordinal).Count() != names.Length) throw new InvalidDataException("One to64 exact unique shader names required.");
         string sourceHash = Hash(sourcePath), donorHash = Hash(donorPath), classHash = Hash(classData), namesHash = Hash(args[5]);
         var manager = new AssetsManager(); manager.LoadClassPackage(classData);
@@ -64,11 +80,21 @@ static class MenuShaderGraft
         byte[] metadata = Metadata(source); var replacements = new Dictionary<long, byte[]>(); var replacementRows = new List<object>();
         foreach (string name in names)
         {
+            string donorName = donorNames[name];
             var original = source.file.GetAssetsOfType(AssetClassID.Shader).Where(a => Name(manager.GetBaseField(source, a)) == name).ToArray();
-            var cooked = donor.file.GetAssetsOfType(AssetClassID.Shader).Where(a => Name(manager.GetBaseField(donor, a)) == name).ToArray();
+            var cooked = donor.file.GetAssetsOfType(AssetClassID.Shader).Where(a => Name(manager.GetBaseField(donor, a)) == donorName).ToArray();
             if (original.Length != 1 || cooked.Length != 1) throw new InvalidDataException("Exactly one local target/donor shader required: " + name);
             var field = manager.GetBaseField(donor, cooked[0]); var originalField = manager.GetBaseField(source, original[0]);
             if (!Platforms(field).Contains(14)) throw new InvalidDataException("Metal compiler platform14 missing: " + name);
+            var originalProperties = originalField["m_ParsedForm"]["m_PropInfo"];
+            var donorProperties = field["m_ParsedForm"]["m_PropInfo"];
+            if (originalProperties.IsDummy || donorProperties.IsDummy || !PropertyContract(originalProperties).SequenceEqual(PropertyContract(donorProperties)))
+                throw new InvalidDataException("Cooked shader changes material property exposure/types/order: " + name);
+            byte[] originalPropertyBytes = originalProperties.WriteToByteArray();
+            int propertyIndex = field["m_ParsedForm"].Children.FindIndex(c => c.TemplateField.Name == "m_PropInfo");
+            if (propertyIndex < 0) throw new InvalidDataException("Shader property field missing.");
+            field["m_ParsedForm"].Children[propertyIndex] = originalProperties;
+            field["m_ParsedForm"]["m_Name"].AsString = name;
             int nodes = 0;
             void Rewrite(AssetTypeValueField node, string path, int depth)
             {
@@ -107,7 +133,8 @@ static class MenuShaderGraft
             field.Children[dependencyIndex] = originalDependencies;
             byte[] bytes = field.WriteToByteArray(); replacements.Add(original[0].PathId, bytes); original[0].SetNewData(bytes);
             if (!mergedDependencies.Take(originalDependencyCount).Select(c => Hex(SHA256.HashData(c.WriteToByteArray()))).SequenceEqual(preservedDependencies)) throw new InvalidDataException("Original shader dependency edges changed.");
-            replacementRows.Add(new { name, sourcePathId = original[0].PathId, donorPathId = cooked[0].PathId, sourceObjectSha256 = inventory.Single(a => a.PathId == original[0].PathId).sha256, derivedObjectSha256 = Hex(SHA256.HashData(bytes)), originalDependencyTableSha256 = Hex(SHA256.HashData(originalDependencyBytes)), originalDependencyCount, appendedDonorDependencies = mergedDependencies.Count - originalDependencyCount, originalDependencyEdgesPreserved = true, platforms = Platforms(field) });
+            if (!field["m_ParsedForm"]["m_PropInfo"].WriteToByteArray().SequenceEqual(originalPropertyBytes)) throw new InvalidDataException("Original property schema changed.");
+            replacementRows.Add(new { name, donorName, sourcePathId = original[0].PathId, donorPathId = cooked[0].PathId, sourceObjectSha256 = inventory.Single(a => a.PathId == original[0].PathId).sha256, derivedObjectSha256 = Hex(SHA256.HashData(bytes)), originalPropertySchemaSha256 = Hex(SHA256.HashData(originalPropertyBytes)), originalPropertySchemaPreserved = true, originalDependencyTableSha256 = Hex(SHA256.HashData(originalDependencyBytes)), originalDependencyCount, appendedDonorDependencies = mergedDependencies.Count - originalDependencyCount, originalDependencyEdgesPreserved = true, platforms = Platforms(field) });
         }
         string temporary = output + ".staging-" + Guid.NewGuid().ToString("N");
         try
