@@ -13,6 +13,7 @@ static class Program
     {
         try
         {
+            if (args.Length == 3 && args[0] == "--census") return Census(args[1], args[2]);
             if (args.Length == 1 && args[0] == "--falsify") { Console.WriteLine(JsonSerializer.Serialize(Falsifiers.Run(), new JsonSerializerOptions { WriteIndented = true })); return 0; }
             if (args.Length == 4 && args[0] == "--observe") return Observe(args[1], args[2], args[3]);
             if (args.Length == 1 && args[0] == "--admit")
@@ -23,7 +24,7 @@ static class Program
                     os = RuntimeInformation.OSDescription, architecture = RuntimeInformation.ProcessArchitecture.ToString(), clockFrequency = Stopwatch.Frequency }));
                 return 0;
             }
-            if (args.Length != 2 || args[0] != "--verify-stock") throw new ArgumentException("usage: --admit | --falsify | --verify-stock FRAME_FILE | --observe FRAME_FILE stock|index|stock-delegate|tan|tan-two-slot REPORT_FILE");
+            if (args.Length != 2 || args[0] != "--verify-stock") throw new ArgumentException("usage: --admit | --falsify | --verify-stock FRAME_FILE | --census FRAME_FILE REPORT_FILE | --observe FRAME_FILE stock|index|stock-delegate|tan|tan-two-slot REPORT_FILE");
             Stock.TinyCall();
             ConvectionRecording recording = ConvectionFormat.Read(args[1]);
             if (recording.assemblySha256 != Stock.Hash || recording.assemblyMvid != Stock.Mvid.ToString("D")) throw new InvalidOperationException("Captured source pin differs.");
@@ -45,6 +46,22 @@ static class Program
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
     }
     static string HashFile(string path) { return Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant(); }
+    static int Census(string path, string reportPath)
+    {
+        if (File.Exists(reportPath)) throw new IOException("Census receipt already exists.");
+        ConvectionRecording recording = ConvectionFormat.Read(path); Stock.Admit();
+        if (recording.assemblySha256 != Stock.Hash || recording.assemblyMvid != Stock.Mvid.ToString("D")) throw new InvalidOperationException("Captured source pin differs.");
+        var census = GeometryCensus.Run(recording);
+        var receipt = new { schema = "continuum-convection-geometry-census/v1", status = "single-fold-recorded-bitwise-match", recording.sessionId, recording.vesselId,
+            inputSha256 = HashFile(path), assemblySha256 = Stock.Hash, assemblyMvid = Stock.Mvid, benchSha256 = HashFile(typeof(Program).Assembly.Location),
+            coreSha256 = HashFile(typeof(ConvectionFrame).Assembly.Location), framework = RuntimeInformation.FrameworkDescription, os = RuntimeInformation.OSDescription,
+            architecture = RuntimeInformation.ProcessArchitecture.ToString(), clockFrequency = Stopwatch.Frequency, census,
+            scope = "One complete recorded sequence. Read-only hooks in a detached pinned original GetShockStats IL delegate observe actual circle return and finalized original geometry locals before ref multiplier updates. Original scalar arithmetic, Setup, order, area cutoff and bitwise final/cone oracle retained. Intrusive instrumented census has no performance timings or live equivalence claim; no original projection/FX/publication or process detours." };
+        string json = JsonSerializer.Serialize(receipt, new JsonSerializerOptions { WriteIndented = true });
+        using (var output = new FileStream(reportPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        using (var writer = new StreamWriter(output)) writer.WriteLine(json);
+        Console.WriteLine(JsonSerializer.Serialize(new { receipt.schema, receipt.status, reportPath, receipt.inputSha256, receipt.benchSha256 })); return 0;
+    }
     static int Observe(string path, string variant, string reportPath)
     {
         Treatment treatment = variant == "stock" ? Treatment.Stock : variant == "index" ? Treatment.CandidateIndex : variant == "tan" ? Treatment.CachedTan : variant == "tan-two-slot" ? Treatment.CachedTanTwoSlot : variant == "stock-delegate" ? Treatment.StockDelegate : throw new ArgumentException("Unknown treatment.");
