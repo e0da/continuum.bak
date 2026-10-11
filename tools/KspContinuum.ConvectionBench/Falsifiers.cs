@@ -4,6 +4,37 @@ using KspContinuum;
 
 static class Falsifiers
 {
+    public static object RunQuery()
+    {
+        Stock.Admit(); double[] globals = Stock.Globals(); bool logging = GameSettings.FI_LOG_TEMP_ERROR; var witnesses = new List<object>();
+        try
+        {
+            GameSettings.FI_LOG_TEMP_ERROR = false;
+            using (var kernel = new ResetKernel())
+            {
+                double[] cylinders = { 0, BitConverter.Int64BitsToDouble(long.MinValue), double.Epsilon, Math.BitIncrement(double.Epsilon), Math.ScaleB(1, -54), Math.BitIncrement(Math.ScaleB(1, -54)), Math.BitDecrement(.5), .5, Math.BitIncrement(.5), Math.BitDecrement(1), 1 };
+                foreach (double c in cylinders) Require(BitConverter.DoubleToInt64Bits(ResetKernel.OriginalAreaExpression(c, 1)) == 0x3ff0000000000000, "Original unit-area expression differs at cylinder bits " + BitConverter.DoubleToInt64Bits(c).ToString("x16"));
+                Require(double.IsNaN(ResetKernel.OriginalAreaExpression(double.NaN, 1)) && double.IsNaN(ResetKernel.OriginalAreaExpression(double.PositiveInfinity, 1)), "Unit-area poison counterexample did not invalidate unconditional elision.");
+                witnesses.Add(new { name = "original-il-unit-area-rounding-and-poison", admittedBoundaryCases = cylinders.Length, nonfiniteCounterexamples = 2 });
+
+                var order = Frame(4, globals);
+                order.rows[0].projectedCenter[0] = order.rows[0].center[0] = 50; order.rows[0].minExtents[0] = 49; order.rows[0].maxExtents[0] = 51;
+                order.rows[1].projectedCenter[0] = order.rows[1].center[0] = 0; order.rows[1].minExtents[0] = -1; order.rows[1].maxExtents[0] = 1; order.rows[1].invFineness = 1;
+                order.rows[3].projectedCenter[0] = order.rows[3].center[0] = 0; order.rows[3].minExtents[0] = -1; order.rows[3].maxExtents[0] = 1;
+                ReplayResult original = Replay.Evaluate(order, Treatment.ResetStock), candidate = Replay.Evaluate(order, Treatment.QueryElision);
+                Require(Replay.Compare(candidate, original) == null && candidate.fallbackReason == null && candidate.cones.Length == 3 && candidate.multipliers[11] == 0 && candidate.areaUnitCones == 2 && candidate.resetRectangleCalls == 1,
+                    "Area-elision order fixture failed to preserve cutoff through omitted neutral cones.");
+                witnesses.Add(new { name = "omitted-neutral-cones-preserve-cutoff-prefix", candidate.resetRectangleCalls, candidate.areaElidedPairs, acceptedCones = candidate.cones.Length });
+
+                var boundary = Frame(2, globals); boundary.rows[1].minExtents = new[] { 1f, -1f }; boundary.rows[1].maxExtents = new[] { 3f, 1f };
+                var index = new RectangleAreaIndex(boundary); var cone = Cone(); cone.occludeConvectionAreaMult = 0; cone.offset[0] = 16777216; cone.extents[0] = 16777216;
+                index.Insert(cone, 0); Require(index.Candidates(1).Count == 1 && cone.offset[0] + boundary.rows[1].minExtents[0] == cone.extents[0] && (double)cone.offset[0] + boundary.rows[1].minExtents[0] > cone.extents[0], "Rectangle index lost binary32 inclusive boundary.");
+                witnesses.Add(new { name = "rectangle-index-float-addition-boundary", candidates = index.Candidates(1).Count });
+            }
+            return new { status = "query-focused-falsifiers-passed", witnesses };
+        }
+        finally { Stock.Globals(globals); GameSettings.FI_LOG_TEMP_ERROR = logging; }
+    }
     public static object RunReset()
     {
         Stock.Admit(); double[] globals = Stock.Globals(); bool logging = GameSettings.FI_LOG_TEMP_ERROR; var witnesses = new List<object>();

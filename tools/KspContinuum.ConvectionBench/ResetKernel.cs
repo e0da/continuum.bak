@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
@@ -11,9 +12,18 @@ sealed class ResetKernel : IDisposable
 {
     static readonly MethodInfo Target = typeof(OcclusionData).GetMethod(nameof(OcclusionData.GetShockStats), BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
     static ResetKernel owner;
-    readonly TanCache.ShockCall full, rectangle, geometry;
+    readonly TanCache.ShockCall full, rectangle, geometry, identityWitness;
     readonly int thread = Environment.CurrentManagedThreadId;
     sealed class Fallback : Exception { public Fallback(string reason) : base(reason) { } }
+    public sealed class PhaseProfile
+    {
+        public static readonly string[] Names = { "admission", "inputs-and-globals", "rectangle-area-prefix", "last-reset-search", "finite-prefix-certificate", "original-reset-and-tail", "original-setup-radius-validation-and-publication", "output-materialization" };
+        public readonly long[] ticks = new long[Names.Length];
+        long prior; int phase;
+        public PhaseProfile() { prior = Stopwatch.GetTimestamp(); }
+        internal void Mark(int next) { long now = Stopwatch.GetTimestamp(); ticks[phase] += now - prior; phase = next; prior = now; }
+        internal void Finish() { Mark(phase); }
+    }
     public const string Domain = "Supersonic finite Mach; bounded finite projections; radius zero or >=1e-6; nonnegative finite unit-bounded heat/coeff globals and published cone multipliers without negative zero; bounded original shock-radius endpoints; FI_LOG_TEMP_ERROR=false. No recorded output participates in admission.";
     public ResetKernel()
     {
@@ -22,7 +32,7 @@ sealed class ResetKernel : IDisposable
         Require(Convert.ToHexString(SHA256.HashData(body.GetILAsByteArray())).ToLowerInvariant() == GeometryCensus.IlHash && body.LocalVariables.Count == 8 && body.ExceptionHandlingClauses.Count == 0, "Reset original IL pin/shape differs.");
         Type[] locals = { typeof(UnityEngine.Vector2), typeof(UnityEngine.Vector2), typeof(double), typeof(double), typeof(double), typeof(double), typeof(double), typeof(UnityEngine.Vector3) };
         for (int i = 0; i < locals.Length; i++) Require(body.LocalVariables[i].LocalType == locals[i], "Reset original local type differs.");
-        full = Create(null); rectangle = Create(nameof(Rectangle)); geometry = Create(nameof(Geometry)); owner = this;
+        full = Create(null); rectangle = Create(nameof(Rectangle)); geometry = Create(nameof(Geometry)); identityWitness = Create(nameof(IdentityWitness)); owner = this;
     }
     static void Require(bool condition, string reason) { if (!condition) throw new InvalidOperationException(reason); }
     static void Support(bool condition, string reason) { if (!condition) throw new Fallback(reason); }
@@ -66,6 +76,17 @@ sealed class ResetKernel : IDisposable
         yield return new CodeInstruction(OpCodes.Ldarg_2); yield return Load(code[73]); yield return new CodeInstruction(OpCodes.Stind_R8);
         yield return new CodeInstruction(OpCodes.Ldarg_3); yield return Load(code[107]); yield return new CodeInstruction(OpCodes.Stind_R8);
         for (int i = 146; i < code.Length; i++) yield return code[i];
+    }
+    static IEnumerable<CodeInstruction> IdentityWitness(IEnumerable<CodeInstruction> source)
+    {
+        var code = Pin(source);
+        yield return new CodeInstruction(OpCodes.Ldarg_2); yield return new CodeInstruction(OpCodes.Ldind_R8); yield return Load(code[105]);
+        for (int i = 146; i < code.Length; i++) yield return code[i];
+    }
+    public static double OriginalAreaExpression(double cylinder, double coneArea)
+    {
+        Require(owner != null && owner.thread == Environment.CurrentManagedThreadId, "Original area witness context differs.");
+        double unused = 0; return owner.identityWitness(null, new OcclusionCone { occludeConvectionAreaMult = coneArea }, ref cylinder, ref unused);
     }
     static TanCache.ShockCall Create(string transpiler)
     {
@@ -116,19 +137,25 @@ sealed class ResetKernel : IDisposable
         }
         result.cones = cones.ToArray(); return result;
     }
-    public static ReplayResult Evaluate(ConvectionFrame frame)
+    public static ReplayResult Evaluate(ConvectionFrame frame, bool queryElision = false)
     {
         Require(owner != null && owner.thread == Environment.CurrentManagedThreadId, "Reset kernel context differs.");
         var result = new ReplayResult();
-        try { return owner.Fold(frame, result); }
+        try { return owner.Fold(frame, result, null, queryElision); }
         catch (Fallback error)
         {
             ReplayResult stock = Replay.Evaluate(frame, Treatment.ResetStock); stock.fallbackReason = error.Message;
             stock.resetRectangleCalls = result.resetRectangleCalls; stock.resetGeometryCalls = result.resetGeometryCalls;
             stock.resetAnchorProbes = result.resetAnchorProbes; stock.resetAnchors = result.resetAnchors; stock.resetBoundSteps = result.resetBoundSteps;
             stock.resetRows = result.resetRows; stock.resetNoResetRows = result.resetNoResetRows; stock.resetSkippedScalarPairs = result.resetSkippedScalarPairs;
+            stock.areaIndexNodeVisits = result.areaIndexNodeVisits; stock.areaUnitCones = result.areaUnitCones; stock.areaElidedPairs = result.areaElidedPairs;
             stock.resetAttemptedScalarPairs = result.scalarPairs; return stock;
         }
+    }
+    public static ReplayResult Attribute(ConvectionFrame frame, out PhaseProfile profile)
+    {
+        Require(owner != null && owner.thread == Environment.CurrentManagedThreadId, "Reset attribution context differs.");
+        profile = new PhaseProfile(); return owner.Fold(frame, new ReplayResult(), profile);
     }
     static void ArrayBound(float[] values, int length)
     {
@@ -154,53 +181,70 @@ sealed class ResetKernel : IDisposable
         }
         return double.IsPositiveInfinity(radius) ? 1 : radius;
     }
-    ReplayResult Fold(ConvectionFrame frame, ReplayResult result)
+    ReplayResult Fold(ConvectionFrame frame, ReplayResult result, PhaseProfile profile = null, bool queryElision = false)
     {
-        double minRadius = AdmitFrame(frame, out double minDot, out double maxDot); Stock.Globals(frame.globals);
+        double minRadius = AdmitFrame(frame, out double minDot, out double maxDot); profile?.Mark(1); Stock.Globals(frame.globals);
         var data = new OcclusionData[frame.rows.Length]; for (int i = 0; i < data.Length; i++) data[i] = Stock.Input(frame.rows[i]);
         var accepted = new List<OcclusionCone>(); var cones = new List<ConvectionCone>();
         var cylinders = new double[data.Length]; var shocks = new double[data.Length]; var known = new bool[data.Length];
+        var cylinderKnown = queryElision ? new bool[data.Length] : null;
+        var index = queryElision ? new RectangleAreaIndex(frame) : null;
         result.multipliers = new double[data.Length * 3]; double maxRadius = 0;
         double sqrtMach = Math.Sqrt(frame.mach), machAngle = Math.Asin(1 / sqrtMach), detachAngle = .7957 * (1 - 1 / (frame.mach * sqrtMach));
         for (int row = 0; row < data.Length; row++)
         {
-            OcclusionData input = data[row]; int reached = 0; double area = 1; Array.Clear(known, 0, accepted.Count); result.possiblePairs += accepted.Count;
-            for (int pair = 0; pair < accepted.Count; pair++)
+            profile?.Mark(2);
+            OcclusionData input = data[row]; int reached = index == null ? 0 : accepted.Count; double area = 1; Array.Clear(known, 0, accepted.Count); result.possiblePairs += accepted.Count;
+            if (cylinderKnown != null) Array.Clear(cylinderKnown, 0, accepted.Count);
+            IReadOnlyList<int> areaCandidates = index?.Candidates(row);
+            int areaCount = areaCandidates == null ? accepted.Count : areaCandidates.Count;
+            long rectangleBefore = result.resetRectangleCalls;
+            for (int query = 0; query < areaCount; query++)
             {
+                int pair = areaCandidates == null ? query : areaCandidates[query];
                 double c = 0, ignored = 0; double factor = rectangle(input, accepted[pair], ref c, ref ignored); result.resetRectangleCalls++;
-                Support(Unit(c) && Unit(factor), "rectangle-coefficient-domain"); cylinders[pair] = c; reached++; area *= factor;
-                if (area <= .001) { area = 0; break; }
+                Support(Unit(c) && Unit(factor), "rectangle-coefficient-domain"); cylinders[pair] = c;
+                if (cylinderKnown != null) cylinderKnown[pair] = true;
+                if (index == null) reached++; area *= factor;
+                if (area <= .001) { area = 0; reached = pair + 1; break; }
             }
             result.candidatePairs += reached;
+            if (index != null) result.areaElidedPairs += reached - (result.resetRectangleCalls - rectangleBefore);
+            profile?.Mark(3);
             double ratio = maxRadius / minRadius, shockBound = 8 * (ratio + 1) * (ratio + 1);
             Support(double.IsFinite(shockBound) && shockBound >= 1, "shock-envelope-domain");
             int last = reached - 1;
             while (last >= 0 && Shock(last) != 1) last--;
             if (last >= 0)
             {
+                profile?.Mark(4);
                 Certify(last, shockBound); result.resetRows++; result.resetSkippedScalarPairs += last;
             }
             else { result.resetNoResetRows++; last = 0; }
+            profile?.Mark(5);
             for (int pair = last; pair < reached; pair++)
             {
                 full(input, accepted[pair], ref input.ptd.convectionTempMultiplier, ref input.ptd.convectionCoeffMultiplier); result.scalarPairs++;
             }
             Support(double.IsFinite(input.ptd.convectionTempMultiplier) && double.IsFinite(input.ptd.convectionCoeffMultiplier), "retained-tail-nonfinite");
             input.ptd.convectionAreaMultiplier = area;
+            profile?.Mark(6);
             if (area > 0)
             {
                 input.convCone.Setup(input, sqrtMach, machAngle, detachAngle); var cone = Stock.Capture(input.convCone, row);
                 Support(Unit(cone.shockConvectionTempMult) && Unit(cone.shockConvectionCoeffMult) && Unit(cone.occludeConvectionTempMult) && Unit(cone.occludeConvectionCoeffMult) && Unit(cone.occludeConvectionAreaMult), "published-multiplier-domain");
                 double left = input.convCone.GetShockRadius(minDot), right = input.convCone.GetShockRadius(maxDot);
                 Support(Bounded(left, 1e20) && Bounded(right, 1e20) && Bounded(cone.radius, 1e10) && Bounded(cone.shockNoseDot, 1e15) && Bounded(cone.shockAngle, 1e8), "published-radius-domain");
-                maxRadius = Math.Max(maxRadius, Math.Max(Math.Abs(left), Math.Abs(right))); accepted.Add(input.convCone); cones.Add(cone);
+                maxRadius = Math.Max(maxRadius, Math.Max(Math.Abs(left), Math.Abs(right))); index?.Insert(cone, accepted.Count); accepted.Add(input.convCone); cones.Add(cone);
+                if (index != null) { result.areaIndexNodeVisits = index.nodeVisits; result.areaUnitCones = index.unitAreaCones; }
             }
             double Shock(int pair)
             {
                 if (!known[pair])
                 {
                     double c = 0, s = 0; geometry(input, accepted[pair], ref c, ref s); result.resetGeometryCalls++;
-                    Support(BitConverter.DoubleToInt64Bits(c) == BitConverter.DoubleToInt64Bits(cylinders[pair]) && double.IsFinite(s) && Math.Abs(s) <= shockBound, "geometry-envelope-domain");
+                    Support(Unit(c) && (cylinderKnown != null && !cylinderKnown[pair] || BitConverter.DoubleToInt64Bits(c) == BitConverter.DoubleToInt64Bits(cylinders[pair])) && double.IsFinite(s) && Math.Abs(s) <= shockBound, "geometry-envelope-domain");
+                    cylinders[pair] = c; if (cylinderKnown != null) cylinderKnown[pair] = true;
                     shocks[pair] = s; known[pair] = true;
                 }
                 return shocks[pair];
@@ -230,11 +274,14 @@ sealed class ResetKernel : IDisposable
                 }
             }
         }
+        profile?.Mark(7);
         for (int row = 0; row < data.Length; row++)
         {
             result.multipliers[row * 3] = data[row].ptd.convectionTempMultiplier; result.multipliers[row * 3 + 1] = data[row].ptd.convectionCoeffMultiplier; result.multipliers[row * 3 + 2] = data[row].ptd.convectionAreaMultiplier;
         }
-        result.cones = cones.ToArray(); return result;
+        result.cones = cones.ToArray();
+        if (index != null) { result.areaIndexNodeVisits = index.nodeVisits; result.areaUnitCones = index.unitAreaCones; result.areaElidedPairs = result.candidatePairs - result.resetRectangleCalls; }
+        profile?.Finish(); return result;
     }
     public void Dispose()
     {
