@@ -207,13 +207,13 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     }
     void SelectView(string value)
     {
-        if(value=="composed") { generation.Craft.SetGeometryDebug("off"); bodyGeometryDebug=false; state.view=value; return; }
+        if(value=="composed") { generation.Craft.SetGeometryDebug("off"); bodyGeometryDebug=false; state.view=value; state.debugLegend="Opaque craft/body composition; nearest positive depth wins; native-resolution UI"; return; }
         bool body=value.StartsWith("body-",StringComparison.Ordinal),craft=value.StartsWith("craft-",StringComparison.Ordinal); if(!body&&!craft) throw new InvalidDataException("View requires craft- or body- prefix.");
         string mode=value.Substring(body?5:6); bool geometry=mode!="color"&&mode!="depth"&&mode!="linear-depth"&&mode!="log-depth";
         int debug=geometry?ResidentMaterialRuntime.GeometryDebugMode(mode):0;
         if(body&&mode=="vertex-colors") throw new InvalidDataException("Body source COLOR was not captured; refusing fabricated vertex-color diagnostic.");
         generation.Craft.SetGeometryDebug(craft&&geometry?mode:"off"); bodyGeometryDebug=body&&geometry; if(bodyGeometryDebug) generation.DebugMaterial.SetFloat("_Mode",debug);
-        state.view=value; state.debugLegend=geometry?"Unlit actual geometry; normals encoded [-1,1] to [0,1]; UV fractional RG; stable material-index hue":"Depth metres: raw clamps on display; linear near/far or log(1+depth)/log(1+far); black is unwritten";
+        state.view=value; state.debugLegend=geometry?"Unlit actual geometry; normals encoded [-1,1] to [0,1]; UV fractional RG; stable material-index hue":mode=="color"?"Captured color domain with normal material recipe; native-resolution UI":"Depth metres: raw clamps on display; linear near/far or log(1+depth)/log(1+far); black is unwritten";
     }
     void ReloadDebugShader(string path)
     {
