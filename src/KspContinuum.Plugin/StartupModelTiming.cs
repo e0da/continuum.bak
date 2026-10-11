@@ -19,6 +19,7 @@ namespace KspContinuum
         string run;
         int mainThread;
         bool exported;
+        bool partConstructionRequested;
         long foreignThreadCalls, stackErrors;
         readonly Dictionary<MethodBase, Metric> metrics = new Dictionary<MethodBase, Metric>();
         Frame current;
@@ -41,12 +42,18 @@ namespace KspContinuum
             public string interpretation = "Synchronous monotonic elapsed scopes, not CPU or GPU exclusive costs. Exclusive subtracts only directly nested instrumented scopes; uninstrumented Unity/native work, I/O, allocations and callbacks remain. PartReader mixes MU parsing and Unity construction; CompileModel includes model clones and configuration, not exclusively native publication. Inclusive scopes overlap and must not be summed. First call may include JIT. Zero calls can mean Mono inlining or missing coverage. No coroutine suspension is timed. Measurements include observer overhead.";
             public long frequency, foreignThreadCalls, stackErrors;
             public bool stackEmpty;
+            public bool partConstructionRequested, partConstructionCallsitesInstalled, partConstructionHooksRemoved;
+            public int processId;
+            public string partConstructionCoverage;
             public Metric[] scopes;
         }
 
         public void Awake()
         {
             string[] args = Environment.GetCommandLineArgs();
+            partConstructionRequested = args.Contains("--continuum-startup-part-construction-timing");
+            if (partConstructionRequested && !args.Contains("--continuum-startup-world-timing"))
+            { UnityEngine.Debug.LogError("[Continuum startup model timing] rejected: part construction timing requires world timing."); Application.Quit(2); return; }
             if (!args.Contains("--continuum-startup-world-timing")) return;
             DontDestroyOnLoad(gameObject);
             try
@@ -71,6 +78,7 @@ namespace KspContinuum
                 Add(game, "PartLoader", "LoadInternalProp", 100668696);
                 Add(game, "PartLoader", "LoadInternalSpace", 100668699);
                 Add(game, "PartLoader", "CompileModel", 100668700);
+                if (partConstructionRequested) StartupPartConstructionTiming.Install(harmony);
                 UnityEngine.Debug.Log("[Continuum startup model timing] status=installed scopes=" + metrics.Count);
             }
             catch (Exception error)
@@ -96,16 +104,24 @@ namespace KspContinuum
 
         static void Begin(MethodBase __originalMethod, out Frame __state)
         {
-            __state = null;
+            __state = BeginCall(__originalMethod);
+        }
+        internal static void RegisterCallsite(MethodInfo wrapper, MethodInfo original, string name)
+        { active.metrics.Add(wrapper, new Metric { name = name, token = original.MetadataToken }); }
+        internal static Frame BeginCall(MethodBase method)
+        {
             if (Thread.CurrentThread.ManagedThreadId != active.mainThread)
-            { Interlocked.Increment(ref active.foreignThreadCalls); return; }
-            __state = new Frame { metric = active.metrics[__originalMethod], parent = active.current, start = Stopwatch.GetTimestamp() };
-            active.current = __state;
+            { Interlocked.Increment(ref active.foreignThreadCalls); return null; }
+            var frame = new Frame { metric = active.metrics[method], parent = active.current, start = Stopwatch.GetTimestamp() };
+            active.current = frame;
+            return frame;
         }
 
         static Exception Finish(Frame __state, Exception __exception)
+        { FinishCall(__state, __exception); return __exception; }
+        internal static void FinishCall(Frame __state, Exception __exception)
         {
-            if (__state == null) return __exception;
+            if (__state == null) return;
             long elapsed = Stopwatch.GetTimestamp() - __state.start;
             Metric metric = __state.metric;
             if (metric.calls == 0) metric.firstTicks = elapsed;
@@ -117,13 +133,12 @@ namespace KspContinuum
             else metric.exclusiveTicks += elapsed - __state.children;
             active.current = __state.parent;
             if (__state.parent != null) __state.parent.children += elapsed;
-            return __exception;
         }
 
         public static void ObserveForMenu()
         {
             if (active == null || active.exported) return;
-            active.Export("menu-observed"); active.Cleanup();
+            active.Cleanup(); active.Export("menu-observed");
         }
         public void Update()
         { if (active == this && !exported && HighLogic.LoadedScene == GameScenes.MAINMENU) ObserveForMenu(); }
@@ -135,6 +150,11 @@ namespace KspContinuum
                 var report = new Report { status = status, runId = run, observedUtc = DateTime.UtcNow.ToString("o"),
                     frequency = Stopwatch.Frequency, foreignThreadCalls = foreignThreadCalls, stackErrors = stackErrors,
                     stackEmpty = current == null, scopes = metrics.Values.OrderBy(x => x.token).ToArray() };
+                report.partConstructionRequested = partConstructionRequested;
+                report.partConstructionCallsitesInstalled = partConstructionRequested && StartupPartConstructionTiming.Installed;
+                report.partConstructionHooksRemoved = !partConstructionRequested || StartupPartConstructionTiming.HooksRemoved;
+                report.processId = Process.GetCurrentProcess().Id;
+                report.partConstructionCoverage = partConstructionRequested ? "Exact pinned call sites: ParsePart model setup, scalar assignment and module admission; AddModule native component creation and explicit Awake/Load; PartModule fields and virtual OnAwake/OnLoad. Native AddComponent includes implicit Unity constructors/Awake. Transitive work, inlined callees and distinct runtime callback implementations are not individually attributed. Inclusive scopes overlap; original calls and exceptions are preserved." : "not-requested";
                 string directory = Path.Combine(KSPUtil.ApplicationRootPath, "GameData", "KspContinuum", "PluginData");
                 Directory.CreateDirectory(directory);
                 string path = Path.Combine(directory, "startup-model-timing-" + Guid.NewGuid().ToString("N") + ".json");
