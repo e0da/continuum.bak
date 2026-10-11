@@ -37,6 +37,8 @@ Experiments run only through explicit panel actions or command-line flags. Analo
 
 The private reference-program runner includes an [owned diagnostic docking roundtrip](docs/docking-situations.md), with pinned paired fixtures, stock merge/split evidence and inspected render captures.
 
+It also includes [stock checkpoint reconstruction](docs/checkpoint-reload.md) and an opt-in [live sparse convection replacement](docs/live-convection.md), with complete boundary costs and bitwise same-state evidence.
+
 Use a .NET 8 or newer SDK. Run the analytic tests without installing KSP:
 
 ```sh

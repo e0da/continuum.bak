@@ -71,7 +71,7 @@ pub fn catalog() -> Vec<Recipe> {
         row("CSP-0002",Some("CSP"),"mission","Minmus Survey1",ExistingMissionMode,"Existing sunny-site targeted landing; historical trials missed100m target","Preserve unchanged target gate and historical failures"),
         row("minmus-orbit",Some("CSP-0002"),"situation","Minmus orbit checkpoint descent",ExistingMissionMode,"Existing checkpoint survey mode rebuilds fresh autopilot state","Bridge existing checkpoint/attempt flags to owned runner; do not pretend generic flight capture supports descent"),
         row("landing-contact",Some("minmus-orbit"),"micro-situation","Touchdown and settle",Planned,"Leg contact, attitude, intact craft, daylight and distance","Implement bounded contact capture and actual acceptance/cleanup"),
-        row("scene-save-reload",Some("CSP"),"situation","Scene transition and save/reload",RequiresPrivatePins,"Stock checkpoint save, changed live state, scene teardown and semantic reload","Supply an intact orbital checkpoint and explicit part count; native behavior and images qualify each run"),
+        row("scene-save-reload",Some("CSP"),"situation","Scene transition and save/reload",RequiresPrivatePins,"Declared quiet/engine-shutdown preparation; stock checkpoint save, deliberate velocity change, fresh scene owners and semantic reload","Supply an intact orbital checkpoint and explicit part count; frozen physical-orbit and presentation gates remain open"),
     ];
     rows.extend([
         row(
@@ -153,6 +153,12 @@ pub fn catalog() -> Vec<Recipe> {
         recipe.behavior_proof.push(proof.into());
         recipe.varied_inputs = vec![factors.into()];
         recipe.cost_measurements.push(format!("Named systems: {systems}; full-window wall/frame cost and event latency; nested scopes not summed"));
+        if recipe.id == "scene-save-reload" {
+            recipe.behavior_proof = vec!["Stock shutdown readback before baseline; saved FLIGHT scene, exact saved whole-game membership and quicksave/post-load notifications".into(),
+                "New live vessel/part objects; preserved IDs, parent graph, four-domain persistence, frozen orbit/time tolerances, actual before/after images and owned cleanup".into()];
+            recipe.cost_measurements = vec!["Process startup and complete wall duration, ordered lifecycle event wall/simulation/frame coordinates; no frame distribution or exclusive serialization CPU collected by this driver".into()];
+            recipe.varied_inputs = vec!["Declared stock quiet preparation and reload treatment; immutable source, saved baseline and mod graph".into()];
+        }
     }
     rows
 }
