@@ -139,6 +139,7 @@ namespace KspContinuum
         public object convectionReplacement;
         public object aeroIntegrationAttribution;
         public object aeroStepContext;
+        public object processCapture;
         public DryBuoyancyReport dryBuoyancy;
     }
 

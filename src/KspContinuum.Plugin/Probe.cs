@@ -31,6 +31,8 @@ namespace KspContinuum
         ConvectionReplacement convectionReplacement;
         AeroIntegrationAttribution aeroIntegrationAttribution;
         AeroStepContext aeroStepContext;
+        ProcessCaptureDiagnostics processCapture;
+        ProcessCaptureDiagnostics.Boundary processStartBoundary, processEndBoundary;
         DryBuoyancyRuntime dryBuoyancy;
         VesselRuntimeCapture vesselRuntime;
         Action<ProbeReport> completion;
@@ -58,6 +60,9 @@ namespace KspContinuum
             public double requestedSimulatedSeconds, actualSimulatedSeconds, captureWallSeconds;
             public long clockTimestamp, clockFrequency;
             public int processId;
+            public string machClockStatus = "not-requested";
+            public long machAbsoluteBeforeTicks, machAbsoluteAfterTicks;
+            public uint machTimebaseNumerator, machTimebaseDenominator;
         }
 
         public Probe(string dryBuoyancyStrategy = null, bool forcePlayerLoop = false, double simulationSeconds = 0,
@@ -111,6 +116,11 @@ namespace KspContinuum
                 vesselRuntime = VesselRuntimeCapture.Create(FlightGlobals.ActiveVessel, report.runId);
                 foreach (MarkerReport row in report.markers) Acquire(row);
                 string[] arguments = Environment.GetCommandLineArgs();
+                if (Environment.GetEnvironmentVariable("CONTINUUM_PROCESS_CAPTURE") == "1")
+                {
+                    processCapture = new ProcessCaptureDiagnostics(report.runId);
+                    report.processCapture = processCapture.Report;
+                }
                 convectionReplacement = ConvectionReplacement.Create(arguments, report.runId, () => captureActive);
                 if (convectionReplacement != null) report.convectionReplacement = convectionReplacement.Report;
                 aeroStepContext = AeroStepContext.Create(arguments, report.runId, () => captureActive);
@@ -189,7 +199,10 @@ namespace KspContinuum
                 }
                 report.captureStartUtc = DateTime.UtcNow.ToString("o"); captureStartUt = Planetarium.GetUniversalTime();
                 ProfileFrame previous = Context();
-                report.clockFrequency=Stopwatch.Frequency; report.captureStartClockTimestamp=Stopwatch.GetTimestamp();
+                report.clockFrequency=Stopwatch.Frequency;
+                processStartBoundary = processCapture == null ? null : processCapture.MarkBoundary();
+                report.captureStartClockTimestamp = processStartBoundary == null ? Stopwatch.GetTimestamp() : processStartBoundary.clockTimestamp;
+                if (processCapture != null) processCapture.Begin(processStartBoundary);
                 report.researchPanel = ResearchPanelPresentation.BeginCapture(report.captureStartClockTimestamp);
                 FlightLocalCamera.BeginWindow(report.captureStartClockTimestamp);
                 FlightDiagnosticControls.BeginWindow(report.captureStartClockTimestamp);
@@ -234,7 +247,10 @@ namespace KspContinuum
                     if (simulationSeconds > 0 && report.captureWallSeconds >= wallTimeoutSeconds) { report.status = "invalid"; report.completionReason = "capture-wall-timeout"; break; }
                     if (completed < report.requestedFrames) previous = Context();
                 }
-                captureActive=false; report.captureEndClockTimestamp=Stopwatch.GetTimestamp();
+                captureActive=false;
+                processEndBoundary = processCapture == null ? null : processCapture.MarkBoundary();
+                report.captureEndClockTimestamp = processEndBoundary == null ? Stopwatch.GetTimestamp() : processEndBoundary.clockTimestamp;
+                if (processCapture != null) processCapture.End(processEndBoundary, report.status == "complete");
                 ResearchPanelPresentation.EndCapture(report.researchPanel, report.captureEndClockTimestamp);
                 if (report.researchPanel.status != "complete") { report.status = "invalid"; report.completionReason = "research-panel-visibility-or-callback-invalid"; }
                 FlightLocalCamera.EndWindow(report.captureEndClockTimestamp);
@@ -482,7 +498,12 @@ namespace KspContinuum
                 if (report.completionReason == null) report.completionReason = "capture-interrupted";
                 if(report.captureStartClockTimestamp>0)
                 {
-                    if(report.captureEndClockTimestamp==0) report.captureEndClockTimestamp=Stopwatch.GetTimestamp();
+                    if(report.captureEndClockTimestamp==0)
+                    {
+                        processEndBoundary = processCapture == null ? null : processCapture.MarkBoundary();
+                        report.captureEndClockTimestamp = processEndBoundary == null ? Stopwatch.GetTimestamp() : processEndBoundary.clockTimestamp;
+                        if (processCapture != null) processCapture.End(processEndBoundary, false);
+                    }
                     ResearchPanelPresentation.EndCapture(report.researchPanel, report.captureEndClockTimestamp);
                     if (report.researchPanel != null && report.researchPanel.status != "complete") { report.status = "invalid"; report.completionReason = "research-panel-visibility-or-callback-invalid"; }
                     FlightLocalCamera.EndWindow(report.captureEndClockTimestamp);
@@ -496,6 +517,7 @@ namespace KspContinuum
                     { report.status = "invalid"; report.completionReason = "vessel-runtime-" + vesselRuntime.Report.status; }
                 }
                 if (report.captureStartClockTimestamp > 0) Signal("capture-end", report.completionReason);
+                if (processCapture != null) { processCapture.Dispose(); processCapture = null; }
                 callback(report);
             }
             catch (Exception error)
@@ -519,6 +541,15 @@ namespace KspContinuum
                 captureWallSeconds=report.captureWallSeconds,
                 clockTimestamp = name=="capture-start" ? report.captureStartClockTimestamp : report.captureEndClockTimestamp,
                 clockFrequency = Stopwatch.Frequency, processId = Process.GetCurrentProcess().Id };
+            ProcessCaptureDiagnostics.Boundary boundary = name == "capture-start" ? processStartBoundary : processEndBoundary;
+            if (boundary != null)
+            {
+                signal.machClockStatus = boundary.machClockStatus;
+                signal.machAbsoluteBeforeTicks = boundary.machAbsoluteBeforeTicks;
+                signal.machAbsoluteAfterTicks = boundary.machAbsoluteAfterTicks;
+                signal.machTimebaseNumerator = boundary.machTimebaseNumerator;
+                signal.machTimebaseDenominator = boundary.machTimebaseDenominator;
+            }
             string path = Path.Combine(signalDirectory, name + ".json"), temporary = path + ".pending";
             File.WriteAllText(temporary, JsonUtility.ToJson(signal)); File.Move(temporary, path);
         }
