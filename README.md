@@ -35,6 +35,8 @@ Experiments run only through explicit panel actions or command-line flags. Analo
 
 ## Build
 
+The private reference-program runner includes an [owned diagnostic docking roundtrip](docs/docking-situations.md), with pinned paired fixtures, stock merge/split evidence and inspected render captures.
+
 Use a .NET 8 or newer SDK. Run the analytic tests without installing KSP:
 
 ```sh
