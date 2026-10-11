@@ -24,6 +24,8 @@ preset high
 override OBJECT_ID 0.5 1 2
 captureframe
 quit
+materialmode reference|instanced
+view composed|craft-color|body-color|craft-depth|body-depth
 fixturehotreload ABSOLUTE_SCENE_MANIFEST
 snapshotreload ABSOLUTE_NEWER_SNAPSHOT
 ```
