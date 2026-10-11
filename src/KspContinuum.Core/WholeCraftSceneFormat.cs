@@ -22,7 +22,7 @@ namespace KspContinuum
     }
     [Serializable] public sealed class WholeCraftDraw
     {
-        public string id, rendererName; public int rendererId, meshIndex, submeshIndex, materialIndex, layer, shadowCasting;
+        public string id, rendererName, poseSource, posePrecision; public int rendererId, meshIndex, submeshIndex, materialIndex, layer, shadowCasting;
         public uint partId; public bool receiveShadows, enabled, active, forceRenderingOff, propertyBlockPresent, frozenSkin;
         public double[] matrix;
     }
@@ -38,6 +38,27 @@ namespace KspContinuum
         static void Identity(string value) { Require(!string.IsNullOrEmpty(value)&&value.Length<=2048,"Whole-craft identity absent/oversize."); foreach(char c in value) Require(!char.IsControl(c),"Whole-craft identity contains controls."); }
         static void Digest(string value) { Require(value!=null&&value.Length==64,"Whole-craft digest differs."); foreach(char c in value) Require(c>='0'&&c<='9'||c>='a'&&c<='f',"Whole-craft digest encoding differs."); }
         static void Channel(float[] values,int count,bool optional) { Require(values!=null&&(values.Length==count||optional&&values.Length==0),"Whole-craft channel shape differs."); foreach(float v in values) Require(Finite(v),"Whole-craft channel nonfinite."); }
+        static void Affine(double[] m)
+        {
+            Require(m!=null&&m.Length==16,"Whole-craft affine shape invalid."); foreach(double v in m) Require(Finite(v),"Whole-craft affine nonfinite.");
+            Require(m[12]==0&&m[13]==0&&m[14]==0&&m[15]==1,"Whole-craft transform not affine.");
+            double d=m[0]*(m[5]*m[10]-m[6]*m[9])-m[1]*(m[4]*m[10]-m[6]*m[8])+m[2]*(m[4]*m[9]-m[5]*m[8]); Require(Finite(d)&&Math.Abs(d)>1e-30,"Whole-craft transform singular.");
+        }
+        public static double[] MultiplyAffine(double[] a,double[] b)
+        {
+            Affine(a); Affine(b); var result=new double[16]; for(int r=0;r<4;r++) for(int k=0;k<4;k++) for(int c=0;c<4;c++) result[r*4+c]+=a[r*4+k]*b[k*4+c]; Affine(result); return result;
+        }
+        public static double[] RelativeAffine(double[] rootWorld,double[] sourceWorld)
+        {
+            Affine(rootWorld); Affine(sourceWorld); var a=rootWorld;
+            double d=a[0]*(a[5]*a[10]-a[6]*a[9])-a[1]*(a[4]*a[10]-a[6]*a[8])+a[2]*(a[4]*a[9]-a[5]*a[8]);
+            var inverse=new double[16]; inverse[0]=(a[5]*a[10]-a[6]*a[9])/d; inverse[1]=(a[2]*a[9]-a[1]*a[10])/d; inverse[2]=(a[1]*a[6]-a[2]*a[5])/d;
+            inverse[4]=(a[6]*a[8]-a[4]*a[10])/d; inverse[5]=(a[0]*a[10]-a[2]*a[8])/d; inverse[6]=(a[2]*a[4]-a[0]*a[6])/d;
+            inverse[8]=(a[4]*a[9]-a[5]*a[8])/d; inverse[9]=(a[1]*a[8]-a[0]*a[9])/d; inverse[10]=(a[0]*a[5]-a[1]*a[4])/d; inverse[15]=1;
+            // Subtract authoritative world translations before rotation/scale, retaining small offsets.
+            var source=(double[])sourceWorld.Clone(); source[3]-=a[3]; source[7]-=a[7]; source[11]-=a[11];
+            return MultiplyAffine(inverse,source);
+        }
         public static void ValidateGeometry(WholeCraftGeometry data)
         {
             Require(data!=null&&data.meshes!=null&&data.meshes.Length>0&&data.meshes.Length<=MaxRows,"Whole-craft mesh capacity invalid."); long vertices=0,indices=0;
@@ -60,6 +81,7 @@ namespace KspContinuum
             var rendererIds=new System.Collections.Generic.HashSet<int>(); var ids=new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
             foreach(var d in manifest.draws) { Require(d!=null,"Null whole-craft draw."); Identity(d.id); Require(ids.Add(d.id)&&d.rendererId!=0&&d.partId!=0&&d.layer>=0&&d.layer<=31,"Whole-craft draw identity invalid."); rendererIds.Add(d.rendererId); Require(d.meshIndex>=0&&d.meshIndex<data.meshes.Length&&d.submeshIndex>=0&&d.submeshIndex<data.meshes[d.meshIndex].submeshes.Length&&d.materialIndex>=0&&d.materialIndex<manifest.materials.Length,"Whole-craft draw reference invalid."); Require(d.matrix!=null&&d.matrix.Length==16,"Whole-craft pose shape invalid."); foreach(double v in d.matrix) Require(Finite(v),"Whole-craft pose nonfinite."); Require(d.matrix[12]==0&&d.matrix[13]==0&&d.matrix[14]==0&&d.matrix[15]==1,"Whole-craft pose not affine."); double[] m=d.matrix; double det=m[0]*(m[5]*m[10]-m[6]*m[9])-m[1]*(m[4]*m[10]-m[6]*m[8])+m[2]*(m[4]*m[9]-m[5]*m[8]); Require(Finite(det)&&Math.Abs(det)>1e-30,"Whole-craft pose singular."); }
             var omitted=new System.Collections.Generic.HashSet<int>(); foreach(var o in manifest.omissions) { Require(o!=null&&o.rendererId!=0&&omitted.Add(o.rendererId)&&!rendererIds.Contains(o.rendererId),"Whole-craft omission duplicates captured renderer."); Identity(o.name); Identity(o.reason); }
+            foreach(var d in manifest.draws) Require((d.poseSource=="ancestor-local-double"||d.poseSource=="detached-world-trs-double-relative")&&d.posePrecision=="unity-float-local-trs-composed-double","Whole-craft pose provenance differs.");
             Require(manifest.capturedRenderers==rendererIds.Count&&manifest.omittedRenderers==omitted.Count&&manifest.rendererInventory==checked(rendererIds.Count+omitted.Count),"Whole-craft renderer coverage differs.");
             foreach(var t in manifest.textures) { Require(t!=null,"Whole-craft texture absent."); Identity(t.id); MultiscaleSceneFormat.PortablePath(t.payload); Digest(t.payloadSha256); Require(t.width>0&&t.width<=16384&&t.height>0&&t.height<=16384&&t.payloadLength>0&&t.payloadLength<=1073741824&&t.mipCount>0&&t.mipCount<=15&&t.filter>=0&&t.filter<=2&&t.wrap>=0&&t.wrap<=3&&t.aniso>=0&&t.aniso<=16&&Finite(t.mipBias),"Whole-craft texture invalid."); }
             foreach(var material in manifest.materials) { Require(material!=null&&material.keywords!=null&&material.properties!=null,"Whole-craft material absent."); Identity(material.id); Identity(material.name); Identity(material.shader); Require(material.keywords.Length<=256&&material.properties.Length<=256,"Whole-craft material capacity invalid."); foreach(string k in material.keywords) Identity(k); var names=new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal); foreach(var p in material.properties) { Require(p!=null,"Whole-craft property absent."); Identity(p.name); Require(names.Add(p.name)&&p.kind>=0&&p.kind<=4,"Whole-craft property identity invalid."); if(p.kind==4) { Require(p.textureIndex>=-1&&p.textureIndex<manifest.textures.Length,"Whole-craft texture reference invalid."); Channel(p.scaleOffset,4,false); Channel(p.value,0,false); } else { Channel(p.value,p.kind<=1?4:1,false); Channel(p.scaleOffset,0,false); Require(p.textureIndex==-1,"Whole-craft numeric texture reference differs."); } } }

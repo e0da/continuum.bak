@@ -20,10 +20,16 @@ namespace KspContinuum
                 (2*x*y+2*z*w)*s.x,(1-2*x*x-2*z*z)*s.y,(2*y*z-2*x*w)*s.z,(double)p.y,
                 (2*x*z-2*y*w)*s.x,(2*y*z+2*x*w)*s.y,(1-2*x*x-2*y*y)*s.z,(double)p.z,0,0,0,1};
         }
-        static double[] RootLocal(Transform value,Transform root)
+        static double[] World(Transform value)
         {
-            var chain=new List<Transform>(); while(value!=root) { if(value==null||chain.Count>=256) throw new InvalidDataException("Detached/oversize renderer hierarchy."); chain.Add(value); value=value.parent; }
+            var chain=new List<Transform>(); while(value!=null) { if(chain.Count>=256) throw new InvalidDataException("Oversize world transform hierarchy."); chain.Add(value); value=value.parent; }
             double[] m=Identity(); for(int i=chain.Count-1;i>=0;i--) m=Multiply(m,Local(chain[i])); return m;
+        }
+        static double[] RootLocal(Transform value,Transform root,double[] rootWorld,out string source)
+        {
+            Transform original=value; var chain=new List<Transform>(); while(value!=root&&value!=null) { if(chain.Count>=256) throw new InvalidDataException("Oversize renderer hierarchy."); chain.Add(value); value=value.parent; }
+            if(value==null) { source="detached-world-trs-double-relative"; return WholeCraftSceneFormat.RelativeAffine(rootWorld,World(original)); }
+            source="ancestor-local-double"; double[] m=Identity(); for(int i=chain.Count-1;i>=0;i--) m=Multiply(m,Local(chain[i])); return m;
         }
         static void ValidatePose(double[] m)
         {
@@ -53,6 +59,7 @@ namespace KspContinuum
             if(!Path.IsPathRooted(output)||Directory.Exists(output)||File.Exists(output)) throw new InvalidDataException("Whole-craft requires new absolute output.");
             string stage=output+".pending-"+Guid.NewGuid().ToString("N"); Directory.CreateDirectory(stage);
             var meshes=new List<WholeCraftMeshData>(); var meshIds=new Dictionary<Mesh,int>(); var materials=new List<WholeCraftMaterialAsset>(); var materialIds=new Dictionary<Material,int>(); var textures=new List<ResidentTextureAsset>(); var textureIds=new Dictionary<Texture2D,int>(); var modes=new List<string>(); var draws=new List<WholeCraftDraw>(); var omissions=new List<WholeCraftOmission>();
+            double[] rootWorld=World(vessel.transform); ValidatePose(rootWorld);
             int textureAttempt=0; var parts=new HashSet<Part>(vessel.parts); var renderers=new Dictionary<int,Renderer>();
             foreach(Part part in vessel.parts) foreach(Renderer renderer in part.GetComponentsInChildren<Renderer>(true)) { if(renderer==null) continue; Part owner=renderer.GetComponentInParent<Part>(); if(owner!=null&&parts.Contains(owner)) renderers[renderer.GetInstanceID()]=renderer; }
             if(renderers.Count>50000) throw new InvalidDataException("Whole-craft renderer capacity exceeded.");
@@ -66,7 +73,7 @@ namespace KspContinuum
                     else if(skin!=null) { var bake=typeof(SkinnedMeshRenderer).GetMethod("BakeMesh",new[] {typeof(Mesh),typeof(bool)}); if(bake==null) throw new InvalidDataException("Frozen skin scale semantics unavailable; unsupported BakeMesh overload."); mesh=new Mesh(); ownsMesh=true; bake.Invoke(skin,new object[] {mesh,false}); frozenSkin=true; }
                     else throw new InvalidDataException("Nonmesh renderer type: "+renderer.GetType().Name);
                     if(mesh==null||mesh.vertexCount==0) throw new InvalidDataException("Mesh absent/empty.");
-                    double[] pose=RootLocal(renderer.transform,vessel.transform); string stable=Stable(renderer,part); Material[] slots=renderer.sharedMaterials;
+                    string poseSource; double[] pose=RootLocal(renderer.transform,vessel.transform,rootWorld,out poseSource); string stable=Stable(renderer,part); Material[] slots=renderer.sharedMaterials;
                     ValidatePose(pose);
                     if(slots.Length<mesh.subMeshCount||slots.Any(m=>m==null||m.shader==null)) throw new InvalidDataException("Unbound material/submesh slot.");
                     int meshIndex; if(!meshIds.TryGetValue(mesh,out meshIndex)) { var data=Geometry(mesh); meshIndex=meshes.Count; meshes.Add(data); if(!ownsMesh) meshIds.Add(mesh,meshIndex); }
@@ -103,7 +110,7 @@ namespace KspContinuum
                             }
                             materialIndex=materials.Count; materialIds.Add(material,materialIndex); materials.Add(new WholeCraftMaterialAsset {id="material/"+material.GetInstanceID(),name=material.name,shader=shader.name,queue=material.renderQueue,keywords=material.shaderKeywords,properties=properties.ToArray(),omittedProperties=missing.ToArray()});
                         }
-                        pending.Add(new WholeCraftDraw {id=stable+"/slot/"+slot,rendererName=renderer.name,rendererId=renderer.GetInstanceID(),partId=part.flightID,meshIndex=meshIndex,submeshIndex=Math.Min(slot,mesh.subMeshCount-1),materialIndex=materialIndex,matrix=pose,layer=renderer.gameObject.layer,shadowCasting=(int)renderer.shadowCastingMode,receiveShadows=renderer.receiveShadows,enabled=renderer.enabled,active=renderer.gameObject.activeInHierarchy,forceRenderingOff=renderer.forceRenderingOff,propertyBlockPresent=renderer.HasPropertyBlock(),frozenSkin=frozenSkin});
+                        pending.Add(new WholeCraftDraw {id=stable+"/slot/"+slot,rendererName=renderer.name,rendererId=renderer.GetInstanceID(),partId=part.flightID,meshIndex=meshIndex,submeshIndex=Math.Min(slot,mesh.subMeshCount-1),materialIndex=materialIndex,matrix=pose,poseSource=poseSource,posePrecision="unity-float-local-trs-composed-double",layer=renderer.gameObject.layer,shadowCasting=(int)renderer.shadowCastingMode,receiveShadows=renderer.receiveShadows,enabled=renderer.enabled,active=renderer.gameObject.activeInHierarchy,forceRenderingOff=renderer.forceRenderingOff,propertyBlockPresent=renderer.HasPropertyBlock(),frozenSkin=frozenSkin});
                     }
                     draws.AddRange(pending);
                 }
@@ -111,7 +118,7 @@ namespace KspContinuum
                 finally { if(ownsMesh&&mesh!=null) UnityEngine.Object.Destroy(mesh); }
             }
             var geometry=new WholeCraftGeometry {meshes=meshes.ToArray()}; string geometryPath=Path.Combine(stage,"geometry.bin"); WholeCraftSceneFormat.WriteGeometry(geometryPath,geometry);
-            Matrix4x4 root=vessel.transform.localToWorldMatrix; root.m03=root.m13=root.m23=0;
+            var root=new Matrix4x4(); for(int r=0;r<4;r++) for(int c=0;c<4;c++) root[r,c]=(float)rootWorld[r*4+c]; root.m03=root.m13=root.m23=0;
             var manifest=new WholeCraftSceneManifest {schema="continuum-whole-craft-scene/v1",runId=runId,processId=System.Diagnostics.Process.GetCurrentProcess().Id,vesselId=vessel.id.ToString("D"),engine=Application.unityVersion,colorSpace=QualitySettings.activeColorSpace.ToString(),geometry="geometry.bin",geometrySha256=Hash(geometryPath),rootToWorld=Matrix(root),rendererInventory=renderers.Count,capturedRenderers=draws.Select(d=>d.rendererId).Distinct().Count(),omittedRenderers=omissions.Count,drawSlots=draws.Count,materials=materials.ToArray(),textures=textures.ToArray(),textureCaptureModes=modes.ToArray(),draws=draws.ToArray(),omissions=omissions.ToArray()};
             WholeCraftSceneFormat.Validate(manifest,geometry); File.WriteAllText(Path.Combine(stage,"manifest.json"),ReportJson.Encode(manifest)); Directory.Move(stage,output);
             Debug.Log("[Continuum whole craft] captured="+manifest.capturedRenderers+" omitted="+manifest.omittedRenderers+" slots="+manifest.drawSlots+" output="+output); return Path.Combine(output,"manifest.json");
