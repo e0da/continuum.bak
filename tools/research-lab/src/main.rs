@@ -1147,7 +1147,12 @@ fn smoke(
     if flight_error.is_some() {
         let mut retained = json!({});
         type Recover = fn(&Path, &str, u32, &Path) -> Result<()>;
-        let recoveries: [(&str, &str, Recover); 4] = [
+        let recoveries: [(&str, &str, Recover); 5] = [
+            (
+                "flight-admission.json",
+                "admission",
+                continuum_research_lab::flight::recover_failed_admission,
+            ),
             (
                 "local-camera.json",
                 "localCamera",

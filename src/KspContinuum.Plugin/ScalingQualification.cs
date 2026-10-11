@@ -24,6 +24,55 @@ namespace KspContinuum
         float originalPhysicsLimit, originalMaximumDelta, qualificationStarted;
         Guid? atmosphericVesselId;
         float warpRequestedAt;
+        bool admissionExported;
+        [Serializable] public sealed class AdmissionSnapshot
+        {
+            public string schema = "continuum-flight-admission/v1", runId, status, reason, scene, vesselId, expectedVesselId, situation, body, warpMode, throttleText;
+            public int processId, frame, parts, expectedParts, warpRateIndex, stableWarpFrames;
+            public long clockTimestamp, clockFrequency;
+            public float realtimeSeconds, qualificationStartedSeconds, elapsedSeconds, eligibleSinceSeconds, warpRate, throttle;
+            public double simulationSeconds, wallTimeoutSeconds, settleSeconds, altitudeMeters;
+            public bool globalsReady, selectionRequested, selectionReady, actualVesselPresent, eligibleVesselPresent, loaded, packed, paused, ctrlStatePresent, throttleFinite,
+                selectedVesselMatches, partCountMatches, environmentMatches, eligible, selectionGatePassed, normalRate, settleComplete, warpEntered, normalAtmosphere, atmosphericStress, physicsWarp, strategySweep, warpRequested;
+        }
+        void ExportAdmission(string status, string reason)
+        {
+            if (admissionExported) return; admissionExported = true;
+            try
+            {
+                Vessel actual = FlightGlobals.ActiveVessel, eligibleVessel = FlightGlobals.ready ? actual : null;
+                float throttle = actual == null || actual.ctrlState == null ? 0 : actual.ctrlState.mainThrottle;
+                bool finite = !float.IsNaN(throttle) && !float.IsInfinity(throttle);
+                var value = new AdmissionSnapshot { status = status, reason = reason, processId = System.Diagnostics.Process.GetCurrentProcess().Id,
+                    frame = Time.frameCount, clockTimestamp = System.Diagnostics.Stopwatch.GetTimestamp(), clockFrequency = System.Diagnostics.Stopwatch.Frequency,
+                    scene = HighLogic.LoadedScene.ToString(), realtimeSeconds = Time.realtimeSinceStartup, qualificationStartedSeconds = qualificationStarted,
+                    elapsedSeconds = Time.realtimeSinceStartup - qualificationStarted, eligibleSinceSeconds = eligibleSince,
+                    simulationSeconds = simulationSeconds, wallTimeoutSeconds = wallTimeout, settleSeconds = settleSeconds,
+                    globalsReady = FlightGlobals.ready, selectionRequested = ScaleCheckpointLoadState.Requested, selectionReady = ScaleCheckpointLoadState.Ready,
+                    actualVesselPresent = actual != null, eligibleVesselPresent = eligibleVessel != null, vesselId = actual == null ? null : actual.id.ToString(),
+                    expectedVesselId = ScaleCheckpointLoadState.VesselId.ToString(), parts = actual == null ? 0 : actual.parts.Count, expectedParts = expectedParts,
+                    loaded = actual != null && actual.loaded, packed = actual != null && actual.packed, paused = FlightDriver.Pause,
+                    situation = actual == null ? null : actual.situation.ToString(), body = actual == null || actual.mainBody == null ? null : actual.mainBody.bodyName,
+                    altitudeMeters = actual == null ? 0 : actual.altitude, ctrlStatePresent = actual != null && actual.ctrlState != null,
+                    throttle = finite ? throttle : 0, throttleText = throttle.ToString("R", CultureInfo.InvariantCulture), throttleFinite = finite,
+                    warpRate = TimeWarp.CurrentRate, warpRateIndex = TimeWarp.CurrentRateIndex, warpMode = TimeWarp.WarpMode.ToString(),
+                    normalAtmosphere = normalAtmosphere, atmosphericStress = atmosphericStress, physicsWarp = physicsWarp, strategySweep = strategySweep, warpRequested = warpRequested,
+                    stableWarpFrames = stableWarpFrames };
+                foreach (string argument in Environment.GetCommandLineArgs()) if (argument.StartsWith("--continuum-research-run=", StringComparison.Ordinal)) value.runId = argument.Substring("--continuum-research-run=".Length);
+                value.selectedVesselMatches = !value.selectionRequested || actual != null && actual.id == ScaleCheckpointLoadState.VesselId;
+                value.partCountMatches = expectedParts < 1 || actual != null && actual.parts.Count == expectedParts;
+                value.environmentMatches = eligibleVessel != null && (atmosphericStress || normalAtmosphere ? AtmosphericFlight(eligibleVessel) && (atmosphericStress || value.ctrlStatePresent && throttle < .01) : eligibleVessel.situation == Vessel.Situations.ORBITING && value.ctrlStatePresent && throttle < .01);
+                value.eligible = value.eligibleVesselPresent && value.loaded && !value.packed && !value.paused && value.environmentMatches && value.selectedVesselMatches && value.partCountMatches;
+                value.normalRate = TimeWarp.CurrentRate == 1 && TimeWarp.CurrentRateIndex == 0;
+                value.selectionGatePassed = !value.selectionRequested || value.selectionReady;
+                value.settleComplete = eligibleSince != 0 && Time.realtimeSinceStartup - eligibleSince >= (atmosphericStress ? .5 : settleSeconds);
+                value.warpEntered = TimeWarp.fetch != null && TimeWarp.WarpMode == TimeWarp.Modes.LOW && TimeWarp.CurrentRateIndex == 3 && TimeWarp.CurrentRate == RequestedPhysicsWarp;
+                string json = JsonUtility.ToJson(value);
+                Debug.Log("[Continuum flight admission] " + json);
+                if (directory != null) { string path = Path.Combine(directory, "flight-admission.json"); File.WriteAllText(path + ".tmp", json); File.Move(path + ".tmp", path); }
+            }
+            catch (Exception error) { Debug.LogError("[Continuum flight admission] export-failed " + error); }
+        }
         int stableWarpFrames;
         const float RequestedPhysicsWarp = 4;
         static readonly MethodInfo WarpModeSetter = typeof(TimeWarp).GetMethod("setMode",
@@ -155,7 +204,7 @@ namespace KspContinuum
                 catch (Exception error) { Fail(error); return; }
             }
             if (simulationSeconds > 0 && Time.realtimeSinceStartup - qualificationStarted > wallTimeout)
-            { File.WriteAllText(Path.Combine(directory,"status.txt"), "invalid\nreason=admission-wall-timeout\n"); Finish("invalid",2); return; }
+            { ExportAdmission("invalid", "admission-wall-timeout"); File.WriteAllText(Path.Combine(directory,"status.txt"), "invalid\nreason=admission-wall-timeout\n"); Finish("invalid",2); return; }
             if (ScaleCheckpointLoadState.Requested && !ScaleCheckpointLoadState.Ready) return;
             Vessel vessel = FlightGlobals.ready ? FlightGlobals.ActiveVessel : null;
             bool eligible = vessel != null && vessel.loaded && !vessel.packed && !FlightDriver.Pause &&
@@ -483,11 +532,13 @@ namespace KspContinuum
         {
             sweepState = "error";
             Debug.LogException(error);
+            if (probe == null) ExportAdmission("error", error.GetType().Name + ": " + error.Message);
             try { if (directory != null) File.WriteAllText(Path.Combine(directory, "error.txt"), error.ToString()); } catch { }
             Finish("error", 2);
         }
         void Finish(string status, int code)
         {
+            if (code != 0 && probe == null && !finished) ExportAdmission(status, status);
             try { FlightCameraChain.Stop(status); }
             catch (Exception error) { Debug.LogException(error); code = 2; }
             if (FlightGpuTiming.StopOwned(ok => Finish(status, ok ? code : 2)))

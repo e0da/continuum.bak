@@ -1525,6 +1525,13 @@ mod tests {
             failed_batch
         );
         recover_failed_aero_batch(&directory, "run", 123, &recovered).unwrap();
+        let failed_admission = json!({"schema":"continuum-flight-admission/v1","runId":"run","processId":123,"status":"invalid","reason":"admission-wall-timeout","globalsReady":false,"loaded":true,"normalAtmosphere":false,"situation":"ORBITING","eligible":false});
+        write_new(&profile.join("flight-admission.json"), &failed_admission).unwrap();
+        recover_failed_admission(&directory, "foreign-run", 123, &recovered).unwrap();
+        recover_failed_admission(&directory, "run", 456, &recovered).unwrap();
+        assert!(!recovered.join("flight-admission.json").exists());
+        recover_failed_admission(&directory, "run", 123, &recovered).unwrap();
+        assert_eq!(read::<Value>(&recovered.join("flight-admission.json")).unwrap(), failed_admission);
         let duplicate = directory.join("scale-profile-duplicate");
         fs::create_dir_all(&duplicate).unwrap();
         write_new(&duplicate.join("entry.json"), &evidence).unwrap();
@@ -2311,6 +2318,9 @@ pub fn recover_failed_aero_field(directory: &Path, run_id: &str, pid: u32, outpu
 }
 pub fn recover_failed_part_batch(directory: &Path, run_id: &str, pid: u32, output: &Path) -> Result<()> {
     recover_failed_render_batch(directory, run_id, pid, output, "part-batch.json", "continuum-flight-part-batch/v1")
+}
+pub fn recover_failed_admission(directory: &Path, run_id: &str, pid: u32, output: &Path) -> Result<()> {
+    recover_failed_render_batch(directory, run_id, pid, output, "flight-admission.json", "continuum-flight-admission/v1")
 }
 pub fn recover_failed_local_camera(directory: &Path, run_id: &str, pid: u32, output: &Path) -> Result<()> {
     recover_failed_render_batch(directory, run_id, pid, output, "local-camera.json", "continuum-flight-local-camera/v1")
