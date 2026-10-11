@@ -20,7 +20,8 @@ namespace KspContinuum
             if (Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-startup-build-cache") >= 0) return;
             bool benchmark = Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-native-boundary-bench") >= 0;
             bool pixels = Environment.GetCommandLineArgs().Any(arg => arg.StartsWith("--continuum-backend-pixel-proof-bundle=", StringComparison.Ordinal));
-            if (!benchmark && !pixels && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-scale-profile") < 0) return;
+            if (!benchmark && !pixels && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-scale-profile") < 0 &&
+                Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-live-play") < 0) return;
             try
             {
                 StartupAssetGeneration.ObserveMenu();

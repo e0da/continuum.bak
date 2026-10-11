@@ -481,6 +481,8 @@ namespace KspContinuum
                  report.callbackAttribution.cleanupStatus != "removed-owned-patches" || report.callbackAttribution.patchedMethods < 1 ||
                  report.callbackAttribution.callbacks == null || report.callbackAttribution.callbacks.Length < 1))
             { reason = "callback-attribution-invalid"; return false; }
+            string integratorReason;
+            if (!IntegratorAttributionComplete(report, out integratorReason)) { reason = integratorReason; return false; }
             if (report.dryBuoyancy != null && (report.dryBuoyancy.status != "complete" ||
                 report.dryBuoyancy.cleanupStatus != "restored-owned-enables" || report.dryBuoyancy.ownedComponents < 1 ||
                 report.dryBuoyancy.fixedSteps < 1 || report.dryBuoyancy.bypassed < 1 || report.dryBuoyancy.errors != 0))
@@ -523,7 +525,18 @@ namespace KspContinuum
                  report.callbackAttribution.cleanupStatus != "removed-owned-patches" || report.callbackAttribution.patchedMethods < 1 ||
                  report.callbackAttribution.callbacks == null || report.callbackAttribution.callbacks.Length < 1))
             { reason = "callback-attribution-invalid"; return false; }
+            string integratorReason;
+            if (!IntegratorAttributionComplete(report, out integratorReason)) { reason = integratorReason; return false; }
             return true;
+        }
+
+        static bool IntegratorAttributionComplete(ProbeReport report, out string reason)
+        {
+            reason = null;
+            if (!FlightIntegratorUpdateAttribution.Requested(Environment.GetCommandLineArgs())) return true;
+            string failure;
+            if (FlightIntegratorUpdateAttribution.ValidateFinal(report.flightIntegratorUpdateAttribution as FlightIntegratorUpdateAttribution.ReportData, out failure)) return true;
+            reason = "integrator-update-attribution-" + failure; return false;
         }
 
         static bool FinitePositive(double value) { return !double.IsNaN(value) && !double.IsInfinity(value) && value > 0; }

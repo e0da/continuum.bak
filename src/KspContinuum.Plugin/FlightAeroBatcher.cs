@@ -13,7 +13,8 @@ namespace KspContinuum
         [Serializable] internal sealed class Report
         {
             public string schema = "continuum-flight-aero-batch/v1", runId, vesselId, status, reason;
-            public string fidelity = "Experimental opaque FX geometry packet. Stock shaders/cameras/globals retained; per-source material/property-block inputs and object-space shader behavior require image qualification. No visual equivalence claim.";
+            public string fidelity = "Experimental opaque FX geometry packet for the frozen stock/DLC/MechJeb profile. Recovered stock replacement programs do not consume ordinary opacity/rim/thermal MPBs or source material clone identity. Source materials declaring consumed FX inputs remain stock; arbitrary mod MPBs overriding FX globals are unsupported. Flame UV/object-matrix shell semantics are not preserved by root-space geometry and require image qualification. Mesh identity audits do not detect in-place vertex edits. No visual equivalence claim.";
+            public string inputAuditScope = "One render-frame audit before the first owned FX lease: shared mesh/material/shader identity, layer, queue and Opaque tag. Stock Update/LateUpdate writers precede this boundary; arbitrary render-callback mutations between FX cameras are unsupported.";
             public string channelContract = "Vertex values retained through initial root-space position/normal/tangent conversion; UV dimensions and channel presence retained, colors read as float values. One rigid source-transform bone per segment.";
             public string counterScope = "Camera callbacks since Start through Finish, including capture warmup and cleanup; native skinning and render leases run inside the measured frame workload.";
             public string scaleContract = "Exact authored localScale and parent identity checked for unique source and proxy-frame ancestors through their actual scene roots, including detached physical-part hierarchies; derived lossyScale is not a pose invariant. Nonuniform hierarchy scales with animated rotations may introduce shear; native skinned normals require image qualification.";
@@ -32,6 +33,7 @@ namespace KspContinuum
         sealed class Source
         {
             public MeshRenderer Renderer; public Mesh Mesh; public Transform Bone; public Vector3 Scale;
+            public MeshFilter Filter; public Material Material; public Shader Shader; public int Layer, Queue;
             public string Key, Identity; public int[] UvDimensions; public bool Color, Tangent;
         }
         sealed class Packet
@@ -44,6 +46,7 @@ namespace KspContinuum
             public Transform Transform, Parent; public Vector3 LocalScale; public string Identity;
         }
         static FlightAeroBatcher current;
+        static readonly string[] FxInputs = { "_Time", "_FxLength", "_EdgeFade", "_LightDirection0", "_MyLightColor0", "_Obliqueness", "_FXTextureSpeed", "_FXTextureScale", "_FXFalloff", "_FXFalloff2", "_FXFalloff3", "_FXColor", "_FXWorld2Velocity", "_FXDepthCamMatrix", "_FXDepthProjMatrix", "_FXCameraPos", "_FXProjectionFar", "_FXProjectionBias", "_FXWobble", "_FXMainTex", "_FXDepthMap" };
         public static bool IsActive { get { return current != null; } }
         public static bool activeRequested { get { return Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-flight-aero-batch") >= 0; } }
         public static string FailureReason { get { return current != null && current.faulted ? current.report.reason : null; } }
@@ -62,6 +65,7 @@ namespace KspContinuum
         readonly List<MeshRenderer> suppressed = new List<MeshRenderer>();
         readonly Dictionary<Transform,ScaleOwner> scaleOwners = new Dictionary<Transform,ScaleOwner>();
         readonly HashSet<Transform> deformationRoots = new HashSet<Transform>();
+        readonly List<Material> materialAudit = new List<Material>(1);
         Vessel vessel; string directory; Report report; Camera leasedCamera;
         bool cameraPreAttached, cameraPostAttached, modifiedAttached, diedAttached, sceneAttached, faulted, finished;
         int boundsFrame = -1;
@@ -158,9 +162,14 @@ namespace KspContinuum
                     if (materials.Length != 1 || materials[0] == null || mesh.subMeshCount != 1 || mesh.GetTopology(0) != MeshTopology.Triangles)
                     { Decline("not-single-material-triangle-submesh"); continue; }
                     if (materials[0].GetTag("RenderType", false, "") != "Opaque") { Decline("non-opaque-render-type"); continue; }
+                    if (renderer.HasPropertyBlock()) report.propertyBlockSources++;
+                    bool fxOverride = false;
+                    foreach (string input in FxInputs) if (materials[0].HasProperty(input)) { fxOverride = true; break; }
+                    if (fxOverride) { Decline("material-declares-replacement-fx-input"); continue; }
                     if (mesh.vertexCount > 60000 || mesh.vertexCount < 1 || mesh.normals.Length != mesh.vertexCount || mesh.blendShapeCount != 0)
                     { Decline("unsupported-vertex-layout"); continue; }
                     var source = new Source { Renderer = meshRenderer, Mesh = mesh, Bone = renderer.transform, Scale = renderer.transform.lossyScale,
+                        Filter = filter, Material = materials[0], Shader = materials[0].shader, Layer = renderer.gameObject.layer, Queue = materials[0].renderQueue,
                         Identity = Identity(renderer.transform),
                         UvDimensions = new int[8], Color = mesh.HasVertexAttribute(VertexAttribute.Color), Tangent = mesh.HasVertexAttribute(VertexAttribute.Tangent) };
                     Part actualOwner = renderer.GetComponentInParent<Part>();
@@ -174,7 +183,7 @@ namespace KspContinuum
                     source.Key += "/" + source.Color + "/" + source.Tangent + "/" + renderer.gameObject.layer + "/" +
                         renderer.shadowCastingMode + "/" + renderer.receiveShadows + "/" + renderer.motionVectorGenerationMode + "/" +
                         renderer.lightProbeUsage + "/" + renderer.reflectionProbeUsage + "/" + materials[0].renderQueue;
-                    CacheScaleOwners(source.Bone); sources.Add(source); if (renderer.HasPropertyBlock()) report.propertyBlockSources++;
+                    CacheScaleOwners(source.Bone); sources.Add(source);
                 }
             }
             FXCamera fx = UnityEngine.Object.FindObjectOfType<FXCamera>(); FXDepthCamera depth = UnityEngine.Object.FindObjectOfType<FXDepthCamera>();
@@ -272,7 +281,7 @@ namespace KspContinuum
             }
             mesh.SetTriangles(indices, 0, false); mesh.boneWeights = weights.ToArray(); mesh.bindposes = binds.ToArray(); mesh.bounds = bounds;
             packet.Renderer.sharedMesh = mesh; packet.Renderer.bones = bones.ToArray(); packet.Renderer.rootBone = vessel.transform;
-            packet.Renderer.sharedMaterial = chunk[0].Renderer.sharedMaterial; packet.Renderer.localBounds = bounds;
+            packet.Renderer.sharedMaterial = chunk[0].Material; packet.Renderer.localBounds = bounds;
             packet.Renderer.updateWhenOffscreen = true; packet.Renderer.quality = SkinQuality.Bone1;
             packet.Renderer.shadowCastingMode = chunk[0].Renderer.shadowCastingMode; packet.Renderer.receiveShadows = chunk[0].Renderer.receiveShadows;
             packet.Renderer.motionVectorGenerationMode = chunk[0].Renderer.motionVectorGenerationMode;
@@ -295,6 +304,7 @@ namespace KspContinuum
                 bool set = false; Bounds bounds = new Bounds();
                 foreach (Source source in packet.Sources)
                 {
+                    AuditSource(source);
                     if (source.Renderer == null) throw new InvalidOperationException("Source renderer destroyed: " + source.Identity);
                     if (!RetainedRenderSources.Visible(source.Renderer)) throw new InvalidOperationException("Source renderer disabled: " + source.Identity);
                     if (source.Renderer.forceRenderingOff) throw new InvalidOperationException("Source renderer externally forced off: " + source.Identity);
@@ -311,6 +321,19 @@ namespace KspContinuum
                 }
                 packet.Renderer.localBounds = bounds;
             }
+        }
+        void AuditSource(Source source)
+        {
+            if (source.Renderer == null || source.Filter == null || source.Material == null || source.Shader == null)
+                throw new InvalidOperationException("Source render inputs destroyed: " + source.Identity);
+            if (source.Filter.sharedMesh != source.Mesh)
+                throw new InvalidOperationException("Source mesh identity changed: " + source.Identity);
+            materialAudit.Clear(); source.Renderer.GetSharedMaterials(materialAudit);
+            if (materialAudit.Count != 1 || materialAudit[0] != source.Material)
+                throw new InvalidOperationException("Source material identity changed: " + source.Identity);
+            if (source.Renderer.gameObject.layer != source.Layer || source.Material.shader != source.Shader ||
+                source.Material.renderQueue != source.Queue || source.Material.GetTag("RenderType", false, "") != "Opaque")
+                throw new InvalidOperationException("Source layer or shader classification changed: " + source.Identity);
         }
         void PreCull(Camera camera)
         {

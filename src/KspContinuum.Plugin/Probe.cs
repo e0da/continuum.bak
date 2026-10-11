@@ -26,6 +26,7 @@ namespace KspContinuum
         ActiveVesselPhysicsSubstitutionCanary substitutionCanary;
         PartForceObservation partForces;
         FixedCallbackAttribution callbackAttribution;
+        FlightIntegratorUpdateAttribution integratorUpdateAttribution;
         DryBuoyancyRuntime dryBuoyancy;
         VesselRuntimeCapture vesselRuntime;
         Action<ProbeReport> completion;
@@ -127,6 +128,12 @@ namespace KspContinuum
                     callbackAttribution = new FixedCallbackAttribution(); callbackAttribution.Start();
                     report.callbackAttribution = callbackAttribution.Report;
                 }
+                if (Array.IndexOf(arguments, "--continuum-flight-integrator-update-attribution") >= 0)
+                {
+                    if (callbackAttribution != null) throw new InvalidOperationException("Narrow integrator attribution excludes broad callback attribution.");
+                    integratorUpdateAttribution = new FlightIntegratorUpdateAttribution(); integratorUpdateAttribution.Start();
+                    report.flightIntegratorUpdateAttribution = integratorUpdateAttribution.Report;
+                }
                 bool explicitStock = dryBuoyancyStrategy == DryBuoyancyRuntime.Stock;
                 string requestedDryStrategy = explicitStock ? null : dryBuoyancyStrategy;
                 if (!explicitStock && requestedDryStrategy == null && Array.IndexOf(arguments, "--continuum-dry-buoyancy") >= 0)
@@ -136,11 +143,12 @@ namespace KspContinuum
                     dryBuoyancy = new DryBuoyancyRuntime(requestedDryStrategy); dryBuoyancy.Start(); report.dryBuoyancy = dryBuoyancy.Report;
                     if (dryBuoyancy.Report.status != "installed") throw new InvalidOperationException("Dry buoyancy admission did not install: " + dryBuoyancy.Report.status);
                 }
-                if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || dryBuoyancy != null)
+                if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || integratorUpdateAttribution != null || dryBuoyancy != null)
                 {
                     IPlayerLoopBracketObserver observer = writerCensus == null ? null : writerCensus.Census;
                     if (substitutionCanary != null) observer = new CompositePlayerLoopObserver(observer, substitutionCanary);
                     if (callbackAttribution != null) observer = new CompositePlayerLoopObserver(observer, callbackAttribution);
+                    if (integratorUpdateAttribution != null) observer = new CompositePlayerLoopObserver(observer, integratorUpdateAttribution);
                     if (dryBuoyancy != null) observer = new CompositePlayerLoopObserver(observer, dryBuoyancy);
                     playerLoop = new PlayerLoopTiming(observer); playerLoop.Start(); report.playerLoop = playerLoop.Report;
                     if (substitutionCanary != null) substitutionCanary.Start();
@@ -355,6 +363,13 @@ namespace KspContinuum
                 catch (Exception error) { errors.Add("CallbackAttribution: " + error.GetType().Name); }
                 if (callbackAttribution.Report.cleanupStatus == "cleanup-error") errors.Add("CallbackAttribution: cleanup-error");
                 callbackAttribution = null;
+            }
+            if (integratorUpdateAttribution != null)
+            {
+                try { integratorUpdateAttribution.Dispose(); }
+                catch (Exception error) { errors.Add("IntegratorUpdateAttribution: " + error.GetType().Name); }
+                if (integratorUpdateAttribution.Report.cleanupStatus == "cleanup-error") errors.Add("IntegratorUpdateAttribution: cleanup-error");
+                integratorUpdateAttribution = null;
             }
             if (dryBuoyancy != null)
             {

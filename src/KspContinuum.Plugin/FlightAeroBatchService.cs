@@ -10,15 +10,15 @@ namespace KspContinuum
     {
         [Serializable] sealed class Transition
         {
-            public string schema = "continuum-flight-aero-live/v1", sessionId, vesselId, state, reason, epochDirectory;
+            public string schema = "continuum-flight-aero-live/v1", runId, sessionId, vesselId, state, reason, epochDirectory;
             public int processId, epoch, attempt, frame, parts;
             public double universalTime, wallSeconds, preparationMilliseconds;
         }
-        string sessionId, root, journal, epochDirectory, state = "stock", reason;
+        string runId, sessionId, root, journal, epochDirectory, state = "stock", reason;
         Vessel tracked;
         int trackedParts, epoch, attempt, releaseFrame = -1;
         double stableAfter, retryAfter;
-        bool admitted, operatorEnabled = true, ownedBatch, hooks, stopping;
+        bool admitted, operatorEnabled = true, ownedBatch, hooks, stopping, readyWritten;
         const double DebounceSeconds = 1;
         const int MaximumAttempts = 3;
 
@@ -26,6 +26,7 @@ namespace KspContinuum
         {
             string[] args = Environment.GetCommandLineArgs();
             if (Array.IndexOf(args, "--continuum-flight-aero-live") < 0) return;
+            operatorEnabled = Array.IndexOf(args, "--continuum-live-play") < 0;
             try
             {
                 if (Array.IndexOf(args, "--continuum-scale-profile") >= 0 || FlightAeroBatcher.activeRequested)
@@ -40,6 +41,8 @@ namespace KspContinuum
                 if (string.IsNullOrWhiteSpace(root) || !Path.IsPathRooted(root))
                     throw new ArgumentException("Absolute --continuum-flight-live-output directory required.");
                 sessionId = Guid.NewGuid().ToString("N");
+                foreach (string arg in args) if (arg.StartsWith("--continuum-research-run=", StringComparison.Ordinal))
+                    runId = arg.Substring("--continuum-research-run=".Length);
                 root = Path.Combine(Path.GetFullPath(root), "live-" + sessionId);
                 Directory.CreateDirectory(root); journal = Path.Combine(root, "transitions.jsonl");
                 hooks = true;
@@ -90,7 +93,9 @@ namespace KspContinuum
                 {
                     Invalidate("active-vessel-or-part-count"); tracked = vessel; trackedParts = count;
                 }
-                bool eligible = operatorEnabled && HighLogic.LoadedSceneIsFlight && vessel != null && vessel.loaded && !vessel.packed && count > 0;
+                bool ready = HighLogic.LoadedSceneIsFlight && vessel != null && vessel.loaded && !vessel.packed && count > 0;
+                if (ready && !readyWritten) { Record("stock-ready", "loaded-flight", 0); readyWritten = true; }
+                bool eligible = operatorEnabled && ready;
                 if (!eligible)
                 {
                     if (ownedBatch) { Release("not-eligible"); Record("stock", "not-eligible", 0); }
@@ -133,11 +138,16 @@ namespace KspContinuum
         {
             state = next; reason = cause;
             if (journal == null) return;
-            var row = new Transition { sessionId = sessionId, processId = Process.GetCurrentProcess().Id, vesselId = tracked == null ? null : tracked.id.ToString("D"),
+            var row = new Transition { runId = runId, sessionId = sessionId, processId = Process.GetCurrentProcess().Id, vesselId = tracked == null ? null : tracked.id.ToString("D"),
                 epoch = epoch, attempt = attempt, frame = Time.frameCount, parts = trackedParts, state = next, reason = cause,
                 epochDirectory = epochDirectory, universalTime = Planetarium.GetUniversalTime(), wallSeconds = Time.realtimeSinceStartup,
                 preparationMilliseconds = preparation };
-            try { File.AppendAllText(journal, JsonUtility.ToJson(row) + Environment.NewLine); }
+            try
+            {
+                string encoded = JsonUtility.ToJson(row);
+                File.AppendAllText(journal, encoded + Environment.NewLine);
+                if (next == "stock-ready") File.WriteAllText(Path.Combine(root, "ready.json"), encoded);
+            }
             catch (Exception error) { UnityEngine.Debug.LogError("[ContinuumAeroLive] journal failure: " + error.Message); }
         }
         public void OnGUI()

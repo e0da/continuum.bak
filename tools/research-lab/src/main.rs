@@ -55,6 +55,8 @@ fn run() -> Result<()> {
             "--project-sha256",
         ],
         "run" | "resolve" => &[
+            "--live-play",
+            "--flight-integrator-update-attribution",
             "--instance",
             "--reservation",
             "--output",
@@ -760,7 +762,9 @@ fn smoke(
                 .as_deref()
                 .unwrap_or(Path::new("")),
         )
-        .args(if menu_recipe.is_some() {
+        .args(if selection.live_play {
+            continuum_research_lab::play::arguments(flight.as_ref().unwrap(), output)?
+        } else if menu_recipe.is_some() {
             vec![]
         } else if flight.is_none() {
             vec!["--continuum-native-boundary-bench".to_string()]
@@ -776,6 +780,11 @@ fn smoke(
         ])
         .arg(&log_path)
         .arg(format!("--continuum-research-run={run_id}"))
+        .args(if selection.diagnostics.integrator_update_attribution {
+            vec!["--continuum-flight-integrator-update-attribution"]
+        } else {
+            vec![]
+        })
         .args(
             pixel_bundle
                 .map(|path| {
@@ -942,8 +951,21 @@ fn smoke(
         .stderr(Stdio::from(stderr))
         .spawn()
         .map_err(|e| e.to_string())?;
+    if selection.live_play {
+        if let Err(error) = write_new(
+            &output.join("live-session.json"),
+            &json!({"schema":"continuum-owned-live-session/v1",
+            "runId":run_id,"ownedPid":child.id(),"status":"spawned","resolvedLaunchSha256":resolved_profile_sha,
+            "qualification":"owned-process-marker-only; completion-requires-final-receipt"}),
+        ) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    }
     let mut observation = None;
     let mut menu_elapsed = None;
+    let mut live_ready = false;
     let mut native_sample = continuum_research_lab::flight::NativeSample::new(
         flight
             .as_ref()
@@ -987,7 +1009,11 @@ fn smoke(
         let reserved = read::<Value>(reservation)
             .map(|v| v["active"] == true)
             .unwrap_or(false);
-        if !reserved || started.elapsed() >= Duration::from_secs(timeout) {
+        if selection.live_play && !live_ready {
+            live_ready =
+                continuum_research_lab::play::ready(output, &run_id, child.id()).unwrap_or(false);
+        }
+        if !reserved || (!live_ready && started.elapsed() >= Duration::from_secs(timeout)) {
             child.kill().map_err(|e| e.to_string())?;
             break (child.wait().map_err(|e| e.to_string())?, true);
         }
@@ -999,8 +1025,11 @@ fn smoke(
     } else {
         None
     };
-    let source_unchanged = resolved_profile.unchanged()
-        && hash(&resolved_profile_path)? == resolved_profile_sha
+    let source_unchanged = (if selection.live_play {
+        continuum_research_lab::play::immutable_unchanged(&resolved_profile)
+    } else {
+        resolved_profile.unchanged()
+    }) && hash(&resolved_profile_path)? == resolved_profile_sha
         && hash(&assembly)? == assembly_hash
         && native_assets
             .as_ref()
@@ -1035,7 +1064,7 @@ fn smoke(
     let mut flight_error = None;
     let mut flight_summary = None;
     let mut flight_entry = None;
-    if let Some(request) = &flight {
+    if let Some(request) = flight.as_ref().filter(|_| !selection.live_play) {
         let result = (|| -> Result<Value> {
             flight_entry = continuum_research_lab::flight::retain_entry(
                 &observer_directory,
@@ -1203,7 +1232,13 @@ fn smoke(
     }
     let flight_sources_unchanged = flight_inputs
         .as_ref()
-        .map(continuum_research_lab::flight::unchanged)
+        .map(|inputs| {
+            if selection.live_play {
+                source_unchanged
+            } else {
+                continuum_research_lab::flight::unchanged(inputs)
+            }
+        })
         .unwrap_or(true);
     let mut deferred_terrain_evidence = None;
     let mut deferred_terrain_error = None;
@@ -1334,9 +1369,24 @@ fn smoke(
     } else {
         (None, None)
     };
+    let (live_evidence, live_error) = if selection.live_play {
+        match continuum_research_lab::play::retain(output, &run_id, child.id()) {
+            Ok(evidence) => (Some(evidence), None),
+            Err(error) => (None, Some(error)),
+        }
+    } else {
+        (None, None)
+    };
+    let live_receipt = if selection.live_play {
+        Some(json!({"evidence":live_evidence,"error":live_error,
+        "flightReadyObserved":live_ready,"operatorWritableReadbacks":continuum_research_lab::play::mutable_readbacks(&resolved_profile)}))
+    } else {
+        None
+    };
     write_new(
         &output.join("receipt.json"),
-        &json!({"schema":"continuum-lab-process-smoke/v1","scope":if flight.is_some() {"timed-diagnostic-flight"} else if catalog_preparation {"asset-catalog-preparation-process"} else {"menu-native-boundary-process-smoke"},
+        &json!({"schema":"continuum-lab-process-smoke/v1","scope":if selection.live_play {"ordinary-private-flight"} else if flight.is_some() {"timed-diagnostic-flight"} else if catalog_preparation {"asset-catalog-preparation-process"} else {"menu-native-boundary-process-smoke"},
+        "livePlay":live_receipt,
         "startedUnixSeconds":stamp,"ownedPid":child.id(),"reservationSha256":hash(reservation)?,"assemblySha256":assembly_hash,"playerSha256":executable_hash,
         "sourceUnchanged":source_unchanged,"flightSourcesUnchanged":flight_sources_unchanged,
         "resolvedLaunchSha256":resolved_profile_sha,"selectionSha256":selection_sha,
@@ -1376,14 +1426,15 @@ fn smoke(
         "startupBuildCacheRequested":startup_build_cache,"startupCache":startup_cache,"bundleSha256":bundle_hashes,
         "startupCachedBundlesRequested":startup_cached_bundles,
         "startupNativeAdmissionRequested":startup_native_admission,"cacheAdmissionSha256":proof_hash,"cacheAdmissionFiles":admission.as_ref().map(|value|&value.files),
-        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none()&&deferred_terrain_error.is_none()&&site_proof_error.is_none()&&generation_error.is_none()&&pixel_error.is_none()&&construction_error.is_none()&&bindings_error.is_none()&&provider_error.is_none()&&menu_error.is_none() {"passed"} else {"failed"},
-        "qualification":if flight.is_some() {"diagnostic-window-only; behavior-and-gameplay-not-qualified"} else if catalog_preparation {"catalog-content-and-fresh-process-reuse-proof-required"} else {"process-exit-only-native-receipt-review-and-flight-proof-required"}}),
+        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none()&&live_error.is_none()&&deferred_terrain_error.is_none()&&site_proof_error.is_none()&&generation_error.is_none()&&pixel_error.is_none()&&construction_error.is_none()&&bindings_error.is_none()&&provider_error.is_none()&&menu_error.is_none() {"passed"} else {"failed"},
+        "qualification":if selection.live_play {"ordinary-flight-session-only; performance-mission-and-endurance-open"} else if flight.is_some() {"diagnostic-window-only; behavior-and-gameplay-not-qualified"} else if catalog_preparation {"catalog-content-and-fresh-process-reuse-proof-required"} else {"process-exit-only-native-receipt-review-and-flight-proof-required"}}),
     )?;
     if timed_out
         || !status.success()
         || !source_unchanged
         || !flight_sources_unchanged
         || flight_error.is_some()
+        || live_error.is_some()
         || deferred_terrain_error.is_some()
         || site_proof_error.is_some()
         || generation_error.is_some()

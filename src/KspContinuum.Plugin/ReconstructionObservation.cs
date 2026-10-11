@@ -11,6 +11,7 @@ namespace KspContinuum
         {
             string[] arguments = Environment.GetCommandLineArgs();
             if (Array.IndexOf(arguments, "--continuum-native-boundary-bench") < 0 &&
+                Array.IndexOf(arguments, "--continuum-live-play") < 0 &&
                 Array.IndexOf(arguments, "--continuum-scale-profile") < 0) return;
             try
             {

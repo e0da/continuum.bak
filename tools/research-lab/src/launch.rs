@@ -87,6 +87,8 @@ pub struct Startup {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Diagnostics {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub integrator_update_attribution: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend_menu_presentation: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -139,6 +141,8 @@ pub fn validate_construction_closure(report: &serde_json::Value) -> Result<()> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolvedLaunch {
     pub schema: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub live_play: bool,
     pub timeout_seconds: u64,
     pub graphics_api: GraphicsApi,
     pub startup: Startup,
@@ -160,6 +164,7 @@ impl ResolvedLaunch {
         let path = |key: &str| options.get(key).map(PathBuf::from);
         let launch = Self {
             schema: "continuum-resolved-launch/v1".into(),
+            live_play: boolean("--live-play")?,
             timeout_seconds: options
                 .get("--timeout-seconds")
                 .map(|v| v.parse::<u64>())
@@ -217,6 +222,7 @@ impl ResolvedLaunch {
                 work_scheduler: boolean("--startup-work-scheduler")?,
             },
             diagnostics: Diagnostics {
+                integrator_update_attribution: boolean("--flight-integrator-update-attribution")?,
                 backend_menu_presentation: path("--backend-menu-presentation"),
                 backend_pixel_proof_bundle: path("--backend-pixel-proof-bundle"),
                 multiscale_scene: path("--flight-multiscale-scene"),
@@ -236,6 +242,7 @@ impl ResolvedLaunch {
     }
 
     pub fn validate(&self) -> Result<()> {
+        crate::play::validate(self)?;
         if self.schema != "continuum-resolved-launch/v1" {
             return Err("unsupported resolved launch schema".into());
         }
@@ -243,6 +250,15 @@ impl ResolvedLaunch {
             return Err("timeout must be 1..1800 seconds".into());
         }
         let s = &self.startup;
+        if self.diagnostics.integrator_update_attribution
+            && (self.flight.is_none()
+                || self
+                    .flight
+                    .as_ref()
+                    .is_some_and(|flight| flight.callback_attribution))
+        {
+            return Err("integrator Update attribution requires flight and excludes broad callback attribution".into());
+        }
         if let Some(path) = &self.diagnostics.backend_menu_presentation {
             if self.flight.is_some()
                 || self.graphics_api != GraphicsApi::Metal

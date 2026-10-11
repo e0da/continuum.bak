@@ -7,6 +7,7 @@ pub mod flight;
 pub mod gpu_timing;
 pub mod launch;
 pub mod owned_report;
+pub mod play;
 pub mod profile;
 pub mod provider_proofs;
 pub mod recovery;
