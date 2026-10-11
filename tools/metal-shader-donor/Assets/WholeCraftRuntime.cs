@@ -12,6 +12,15 @@ public sealed class WholeCraftRuntime : IDisposable
     public readonly string ManifestSha256,GeometrySha256;
     readonly List<UnityEngine.Object> owned=new List<UnityEngine.Object>();
     Mesh[] meshes; Texture2D[] textures; Material[] materials; Matrix4x4[] bases,matrices;
+    sealed class Recipe { public int Texture=-1; public Vector4 ST=new Vector4(1,1,0,0); public Color Tint=Color.white; }
+    sealed class Packet { public int Mesh,Submesh,Layer,Recipe; public int[] Sources; public Matrix4x4[] Matrices; public MaterialPropertyBlock Block; }
+    Recipe[] recipes; int[] materialRecipes; Packet[] packets; MaterialPropertyBlock[] referenceColors;
+    public string RenderMode { get; private set; }="reference";
+    public int RecipeCount { get { return recipes.Length; } }
+    public int PacketCount { get { return packets.Length; } }
+    public long PreparationTicks { get; private set; }
+    public long SubmissionTicks { get; private set; }
+    public int LastSubmissionCalls { get; private set; }
     Bounds baseBounds;
     public Bounds Bounds { get; private set; }
     public int LayerMask { get; private set; }
@@ -23,6 +32,7 @@ public sealed class WholeCraftRuntime : IDisposable
     public long RawTexturePayloadBytes { get; private set; }
     public int MissingNormals,MissingUV,DefaultWhiteColors,UnknownCull,ApproximateTransparency,NoAlbedoTexture,NonvisibleDraws;
     public string DebugMode { get; private set; }="off";
+    bool anchorSet,biasSet; Vector3 lastAnchor; float lastBias;
     int lastFrame=-1; bool disposed;
     static string Hash(byte[] bytes) { using(var h=SHA256.Create()) return BitConverter.ToString(h.ComputeHash(bytes)).Replace("-","").ToLowerInvariant(); }
     static string Under(string root,string path) { string prefix=Path.GetFullPath(root)+Path.DirectorySeparatorChar,result=Path.GetFullPath(Path.Combine(root,path)); if(Path.IsPathRooted(path)||!result.StartsWith(prefix,StringComparison.Ordinal)) throw new InvalidDataException("Whole-craft payload escapes root."); return result; }
@@ -38,6 +48,7 @@ public sealed class WholeCraftRuntime : IDisposable
     }
     public WholeCraftRuntime(string path,Shader shader)
     {
+        long preparationStart=System.Diagnostics.Stopwatch.GetTimestamp();
         try
         {
             if(new FileInfo(path).Length>16*1024*1024) throw new InvalidDataException("Whole-craft manifest bound."); byte[] json=ReadBounded(path,new FileInfo(path).Length,16*1024*1024); ManifestSha256=Hash(json); Manifest=JsonUtility.FromJson<WholeCraftSceneManifest>(System.Text.Encoding.UTF8.GetString(json)); string root=Path.GetDirectoryName(path),geometryPath=Under(root,Manifest.geometry); GeometrySha256=ResidentMaterialRuntime.Hash(geometryPath); if(GeometrySha256!=Manifest.geometrySha256) throw new InvalidDataException("Whole geometry digest mismatch."); var g=WholeCraftSceneFormat.ReadGeometry(geometryPath); WholeCraftSceneFormat.Validate(Manifest,g); if(ResidentMaterialRuntime.Hash(geometryPath)!=GeometrySha256) throw new InvalidDataException("Whole geometry changed during read.");
@@ -56,26 +67,54 @@ public sealed class WholeCraftRuntime : IDisposable
             bases=new Matrix4x4[Manifest.draws.Length]; matrices=new Matrix4x4[bases.Length]; Matrix4x4 rootMatrix=Matrix(Manifest.rootToWorld); rootMatrix.m03=rootMatrix.m13=rootMatrix.m23=0; bool first=true;
             for(int i=0;i<bases.Length;i++) { var a=Manifest.draws[i]; matrices[i]=bases[i]=rootMatrix*Matrix(a.matrix); Check(bases[i]); if(!a.enabled||!a.active||a.forceRenderingOff) { NonvisibleDraws++; continue; } LayerMask|=1<<a.layer; Bounds b=meshes[a.meshIndex].bounds; for(int c=0;c<8;c++) { Vector3 v=bases[i].MultiplyPoint3x4(b.center+Vector3.Scale(b.extents,new Vector3((c&1)==0?-1:1,(c&2)==0?-1:1,(c&4)==0?-1:1))); Check(v); if(first) { baseBounds=new Bounds(v,Vector3.zero); first=false; } else baseBounds.Encapsulate(v); } }
             foreach(var row in Manifest.draws) { if(row.forceRenderingOff) ForceRenderingOffObserved++; if(row.propertyBlockPresent) PropertyBlockObserved++; if(row.frozenSkin) FrozenSkinObserved++; }
-            if(first) throw new InvalidDataException("Whole fixture has no visible captured rows."); Check(baseBounds.center); Check(baseBounds.extents); Bounds=baseBounds; materials=PrepareDebugShader(shader); owned.AddRange(materials);
+            if(first) throw new InvalidDataException("Whole fixture has no visible captured rows."); Check(baseBounds.center); Check(baseBounds.extents); Bounds=baseBounds; BuildRecipes(); BuildPackets(); materials=PrepareDebugShader(shader); owned.AddRange(materials); PreparationTicks=System.Diagnostics.Stopwatch.GetTimestamp()-preparationStart;
         }
         catch { Dispose(); throw; }
     }
+    static string Bits(float v) { return BitConverter.ToInt32(BitConverter.GetBytes(v),0).ToString("x8"); }
+    void BuildRecipes()
+    {
+        var index=new Dictionary<string,int>(StringComparer.Ordinal); var list=new List<Recipe>(); materialRecipes=new int[Manifest.materials.Length];
+        for(int i=0;i<Manifest.materials.Length;i++)
+        {
+            var a=Manifest.materials[i]; var recipe=new Recipe(); bool cull=false;
+            foreach(var p in a.properties) { if(p.name=="_MainTex"&&p.kind==4) { recipe.Texture=p.textureIndex; recipe.ST=new Vector4(p.scaleOffset[0],p.scaleOffset[1],p.scaleOffset[2],p.scaleOffset[3]); } if((p.name=="_Color"||p.name=="_BurnColor")&&(p.kind==0||p.kind==1)) recipe.Tint=new Color(p.value[0],p.value[1],p.value[2],p.value[3]); if((p.name=="_Cull"||p.name=="_CullMode")&&(p.kind==2||p.kind==3)&&p.value[0]>=0&&p.value[0]<=2&&p.value[0]==(int)p.value[0]) cull=true; }
+            if(recipe.Texture<0) NoAlbedoTexture++; if(!cull) UnknownCull++; if(a.queue>=2450) ApproximateTransparency++;
+            string key="opaque-two-sided-v1/"+recipe.Texture+"/"+Bits(recipe.ST.x)+Bits(recipe.ST.y)+Bits(recipe.ST.z)+Bits(recipe.ST.w)+"/"+Bits(recipe.Tint.r)+Bits(recipe.Tint.g)+Bits(recipe.Tint.b)+Bits(recipe.Tint.a);
+            int id; if(!index.TryGetValue(key,out id)) { id=list.Count; list.Add(recipe); index.Add(key,id); } materialRecipes[i]=id;
+        }
+        recipes=list.ToArray();
+    }
+    void BuildPackets()
+    {
+        referenceColors=new MaterialPropertyBlock[Manifest.draws.Length]; var groups=new Dictionary<string,List<int>>(StringComparer.Ordinal); var keys=new List<string>();
+        for(int i=0;i<Manifest.draws.Length;i++) { var a=Manifest.draws[i]; var color=Color.HSVToRGB((a.materialIndex*.61803398875f)%1,.7f,.95f); var block=new MaterialPropertyBlock(); block.SetColor("_MaterialColor",color); referenceColors[i]=block; if(!a.enabled||!a.active||a.forceRenderingOff) continue; string key=a.meshIndex+"/"+a.submeshIndex+"/"+a.layer+"/"+materialRecipes[a.materialIndex]; List<int> sources; if(!groups.TryGetValue(key,out sources)) { sources=new List<int>(); groups.Add(key,sources); keys.Add(key); } sources.Add(i); }
+        var list=new List<Packet>(); foreach(var key in keys) { var sources=groups[key]; int start=0; foreach(int count in PacketSlices(sources.Count)) { var first=Manifest.draws[sources[start]]; var packet=new Packet {Mesh=first.meshIndex,Submesh=first.submeshIndex,Layer=first.layer,Recipe=materialRecipes[first.materialIndex],Sources=new int[count],Matrices=new Matrix4x4[count],Block=new MaterialPropertyBlock()}; var colors=new Vector4[count]; for(int j=0;j<count;j++) { int source=sources[start+j]; packet.Sources[j]=source; packet.Matrices[j]=matrices[source]; colors[j]=Color.HSVToRGB((Manifest.draws[source].materialIndex*.61803398875f)%1,.7f,.95f); } packet.Block.SetVectorArray("_MaterialColor",colors); list.Add(packet); start+=count; } } packets=list.ToArray();
+    }
+    public static int[] PacketSlices(int sources) { if(sources<0||sources>50000) throw new InvalidDataException("Packet source capacity differs."); var result=new int[(sources+1022)/1023]; for(int i=0;i<result.Length;i++) result[i]=Math.Min(1023,sources-i*1023); return result; }
+    public void SetRenderMode(string mode) { if(mode!="reference"&&mode!="grouped") throw new InvalidDataException("Whole render mode reference|grouped required."); if(mode=="grouped"&&!SystemInfo.supportsInstancing) throw new InvalidDataException("Native instancing unavailable."); RenderMode=mode; }
     public Material[] PrepareDebugShader(Shader shader)
     {
-        var next=new Material[Manifest.materials.Length];
-        try { for(int i=0;i<next.Length;i++) { var a=Manifest.materials[i]; var m=new Material(shader); next[i]=m; m.SetFloat("_Mode",DebugMode=="off"?7:ResidentMaterialRuntime.GeometryDebugMode(DebugMode)); m.SetColor("_MaterialColor",Color.HSVToRGB((i*.61803398875f)%1,.7f,.95f)); m.SetColor("_Tint",Color.white); m.SetFloat("_Cull",0); bool albedo=false,cull=false; foreach(var p in a.properties) { if(p.name=="_MainTex"&&p.kind==4) { if(p.textureIndex>=0) { m.SetTexture("_MainTex",textures[p.textureIndex]); albedo=true; } m.SetTextureScale("_MainTex",new Vector2(p.scaleOffset[0],p.scaleOffset[1])); m.SetTextureOffset("_MainTex",new Vector2(p.scaleOffset[2],p.scaleOffset[3])); } if((p.name=="_Color"||p.name=="_BurnColor")&&(p.kind==0||p.kind==1)) m.SetColor("_Tint",new Color(p.value[0],p.value[1],p.value[2],p.value[3])); if((p.name=="_Cull"||p.name=="_CullMode")&&(p.kind==2||p.kind==3)&&p.value[0]>=0&&p.value[0]<=2&&p.value[0]==(int)p.value[0]) { cull=true; } } if(materials==null) { if(!albedo) NoAlbedoTexture++; if(!cull) UnknownCull++; if(a.queue>=2450) ApproximateTransparency++; } } return next; }
+        var next=new Material[Manifest.materials.Length+recipes.Length];
+        try { for(int i=0;i<next.Length;i++) { bool grouped=i>=Manifest.materials.Length; var recipe=recipes[grouped?i-Manifest.materials.Length:materialRecipes[i]]; var m=new Material(shader) {enableInstancing=grouped}; next[i]=m; m.SetFloat("_Mode",DebugMode=="off"?7:ResidentMaterialRuntime.GeometryDebugMode(DebugMode)); m.SetFloat("_Cull",0); m.SetColor("_Tint",recipe.Tint); if(recipe.Texture>=0) m.SetTexture("_MainTex",textures[recipe.Texture]); m.SetTextureScale("_MainTex",new Vector2(recipe.ST.x,recipe.ST.y)); m.SetTextureOffset("_MainTex",new Vector2(recipe.ST.z,recipe.ST.w)); } return next; }
         catch { foreach(var m in next) if(m!=null) UnityEngine.Object.Destroy(m); throw; }
     }
-    public void CommitDebugShader(Material[] next) { if(materials!=null) foreach(var m in materials) { owned.Remove(m); UnityEngine.Object.Destroy(m); } materials=next; owned.AddRange(next); }
+    public void CommitDebugShader(Material[] next) { if(next==null||next.Length!=Manifest.materials.Length+recipes.Length) throw new InvalidDataException("Staged whole debug material table differs."); if(materials!=null) foreach(var m in materials) { owned.Remove(m); UnityEngine.Object.Destroy(m); } materials=next; owned.AddRange(next); }
     public void SetGeometryDebug(string value) { int mode=value=="off"?7:ResidentMaterialRuntime.GeometryDebugMode(value); foreach(var m in materials) m.SetFloat("_Mode",mode); DebugMode=value; }
-    public void SetTextureMipBias(float bias) { for(int i=0;i<textures.Length;i++) textures[i].mipMapBias=Manifest.textures[i].mipBias+bias; }
+    public void SetTextureMipBias(float bias) { if(!Finite(bias)) throw new InvalidDataException("Finite whole mip bias required."); if(biasSet&&bias==lastBias) return; for(int i=0;i<textures.Length;i++) textures[i].mipMapBias=Manifest.textures[i].mipBias+bias; lastBias=bias; biasSet=true; }
     public void SetPresentationAnchor(Vector3 anchor)
     {
-        Check(anchor); var bounds=baseBounds; bounds.center+=anchor; Check(bounds.center); Check(bounds.extents);
+        Check(anchor); if(anchorSet&&anchor.x==lastAnchor.x&&anchor.y==lastAnchor.y&&anchor.z==lastAnchor.z) return; var bounds=baseBounds; bounds.center+=anchor; Check(bounds.center); Check(bounds.extents);
         for(int i=0;i<matrices.Length;i++) { var candidate=bases[i]; candidate.m03+=anchor.x; candidate.m13+=anchor.y; candidate.m23+=anchor.z; Check(candidate); }
-        for(int i=0;i<matrices.Length;i++) { var m=bases[i]; m.m03+=anchor.x; m.m13+=anchor.y; m.m23+=anchor.z; matrices[i]=m; } Bounds=bounds;
+        for(int i=0;i<matrices.Length;i++) { var m=bases[i]; m.m03+=anchor.x; m.m13+=anchor.y; m.m23+=anchor.z; matrices[i]=m; } foreach(var packet in packets) for(int i=0;i<packet.Sources.Length;i++) packet.Matrices[i]=matrices[packet.Sources[i]]; Bounds=bounds; lastAnchor=anchor; anchorSet=true;
     }
     public Vector3 PresentationInstanceCenter(string id,out float radius) { for(int i=0;i<Manifest.draws.Length;i++) if(Manifest.draws[i].id==id) { var b=meshes[Manifest.draws[i].meshIndex].bounds; var m=bases[i]; radius=(m.GetColumn(0).magnitude*b.extents.x+m.GetColumn(1).magnitude*b.extents.y+m.GetColumn(2).magnitude*b.extents.z); return m.MultiplyPoint3x4(b.center); } throw new InvalidDataException("Unknown whole-craft row identity."); }
-    public void Submit(Camera camera) { if(disposed||lastFrame==Time.frameCount) return; lastFrame=Time.frameCount; for(int i=0;i<Manifest.draws.Length;i++) { var a=Manifest.draws[i]; if(!a.enabled||!a.active||a.forceRenderingOff) continue; Graphics.DrawMesh(meshes[a.meshIndex],matrices[i],materials[a.materialIndex],a.layer,camera,a.submeshIndex,null,ShadowCastingMode.On,false,null,LightProbeUsage.Off,null); DrawCalls++; } SubmittedFrames++; }
+    public void Submit(Camera camera)
+    {
+        if(disposed||lastFrame==Time.frameCount) return; lastFrame=Time.frameCount; long start=System.Diagnostics.Stopwatch.GetTimestamp(); LastSubmissionCalls=0;
+        if(RenderMode=="grouped") foreach(var packet in packets) { Graphics.DrawMeshInstanced(meshes[packet.Mesh],packet.Submesh,materials[Manifest.materials.Length+packet.Recipe],packet.Matrices,packet.Matrices.Length,packet.Block,ShadowCastingMode.On,false,packet.Layer,camera,LightProbeUsage.Off,null); LastSubmissionCalls++; }
+        else for(int i=0;i<Manifest.draws.Length;i++) { var a=Manifest.draws[i]; if(!a.enabled||!a.active||a.forceRenderingOff) continue; Graphics.DrawMesh(meshes[a.meshIndex],matrices[i],materials[a.materialIndex],a.layer,camera,a.submeshIndex,referenceColors[i],ShadowCastingMode.On,false,null,LightProbeUsage.Off,null); LastSubmissionCalls++; }
+        DrawCalls+=LastSubmissionCalls; SubmissionTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-start; SubmittedFrames++;
+    }
     public void Dispose() { if(disposed) return; disposed=true; foreach(var o in owned) if(o!=null) UnityEngine.Object.Destroy(o); }
 }
