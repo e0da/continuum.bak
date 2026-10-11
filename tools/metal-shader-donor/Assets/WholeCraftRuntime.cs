@@ -69,7 +69,8 @@ public sealed class WholeCraftRuntime : IDisposable
         try
         {
             if(new FileInfo(path).Length>16*1024*1024) throw new InvalidDataException("Whole-craft manifest bound."); byte[] json=ReadBounded(path,new FileInfo(path).Length,16*1024*1024); ManifestSha256=Hash(json); Manifest=JsonUtility.FromJson<WholeCraftSceneManifest>(System.Text.Encoding.UTF8.GetString(json)); string root=Path.GetDirectoryName(path),geometryPath=Under(root,Manifest.geometry); GeometrySha256=ResidentMaterialRuntime.Hash(geometryPath); if(GeometrySha256!=Manifest.geometrySha256) throw new InvalidDataException("Whole geometry digest mismatch."); var g=WholeCraftSceneFormat.ReadGeometry(geometryPath); WholeCraftSceneFormat.Validate(Manifest,g); if(ResidentMaterialRuntime.Hash(geometryPath)!=GeometrySha256) throw new InvalidDataException("Whole geometry changed during read.");
-            if(Manifest.engine!=Application.unityVersion||Manifest.colorSpace!=QualitySettings.activeColorSpace.ToString()) throw new InvalidDataException("Whole-craft engine/color space mismatch.");
+            bool modernProbe=Environment.GetEnvironmentVariable("CONTINUUM_MODERN_UNITY_PROBE")=="1"&&Application.unityVersion=="6000.3.26f1"&&Manifest.engine=="2019.4.18f1";
+            if((Manifest.engine!=Application.unityVersion&&!modernProbe)||Manifest.colorSpace!=QualitySettings.activeColorSpace.ToString()) throw new InvalidDataException("Whole-craft engine/color space mismatch.");
             meshes=new Mesh[g.meshes.Length];
             for(int k=0;k<meshes.Length;k++)
             {

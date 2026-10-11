@@ -101,7 +101,8 @@ public sealed class ResidentMaterialRuntime : IDisposable
             string directory=Path.GetDirectoryName(ManifestPath), geometryPath=PathUnder(directory,Manifest.geometry);
             if(Hash(geometryPath)!=Manifest.geometrySha256) throw new InvalidDataException("Geometry digest mismatch.");
             ResidentGeometry geometry=ResidentMaterialFormat.ReadGeometry(geometryPath); ResidentMaterialFormat.ValidateManifest(Manifest,geometry);
-            if(Manifest.engine!=Application.unityVersion || Manifest.colorSpace!=QualitySettings.activeColorSpace.ToString()) throw new InvalidDataException("Engine/color-space mismatch.");
+            bool modernProbe=Environment.GetEnvironmentVariable("CONTINUUM_MODERN_UNITY_PROBE")=="1"&&Application.unityVersion=="6000.3.26f1"&&Manifest.engine=="2019.4.18f1";
+            if((Manifest.engine!=Application.unityVersion&&!modernProbe) || Manifest.colorSpace!=QualitySettings.activeColorSpace.ToString()) throw new InvalidDataException("Engine/color-space mismatch.");
             Root=M(Manifest.rootToWorld);
             Vector3 x=Root.GetColumn(0),y=Root.GetColumn(1),z=Root.GetColumn(2);
             if(Mathf.Abs(x.sqrMagnitude-1)>.0001f||Mathf.Abs(y.sqrMagnitude-1)>.0001f||Mathf.Abs(z.sqrMagnitude-1)>.0001f||Mathf.Abs(Vector3.Dot(x,y))>.0001f||Mathf.Abs(Vector3.Dot(x,z))>.0001f||Mathf.Abs(Vector3.Dot(y,z))>.0001f)

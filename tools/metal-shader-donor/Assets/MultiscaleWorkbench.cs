@@ -99,7 +99,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         {
             output=Absolute(Environment.GetEnvironmentVariable("CONTINUUM_MULTISCALE_OUTPUT")); if(Directory.Exists(output)||File.Exists(output)) throw new InvalidDataException("New output directory required."); Directory.CreateDirectory(output);
             state.hostId=Guid.NewGuid().ToString("N"); state.processId=System.Diagnostics.Process.GetCurrentProcess().Id; state.unity=Application.unityVersion; state.backend=SystemInfo.graphicsDeviceType.ToString(); state.reversedZ=SystemInfo.usesReversedZBuffer; state.assemblySha256=Hash(typeof(MultiscaleWorkbench).Assembly.Location);
-            if(state.unity!="2019.4.18f1"||!SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.RFloat)) throw new InvalidDataException("Pinned player and linear-depth targets required.");
+            bool modernProbe=Environment.GetEnvironmentVariable("CONTINUUM_MODERN_UNITY_PROBE")=="1"&&state.unity=="6000.3.26f1";
+            if((state.unity!="2019.4.18f1"&&!modernProbe)||!SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.RFloat)) throw new InvalidDataException("Pinned player and linear-depth targets required.");
             priorAA=QualitySettings.antiAliasing; priorVsync=QualitySettings.vSyncCount; priorFrameRate=Application.targetFrameRate; QualitySettings.antiAliasing=0; QualitySettings.vSyncCount=0; Application.targetFrameRate=-1;
             priorCameraPosition=Shader.GetGlobalVector("_LocalCameraPos"); priorCameraDirection=Shader.GetGlobalVector("_LocalCameraDir");
             settingsOwned=true;
@@ -122,7 +123,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         var next=new Generation(); try
         {
             if(new FileInfo(path).Length>1048576) throw new InvalidDataException("Scene manifest bound."); next.Hash=Hash(path); next.Scene=JsonUtility.FromJson<MultiscaleSceneManifest>(File.ReadAllText(path)); MultiscaleSceneFormat.Validate(next.Scene);
-            var scene=next.Scene; if(scene.engine!=Application.unityVersion||scene.colorSpace!=QualitySettings.activeColorSpace.ToString()) throw new InvalidDataException("Scene engine/color-space mismatch."); string root=Path.GetDirectoryName(path);
+            var scene=next.Scene; bool modernProbe=Environment.GetEnvironmentVariable("CONTINUUM_MODERN_UNITY_PROBE")=="1"&&Application.unityVersion=="6000.3.26f1"&&scene.engine=="2019.4.18f1";
+            if((scene.engine!=Application.unityVersion&&!modernProbe)||scene.colorSpace!=QualitySettings.activeColorSpace.ToString()) throw new InvalidDataException("Scene engine/color-space mismatch."); string root=Path.GetDirectoryName(path);
             double initialNorm=scene.initialCameraOffsetMeters.Sum(v=>v*v); if(initialNorm<.0625||double.IsInfinity(initialNorm)) throw new InvalidDataException("Initial camera offset bound.");
             if(generation!=null&&(generation.Scene.vesselId!=scene.vesselId||generation.Scene.bodyId!=scene.bodyId)) throw new InvalidDataException("Scene HMR retains logical object identities.");
             string vessel=Under(root,scene.vesselFixture),geometry=Under(root,scene.bodyGeometry),texture=Under(root,scene.bodyTexture.payload);
