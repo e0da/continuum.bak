@@ -21,7 +21,7 @@ public sealed class WholeCraftRuntime : IDisposable
     public int StateTextureId { get { return retainedState==null?0:retainedState.GetInstanceID(); } }
     public int CommandBuildCount { get; private set; }
     public int RetainedCommandCount { get { return retainedCalls; } }
-    public string RetainedScope { get { return "Cold GPU affine/normal/hue state and pass0 commands; all admitted visible rows, no per-row frustum culling, no shadow consumer; submission ticks cover owner control only"; } }
+    public string RetainedScope { get { return Retained(RenderMode)?"Cold GPU affine/normal/hue state and pass0 commands; all admitted visible rows, no per-row frustum culling, no shadow consumer; submission ticks cover owner control only":"Legacy managed DrawMesh/DrawMeshInstanced enqueue envelope; automatic native preparation/depth costs remain within complete-frame timing"; } }
     public string RenderMode { get; private set; }="reference";
     public int RecipeCount { get { return recipes.Length; } }
     public int PacketCount { get { return packets.Length; } }
@@ -169,13 +169,28 @@ public sealed class WholeCraftRuntime : IDisposable
         try { for(int i=0;i<next.Length;i++) { bool grouped=i>=Manifest.materials.Length; var recipe=recipes[grouped?i-Manifest.materials.Length:materialRecipes[i]]; var m=new Material(shader) {enableInstancing=grouped}; next[i]=m; m.SetFloat("_Mode",DebugMode=="off"?7:ResidentMaterialRuntime.GeometryDebugMode(DebugMode)); m.SetFloat("_Cull",0); m.SetColor("_Tint",recipe.Tint); m.SetVector("_ContinuumRetainedAnchor",lastAnchor); if(recipe.Texture>=0) m.SetTexture("_MainTex",textures[recipe.Texture]); m.SetTextureScale("_MainTex",new Vector2(recipe.ST.x,recipe.ST.y)); m.SetTextureOffset("_MainTex",new Vector2(recipe.ST.z,recipe.ST.w)); } return next; }
         catch { foreach(var m in next) if(m!=null) UnityEngine.Object.Destroy(m); throw; }
     }
+    public sealed class DebugShaderCommit : IDisposable
+    {
+        internal WholeCraftRuntime Owner; internal Material[] Table; internal CommandBuffer Commands; internal int Calls; internal string Mode; internal bool Used,Disposed;
+        public void Dispose() { if(Disposed) return; Disposed=true; if(Commands!=null) Commands.Release(); Commands=null; }
+    }
+    // The caller owns staged materials until commit; disposing a rejected lease releases commands only.
+    public DebugShaderCommit StageDebugShaderCommit(Material[] next)
+    {
+        if(disposed||next==null||next.Length!=Manifest.materials.Length+recipes.Length) throw new InvalidDataException("Staged whole debug material table differs.");
+        var stage=new DebugShaderCommit {Owner=this,Table=next,Mode=RenderMode};
+        try { if(Retained(RenderMode)) stage.Commands=PrepareCommands(next,RenderMode,out stage.Calls); return stage; }
+        catch { stage.Dispose(); throw; }
+    }
+    public void CommitDebugShader(DebugShaderCommit stage)
+    {
+        if(disposed||stage==null||stage.Owner!=this||stage.Used||stage.Disposed||stage.Mode!=RenderMode) throw new InvalidDataException("Whole shader commit lease is stale or foreign.");
+        ReplaceCommands(stage.Commands,stage.Calls); stage.Commands=null; stage.Used=true;
+        if(materials!=null) foreach(var m in materials) { owned.Remove(m); UnityEngine.Object.Destroy(m); } materials=stage.Table; owned.AddRange(materials);
+    }
     public void CommitDebugShader(Material[] next)
     {
-        if(next==null||next.Length!=Manifest.materials.Length+recipes.Length) throw new InvalidDataException("Staged whole debug material table differs.");
-        CommandBuffer commands=null; int calls=0;
-        try { if(Retained(RenderMode)) commands=PrepareCommands(next,RenderMode,out calls); ReplaceCommands(commands,calls); }
-        catch { if(commands!=null) commands.Release(); throw; }
-        if(materials!=null) foreach(var m in materials) { owned.Remove(m); UnityEngine.Object.Destroy(m); } materials=next; owned.AddRange(next);
+        using(var stage=StageDebugShaderCommit(next)) CommitDebugShader(stage);
     }
     public void SetGeometryDebug(string value) { int mode=value=="off"?7:ResidentMaterialRuntime.GeometryDebugMode(value); foreach(var m in materials) m.SetFloat("_Mode",mode); DebugMode=value; }
     public void SetTextureMipBias(float bias) { if(!Finite(bias)) throw new InvalidDataException("Finite whole mip bias required."); if(biasSet&&bias==lastBias) return; for(int i=0;i<textures.Length;i++) textures[i].mipMapBias=Manifest.textures[i].mipBias+bias; lastBias=bias; biasSet=true; }
