@@ -287,7 +287,8 @@ namespace KspContinuum
         void CaptureResidentMaterialFixture()
         {
             string explicitDirectory = Environment.GetEnvironmentVariable("CONTINUUM_RESIDENT_MATERIAL_FIXTURE");
-            if (!Flag("--continuum-resident-material-fixture") && string.IsNullOrEmpty(explicitDirectory)) return;
+            string sceneDirectory = Environment.GetEnvironmentVariable("CONTINUUM_MULTISCALE_SCENE");
+            if (!Flag("--continuum-resident-material-fixture") && string.IsNullOrEmpty(explicitDirectory) && string.IsNullOrEmpty(sceneDirectory)) return;
             var sources = new List<ResidentMaterialFixtureCapture.Source>();
             foreach (Packet packet in packets) for (int i = 0; i < packet.Sources.Count; i++)
             {
@@ -301,7 +302,8 @@ namespace KspContinuum
                     Lighting = packet.ProbeLighting[i], Occlusion = packet.ProbeOcclusion[i], Falloff = packet.Falloff[i],
                     RawOpacity = observed.GetFloat(PropertyIDs._Opacity), EffectiveOpacity = packet.Opacity[i] });
             }
-            ResidentMaterialFixtureCapture.Capture(vessel, string.IsNullOrEmpty(explicitDirectory) ? Path.Combine(directory, "resident-material-fixture") : explicitDirectory, report.runId, sources);
+            if (!string.IsNullOrEmpty(sceneDirectory)) MultiscaleSceneCapture.Capture(vessel, sceneDirectory, report.runId, sources);
+            else ResidentMaterialFixtureCapture.Capture(vessel, string.IsNullOrEmpty(explicitDirectory) ? Path.Combine(directory, "resident-material-fixture") : explicitDirectory, report.runId, sources);
         }
         Material Bind(Material original)
         {

@@ -71,6 +71,7 @@ namespace KspContinuum
                 if (!loading)
                 {
                     if (menuReadyFrame < 0 || Time.frameCount <= menuReadyFrame) return;
+                    if (BackendMenuPresentation.MaterialFactsPending) return;
                     if (HighLogic.LoadedScene != GameScenes.MAINMENU) throw new InvalidOperationException("Scene changed before scale checkpoint loading.");
                     loadedGame = GamePersistence.LoadGame(ScaleCheckpointLoadState.Checkpoint, ScaleCheckpointLoadState.Save, true, true);
                     if (loadedGame == null || !loadedGame.compatible || loadedGame.flightState == null ||

@@ -14,7 +14,7 @@ namespace KspContinuum
         [Serializable] public sealed class FileRow { public string relativeDataPath, sourceSha256, derivedSha256, derivedPath; }
         [Serializable] public sealed class Recipe { public string schema, unity; public FileRow[] files; public string[] requiredShaders; }
         [Serializable] public sealed class ShaderRow { public string name; public bool present, supported; }
-        [Serializable] public sealed class MaterialRow { public string renderer, material, shader; public int rendererId, materialId; public bool supported; public string[] textureProperties, textureNames; }
+        [Serializable] public sealed class MaterialRow { public string renderer, material, shader; public int rendererId, materialId, shaderId, renderQueue; public bool supported; public string[] textureProperties, textureNames, keywords, floatProperties, vectorProperties; public float[] floatValues; public float[][] vectorValues; }
         [Serializable] public sealed class CameraRow { public string name, clearFlags, renderingPath, target; public int id, mask, targetSamples; public float depth, near, far; public bool allowMSAA; }
         [Serializable] public sealed class Report
         {
@@ -27,6 +27,8 @@ namespace KspContinuum
             public string scope = "Actual full-window menu capture and structural shader/material observations. Text, controls, background appearance and interaction require a separate inspected visual qualification; no performance claim.";
         }
         public static bool Requested { get { return Environment.GetCommandLineArgs().Any(a => a.StartsWith("--continuum-backend-menu-presentation=", StringComparison.Ordinal)); } }
+        internal static bool MaterialFactsPending { get { return !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_MENU_MATERIAL_FACTS")) && !materialFactsComplete; } }
+        static bool materialFactsComplete;
         static string Argument(string prefix)
         {
             string[] values = Environment.GetCommandLineArgs().Where(a => a.StartsWith(prefix, StringComparison.Ordinal)).ToArray();
@@ -36,7 +38,12 @@ namespace KspContinuum
         static bool Digest(string value) { return value != null && value.Length == 64 && value.All(c => c >= '0' && c <= '9' || c >= 'a' && c <= 'f'); }
         IEnumerator Start()
         {
-            if (!Requested) yield break;
+            if (!Requested)
+            {
+                string facts = Environment.GetEnvironmentVariable("CONTINUUM_MENU_MATERIAL_FACTS");
+                if (!string.IsNullOrEmpty(facts)) yield return CaptureMaterialFacts(facts);
+                yield break;
+            }
             var report = new Report { status = "failed", actualBackend = SystemInfo.graphicsDeviceType.ToString(), unity = Application.unityVersion,
                 processId = System.Diagnostics.Process.GetCurrentProcess().Id,
                 reference = Environment.GetCommandLineArgs().Contains("--continuum-backend-menu-reference") };
@@ -98,11 +105,7 @@ namespace KspContinuum
                     foreach (Material material in renderer.sharedMaterials)
                     {
                         if (material == null) continue;
-                        string[] properties = material.GetTexturePropertyNames();
-                        materials.Add(new MaterialRow { renderer = renderer.name, rendererId = renderer.GetInstanceID(), material = material.name,
-                            materialId = material.GetInstanceID(), shader = material.shader == null ? null : material.shader.name,
-                            supported = material.shader != null && material.shader.isSupported, textureProperties = properties,
-                            textureNames = properties.Select(p => { Texture t = material.GetTexture(p); return t == null ? null : t.name; }).ToArray() });
+                        materials.Add(MaterialFacts(renderer, material));
                     }
                 }
                 report.materials = materials.ToArray(); report.unsupportedMaterials = materials.Count(m => !m.supported);
@@ -134,6 +137,38 @@ namespace KspContinuum
             try { Directory.CreateDirectory(directory); using (var stream = new FileStream(output, FileMode.CreateNew, FileAccess.Write)) using (var writer = new StreamWriter(stream)) writer.Write(ReportJson.Encode(report)); }
             catch (Exception error) { report.status = "failed"; Debug.LogException(error); }
             Application.Quit(report.status == "captured-structural" || report.status == "captured-reference-structural" ? 0 : 2);
+        }
+        static MaterialRow MaterialFacts(Renderer renderer, Material material)
+        {
+            string[] properties = material.GetTexturePropertyNames(); var floats = new List<string>(); var values = new List<float>(); var vectors = new List<string>(); var vectorValues = new List<float[]>();
+            Shader shader = material.shader;
+            if (shader != null) for (int i=0; i<shader.GetPropertyCount(); i++)
+            {
+                string name=shader.GetPropertyName(i); ShaderPropertyType type=shader.GetPropertyType(i);
+                if (type==ShaderPropertyType.Float || type==ShaderPropertyType.Range) { floats.Add(name); values.Add(material.GetFloat(name)); }
+                else if (type==ShaderPropertyType.Color || type==ShaderPropertyType.Vector) { Vector4 v=type==ShaderPropertyType.Color ? (Vector4)material.GetColor(name) : material.GetVector(name); vectors.Add(name); vectorValues.Add(new[] {v.x,v.y,v.z,v.w}); }
+            }
+            return new MaterialRow { renderer=renderer.name,rendererId=renderer.GetInstanceID(),material=material.name,materialId=material.GetInstanceID(),shader=shader==null?null:shader.name,
+                shaderId=shader==null?0:shader.GetInstanceID(),supported=shader!=null&&shader.isSupported,renderQueue=material.renderQueue,keywords=material.shaderKeywords,
+                textureProperties=properties,textureNames=properties.Select(p=>{Texture t=material.GetTexture(p);return t==null?null:t.name;}).ToArray(),floatProperties=floats.ToArray(),floatValues=values.ToArray(),vectorProperties=vectors.ToArray(),vectorValues=vectorValues.ToArray() };
+        }
+        IEnumerator CaptureMaterialFacts(string output)
+        {
+            float started=Time.realtimeSinceStartup; while(Time.realtimeSinceStartup-started<3) yield return null;
+            yield return new WaitForEndOfFrame();
+            var report=new Report { status="material-facts-failed",actualBackend=SystemInfo.graphicsDeviceType.ToString(),unity=Application.unityVersion,processId=System.Diagnostics.Process.GetCurrentProcess().Id,
+                scope="Cold actual menu material keywords/parameters before owned flight loading. No screenshot, interaction, fidelity or performance qualification." };
+            try
+            {
+                report.runId=Argument("--continuum-research-run=");
+                if(!Path.IsPathRooted(output)||File.Exists(output)||Directory.Exists(output)) throw new InvalidDataException("New absolute menu material evidence path required.");
+                report.materials=Resources.FindObjectsOfTypeAll<Renderer>().Where(r=>r.gameObject.activeInHierarchy&&r.gameObject.scene.IsValid()).SelectMany(r=>r.sharedMaterials.Where(m=>m!=null).Select(m=>MaterialFacts(r,m))).ToArray();
+                report.activeRenderers=report.materials.Select(m=>m.rendererId).Distinct().Count(); report.status="captured-material-facts";
+                Directory.CreateDirectory(Path.GetDirectoryName(output));
+                using(var stream=new FileStream(output,FileMode.CreateNew,FileAccess.Write)) using(var writer=new StreamWriter(stream)) writer.Write(ReportJson.Encode(report));
+            }
+            catch(Exception error) { Debug.LogException(error); }
+            finally { materialFactsComplete=true; }
         }
         static string[] MenuTexts(MainMenu menu)
         {

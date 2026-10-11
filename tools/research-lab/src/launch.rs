@@ -89,11 +89,17 @@ pub struct Diagnostics {
     pub backend_menu_presentation: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend_pixel_proof_bundle: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multiscale_scene: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub menu_material_facts: Option<PathBuf>,
     pub profile: bool,
     pub texture_observe: bool,
     pub world_timing: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub construction_timing: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub part_construction_timing: bool,
     pub site_proof: Option<String>,
 }
 fn is_false(value: &bool) -> bool {
@@ -210,10 +216,13 @@ impl ResolvedLaunch {
             diagnostics: Diagnostics {
                 backend_menu_presentation: path("--backend-menu-presentation"),
                 backend_pixel_proof_bundle: path("--backend-pixel-proof-bundle"),
+                multiscale_scene: path("--flight-multiscale-scene"),
+                menu_material_facts: path("--menu-material-facts"),
                 profile: boolean("--startup-profile")?,
                 texture_observe: boolean("--startup-texture-observe")?,
                 world_timing: boolean("--startup-world-timing")?,
                 construction_timing: boolean("--startup-construction-timing")?,
+                part_construction_timing: boolean("--startup-part-construction-timing")?,
                 site_proof: options.get("--startup-site-proof").cloned(),
             },
             native_asset_installation: path("--native-asset-installation"),
@@ -278,6 +287,17 @@ impl ResolvedLaunch {
             && (!s.work_scheduler || !self.diagnostics.world_timing || self.flight.is_some())
         {
             return Err("startup construction timing requires work-scheduler, world-timing and a startup-only run".into());
+        }
+        if self.diagnostics.part_construction_timing && !self.diagnostics.world_timing {
+            return Err("part construction timing requires world-timing".into());
+        }
+        for path in [&self.diagnostics.multiscale_scene, &self.diagnostics.menu_material_facts].into_iter().flatten() {
+            if self.flight.is_none() || !path.is_absolute() || path.exists() || !path.parent().is_some_and(|parent| parent.is_dir()) {
+                return Err("scene/material capture requires flight and a new absolute output under an existing directory".into());
+            }
+        }
+        if self.diagnostics.multiscale_scene.is_some() && !self.flight.as_ref().is_some_and(|flight| flight.part_batch && flight.part_mapped_only) {
+            return Err("multiscale capture requires admitted mapped part batching".into());
         }
         if s.deferred_terrain && !s.readiness {
             return Err("deferred terrain requires startup-readiness".into());

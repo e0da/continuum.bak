@@ -87,6 +87,9 @@ fn run() -> Result<()> {
             "--native-asset-installation",
             "--startup-world-timing",
             "--startup-construction-timing",
+            "--startup-part-construction-timing",
+            "--flight-multiscale-scene",
+            "--menu-material-facts",
             "--startup-prepared-bindings",
             "--flight-save",
             "--flight-checkpoint",
@@ -740,6 +743,8 @@ fn smoke(
     let admission_seconds = admission_started.elapsed().as_secs_f64();
     let mut child = Command::new(&executable)
         .current_dir(&instance)
+        .env("CONTINUUM_MULTISCALE_SCENE", selection.diagnostics.multiscale_scene.as_deref().unwrap_or(Path::new("")))
+        .env("CONTINUUM_MENU_MATERIAL_FACTS", selection.diagnostics.menu_material_facts.as_deref().unwrap_or(Path::new("")))
         .args(if menu_recipe.is_some() {
             vec![]
         } else if flight.is_none() {
@@ -784,6 +789,11 @@ fn smoke(
         ))
         .args(if startup_world_timing {
             vec!["--continuum-startup-world-timing"]
+        } else {
+            vec![]
+        })
+        .args(if selection.diagnostics.part_construction_timing {
+            vec!["--continuum-startup-part-construction-timing"]
         } else {
             vec![]
         })
