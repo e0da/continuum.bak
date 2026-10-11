@@ -76,6 +76,8 @@ pub struct Startup {
     pub dds_mapped: bool,
     pub audio_prefetch: bool,
     pub readiness: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stock_terrain_ready: bool,
     pub deferred_terrain: bool,
     pub resource_image_mode: ResourceImageMode,
     pub resource_image: Option<PathBuf>,
@@ -196,6 +198,7 @@ impl ResolvedLaunch {
                 dds_mapped: boolean("--startup-dds-mapped")?,
                 audio_prefetch: boolean("--startup-audio-prefetch")?,
                 readiness: boolean("--startup-readiness")?,
+                stock_terrain_ready: boolean("--startup-stock-terrain-ready")?,
                 deferred_terrain: boolean("--startup-deferred-terrain")?,
                 resource_image_mode: match options
                     .get("--startup-resource-image-mode")
@@ -291,16 +294,34 @@ impl ResolvedLaunch {
         if self.diagnostics.part_construction_timing && !self.diagnostics.world_timing {
             return Err("part construction timing requires world-timing".into());
         }
-        for path in [&self.diagnostics.multiscale_scene, &self.diagnostics.menu_material_facts].into_iter().flatten() {
-            if self.flight.is_none() || !path.is_absolute() || path.exists() || !path.parent().is_some_and(|parent| parent.is_dir()) {
+        for path in [
+            &self.diagnostics.multiscale_scene,
+            &self.diagnostics.menu_material_facts,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if self.flight.is_none()
+                || !path.is_absolute()
+                || path.exists()
+                || !path.parent().is_some_and(|parent| parent.is_dir())
+            {
                 return Err("scene/material capture requires flight and a new absolute output under an existing directory".into());
             }
         }
-        if self.diagnostics.multiscale_scene.is_some() && !self.flight.as_ref().is_some_and(|flight| flight.part_batch && flight.part_mapped_only) {
+        if self.diagnostics.multiscale_scene.is_some()
+            && !self
+                .flight
+                .as_ref()
+                .is_some_and(|flight| flight.part_batch && flight.part_mapped_only)
+        {
             return Err("multiscale capture requires admitted mapped part batching".into());
         }
         if s.deferred_terrain && !s.readiness {
             return Err("deferred terrain requires startup-readiness".into());
+        }
+        if s.stock_terrain_ready && (!s.readiness || s.deferred_terrain) {
+            return Err("stock terrain readiness requires startup-readiness and original synchronous terrain construction".into());
         }
         if (s.resource_image_mode != ResourceImageMode::None) != s.resource_image.is_some() {
             return Err("resource image mode requires one private image path".into());
@@ -450,6 +471,29 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+    #[test]
+    fn stock_terrain_wait_requires_same_epoch_owner() {
+        let legacy = ResolvedLaunch::parse(&BTreeMap::new())
+            .unwrap()
+            .identity_json()
+            .unwrap();
+        assert!(!legacy.contains("stockTerrainReady"));
+        let mut input = options(&[("--startup-stock-terrain-ready", "true")]);
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input.insert("--startup-readiness".into(), "true".into());
+        let identity = ResolvedLaunch::parse(&input)
+            .unwrap()
+            .identity_json()
+            .unwrap();
+        assert!(
+            ResolvedLaunch::parse_from_json(&identity)
+                .unwrap()
+                .startup
+                .stock_terrain_ready
+        );
+        input.insert("--startup-deferred-terrain".into(), "true".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
     }
     #[test]
     fn new_owners_preserve_legacy_profiles_and_require_real_consumers() {

@@ -79,6 +79,7 @@ fn run() -> Result<()> {
             "--startup-dds-mapped",
             "--startup-audio-prefetch",
             "--startup-readiness",
+            "--startup-stock-terrain-ready",
             "--startup-deferred-terrain",
             "--startup-site-proof",
             "--startup-resource-image-mode",
@@ -743,8 +744,22 @@ fn smoke(
     let admission_seconds = admission_started.elapsed().as_secs_f64();
     let mut child = Command::new(&executable)
         .current_dir(&instance)
-        .env("CONTINUUM_MULTISCALE_SCENE", selection.diagnostics.multiscale_scene.as_deref().unwrap_or(Path::new("")))
-        .env("CONTINUUM_MENU_MATERIAL_FACTS", selection.diagnostics.menu_material_facts.as_deref().unwrap_or(Path::new("")))
+        .env(
+            "CONTINUUM_MULTISCALE_SCENE",
+            selection
+                .diagnostics
+                .multiscale_scene
+                .as_deref()
+                .unwrap_or(Path::new("")),
+        )
+        .env(
+            "CONTINUUM_MENU_MATERIAL_FACTS",
+            selection
+                .diagnostics
+                .menu_material_facts
+                .as_deref()
+                .unwrap_or(Path::new("")),
+        )
         .args(if menu_recipe.is_some() {
             vec![]
         } else if flight.is_none() {
@@ -839,6 +854,11 @@ fn smoke(
         })
         .args(if startup_readiness {
             vec!["--continuum-startup-readiness"]
+        } else {
+            vec![]
+        })
+        .args(if selection.startup.stock_terrain_ready {
+            vec!["--continuum-startup-stock-terrain-ready"]
         } else {
             vec![]
         })
@@ -1331,6 +1351,7 @@ fn smoke(
         "startupDdsMappedRequested":startup_dds_mapped,
         "startupAudioPrefetchRequested":startup_audio_prefetch,
         "startupReadinessRequested":startup_readiness,
+        "startupStockTerrainReadinessRequested":selection.startup.stock_terrain_ready,
         "startupDeferredTerrainRequested":startup_deferred_terrain,
         "startupSiteProofRequested":startup_site_proof,
         "startupSiteProofEvidence":site_proof_evidence,"startupSiteProofError":site_proof_error,
