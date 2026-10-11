@@ -14,7 +14,7 @@ Before/after PNGs, exact event order, source/saved hashes and actual hook, contr
 
 This scope does not establish arbitrary mod `OnSave` coverage, full scenario equality, deterministic replay, visual equivalence, endurance or improved load time. Failed attempts retain their original receipts; fixes must address a concrete changed cause without widening the frozen gates.
 
-## Observed result
+## Stock-only result
 
 The 256-part stock roundtrip recreated every vessel/part object and preserved IDs, parent links, four crew, ordered module types, 2,505 primitive persistent fields and all 64 resource rows. Seven ordered events, deliberate velocity departure, immutable source/saved bytes and actual camera/lock/hook cleanup passed. Both rendered images contain the craft, Kerbin and UI.
 
@@ -33,3 +33,5 @@ Event coordinates provide lifecycle latency; this driver does not collect exclus
 `CONTINUUM_RELOAD_MASS_BARRIER=packed` instead invokes that original method immediately before the fresh vessel's first mass-bearing packed statistics calculation. A scoped predicate permits its body-publication branch for the admitted still-kinematic bodies; the original packed fields remain unchanged. The exact original branch and assembly are pinned. All parts and FI dependencies must already be ready; otherwise the experiment fails rather than delaying stock statistics or inventing readiness. Original resource, thermal and mass calculations still run. No pose, orbit or velocity repair is performed.
 
 The report retains the mode, per-body mass/center/kinematic state, live and weighted centers, epoch, original invocation clocks, reached body-publication count and actual hook removal. Constructor failures retain inner exceptions and observed cleanup. Neither experimental mode is enabled by ordinary launches; a successful selected checkpoint would still leave other vessels, mods and ordinary reload paths unqualified.
+
+The packed treatment passed the selected 256-part checkpoint: one original invocation published all 170 packed/kinematic bodies, with zero faults and owned hooks removed. Saved-epoch position error fell to 0.000001768 m and velocity error to 1.374e-9 m/s. All frozen restoration gates passed; 256 fresh parts, four crew, ordered modules, 2,505 fields, resources and whole-game membership were preserved. Both actual images contain the craft, Kerbin and UI. This is an observed construction-order fix for the diagnostic fixture, not ordinary reload or general mod qualification.
