@@ -25,14 +25,14 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         public float yaw,pitch,fov,bodyNear,bodyFar,craftNear,craftFar;
         public float bodyWorldScale,craftWorldScale,bodyMipBias,craftMipBias,bodyGeometryErrorPixels,craftGeometryErrorPixels;
         public string bodyPolicy,craftPolicy,bodyShadowPolicy,craftShadowPolicy;
-        public bool reversedZ,uiNativeResolution=true,opaqueOnly=true,splashFinishedAtCapture;
+        public bool reversedZ,uiNativeResolution=true,opaqueOnly=true,splashFinishedAtCapture,quitReplyWritten;
     }
     sealed class Generation : IDisposable
     {
         public MultiscaleSceneManifest Scene; public ResidentMaterialRuntime Craft; public Mesh Body; public Texture2D Texture; public Material Material; public string Hash;
         public void Dispose() { if(Craft!=null) Craft.Dispose(); if(Body!=null) UnityEngine.Object.Destroy(Body); if(Texture!=null) UnityEngine.Object.Destroy(Texture); if(Material!=null) UnityEngine.Object.Destroy(Material); }
     }
-    sealed class Command { public string Text,Reply; public volatile bool Done; }
+    sealed class Command { public string Text,Reply; public volatile bool Done,ReplyWritten; }
     sealed class Target : IDisposable
     {
         public Camera Camera; public RenderTexture Color,Depth; public CommandBuffer Copy;
@@ -41,7 +41,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     readonly State state=new State(); readonly ConcurrentQueue<Command> queue=new ConcurrentQueue<Command>();
     PresentationQualityOverride[] overrides=new PresentationQualityOverride[0]; Generation generation; Camera present,craftCamera,bodyCamera; Target craftTarget,bodyTarget; Material composite,depthCopy;
     EffectivePresentationQuality craftQuality,bodyQuality; bool policyDirty=true;
-    string output,partBundle,originalBundle,seen; double distance; float yaw,pitch; double pollAt; bool capturing,settingsOwned; TcpListener listener; Thread socket; volatile bool stopping; int queued;
+    string output,partBundle,originalBundle,seen; double distance; float yaw,pitch; double pollAt; bool capturing,settingsOwned,quitRequested; TcpListener listener; Thread socket; volatile bool stopping; int queued;
     readonly double[] cameraAnchor=new double[3]; readonly List<Camera> disabledCameras=new List<Camera>(); int priorAA,priorVsync,priorFrameRate;
     readonly double[] bodyGeometryAnchor=new double[3];
     Vector4 priorCameraPosition,priorCameraDirection;
@@ -110,7 +110,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     void Update()
     {
         if(generation==null||state.status=="failed") return;
-        Command cmd; while(queue.TryDequeue(out cmd)) { Interlocked.Decrement(ref queued); try { Execute(cmd.Text); cmd.Reply=JsonUtility.ToJson(state); } catch(Exception e) { cmd.Reply="{\"error\":\""+e.Message.Replace("\"","'")+"\"}"; } cmd.Done=true; }
+        Command cmd; while(queue.TryDequeue(out cmd)) { Interlocked.Decrement(ref queued); bool quitting=false; try { Execute(cmd.Text); cmd.Reply=JsonUtility.ToJson(state); quitting=cmd.Text=="quit"; } catch(Exception e) { cmd.Reply="{\"error\":\""+e.Message.Replace("\"","'")+"\"}"; } cmd.Done=true; if(quitting) StartCoroutine(QuitAfterReply(cmd)); }
+        if(quitRequested) return;
         if(!capturing&&Time.realtimeSinceStartup>=pollAt) { pollAt=Time.realtimeSinceStartup+1; try { if(Hash(state.scenePath)!=seen) Reload(state.scenePath,false); } catch(Exception e) { state.error="Rejected reload: "+e.Message; Write(); } }
         if(!capturing&&Input.mouseScrollDelta.y!=0) distance=Math.Max(.25,Math.Min(1e10,distance*Math.Exp(-Input.mouseScrollDelta.y*.15)));
     }
@@ -154,7 +155,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     void OnRenderImage(RenderTexture source,RenderTexture destination) { if(composite!=null&&craftTarget!=null&&bodyTarget!=null&&state.status!="failed") Graphics.Blit(source,destination,composite); else Graphics.Blit(source,destination); }
     void Execute(string text)
     {
-        string[] words=text.Split(new[] {' '},StringSplitOptions.RemoveEmptyEntries); if(words.Length==0) return; if(capturing) throw new InvalidOperationException("Capture controls frozen."); state.commands++;
+        string[] words=text.Split(new[] {' '},StringSplitOptions.RemoveEmptyEntries); if(words.Length==0) return; if(capturing) throw new InvalidOperationException("Capture controls frozen."); if(quitRequested) throw new InvalidOperationException("Owned shutdown pending."); state.commands++;
+        if(words[0]=="quit"&&words.Length==1) { quitRequested=true; state.status="stopping"; Write(); return; }
         if(words[0]=="status") { Write(); return; }
         if(words[0]=="captureframe") { StartCoroutine(Capture()); return; }
         if(words[0]=="zoom"&&words.Length==2) distance=Math.Max(.25,Math.Min(1e10,Math.Pow(10,Number(words[1]))));
@@ -164,8 +166,16 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         else if(words[0]=="override"&&words.Length==5) { string id=words[1]; if(id!=generation.Scene.bodyId&&id!=generation.Scene.vesselId) throw new InvalidDataException("Known asset ID required."); var next=overrides.Where(o=>o.assetId!=id).Concat(new[] {new PresentationQualityOverride {scope="asset",assetId=id,pass="world",scaleSet=true,worldScale=(float)Number(words[2]),mipSet=true,textureMipBias=(float)Number(words[3]),geometrySet=true,geometryErrorPixels=(float)Number(words[4])}}).ToArray(); PresentationQualityPolicy.Resolve(state.preset,state.context,id==generation.Scene.bodyId?"body":"craft","world",id,next); overrides=next; }
         else if(words[0]=="fixturehotreload") Reload(Absolute(text.Substring(words[0].Length).Trim()),false);
         else if(words[0]=="snapshotreload") { string path=Absolute(text.Substring(words[0].Length).Trim()); var snap=ResidentMaterialFormat.ReadSnapshot(path); if(snap.instances.Any(i=>i.opacityEffective!=1)) throw new InvalidDataException("Translucent snapshot rejected."); generation.Craft.ReloadSnapshot(path); }
-        else throw new InvalidDataException("status|captureframe|zoom log10metres|orbit yaw pitch|focus ID|preset low/balanced/high|override ID scale mip error|fixturehotreload PATH|snapshotreload PATH");
+        else throw new InvalidDataException("status|quit|captureframe|zoom log10metres|orbit yaw pitch|focus ID|preset low/balanced/high|override ID scale mip error|fixturehotreload PATH|snapshotreload PATH");
         policyDirty=true; Write();
+    }
+    IEnumerator QuitAfterReply(Command command)
+    {
+        float deadline=Time.realtimeSinceStartup+2;
+        while(!command.ReplyWritten&&Time.realtimeSinceStartup<deadline) yield return null;
+        state.quitReplyWritten=command.ReplyWritten; Write();
+        yield return new WaitForEndOfFrame();
+        Application.Quit();
     }
     IEnumerator Capture()
     {
@@ -183,7 +193,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     }
     void SocketLoop()
     {
-        while(!stopping) try { using(var client=listener.AcceptTcpClient()) using(var stream=client.GetStream()) { stream.ReadTimeout=2000; stream.WriteTimeout=2000; var bytes=new List<byte>(); int b; while((b=stream.ReadByte())>=0&&b!='\n') { if(bytes.Count>=4096) throw new InvalidDataException("Command bound."); bytes.Add((byte)b); } if(Interlocked.Increment(ref queued)>16) { Interlocked.Decrement(ref queued); continue; } var c=new Command {Text=Encoding.UTF8.GetString(bytes.ToArray()).Trim()}; queue.Enqueue(c); for(int i=0;i<500&&!c.Done&&!stopping;i++) Thread.Sleep(10); if(c.Done) { byte[] reply=Encoding.UTF8.GetBytes(c.Reply+"\n"); stream.Write(reply,0,reply.Length); } } } catch { if(stopping) return; }
+        while(!stopping) try { using(var client=listener.AcceptTcpClient()) using(var stream=client.GetStream()) { stream.ReadTimeout=2000; stream.WriteTimeout=2000; var bytes=new List<byte>(); int b; while((b=stream.ReadByte())>=0&&b!='\n') { if(bytes.Count>=4096) throw new InvalidDataException("Command bound."); bytes.Add((byte)b); } if(Interlocked.Increment(ref queued)>16) { Interlocked.Decrement(ref queued); continue; } var c=new Command {Text=Encoding.UTF8.GetString(bytes.ToArray()).Trim()}; queue.Enqueue(c); for(int i=0;i<500&&!c.Done&&!stopping;i++) Thread.Sleep(10); if(c.Done) { byte[] reply=Encoding.UTF8.GetBytes(c.Reply+"\n"); stream.Write(reply,0,reply.Length); stream.Flush(); c.ReplyWritten=true; } } } catch { if(stopping) return; }
     }
     void Write() { if(output!=null&&Directory.Exists(output)) File.WriteAllText(Path.Combine(output,"multiscale-status.json"),JsonUtility.ToJson(state,true)); }
     void Fail(Exception e) { state.status="failed"; state.error=e.ToString(); if(present!=null) present.enabled=false; Write(); Debug.LogException(e); }

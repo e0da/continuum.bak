@@ -23,6 +23,7 @@ focus OBJECT_ID
 preset high
 override OBJECT_ID 0.5 1 2
 captureframe
+quit
 fixturehotreload ABSOLUTE_SCENE_MANIFEST
 snapshotreload ABSOLUTE_NEWER_SNAPSHOT
 ```
