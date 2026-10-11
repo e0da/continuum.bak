@@ -15,13 +15,17 @@ public sealed class WholeCraftRuntime : IDisposable
     sealed class Recipe { public int Texture=-1; public Vector4 ST=new Vector4(1,1,0,0); public Color Tint=Color.white; }
     sealed class Packet { public int Mesh,Submesh,Layer,Recipe; public int[] Sources; public Matrix4x4[] Matrices; public MaterialPropertyBlock Block; }
     Recipe[] recipes; int[] materialRecipes; Packet[] packets; MaterialPropertyBlock[] referenceColors;
-    Texture2D retainedState; CommandBuffer retainedCommands; Camera retainedCamera; RenderTexture retainedColor,retainedDepth; int retainedRows,retainedCalls;
+    Texture2D retainedState; CommandBuffer retainedCommands; RenderTexture retainedColor,retainedDepth; int retainedRows,retainedCalls; Matrix4x4 retainedView,retainedProjection; bool viewSet;
+    static readonly int[] viewRows={Shader.PropertyToID("_ContinuumRetainedView0"),Shader.PropertyToID("_ContinuumRetainedView1"),Shader.PropertyToID("_ContinuumRetainedView2"),Shader.PropertyToID("_ContinuumRetainedView3")};
+    static readonly int[] vpRows={Shader.PropertyToID("_ContinuumRetainedVP0"),Shader.PropertyToID("_ContinuumRetainedVP1"),Shader.PropertyToID("_ContinuumRetainedVP2"),Shader.PropertyToID("_ContinuumRetainedVP3")};
+    public int NativeExecuteCount { get; private set; }
+    public int ViewUniformUpdateCount { get; private set; }
     public int StateUploadCount { get; private set; }
     public long StateUploadBytes { get; private set; }
     public int StateTextureId { get { return retainedState==null?0:retainedState.GetInstanceID(); } }
     public int CommandBuildCount { get; private set; }
     public int RetainedCommandCount { get { return retainedCalls; } }
-    public string RetainedScope { get { return Retained(RenderMode)?"Cold GPU affine/normal/hue state and pass0 commands; all admitted visible rows, no per-row frustum culling, no shadow consumer; submission ticks cover owner control only":"Legacy managed DrawMesh/DrawMeshInstanced enqueue envelope; automatic native preparation/depth costs remain within complete-frame timing"; } }
+    public string RetainedScope { get { return Retained(RenderMode)?"Cold GPU affine/normal/hue state and explicit MRT commands; no craft Camera.Render, per-row frustum culling or shadow consumer; submission ticks cover owner uniforms/ExecuteCommandBuffer enqueue only":"Legacy managed DrawMesh/DrawMeshInstanced enqueue envelope; automatic native preparation/depth costs remain within complete-frame timing"; } }
     public string RenderMode { get; private set; }="reference";
     public int RecipeCount { get { return recipes.Length; } }
     public int PacketCount { get { return packets.Length; } }
@@ -112,7 +116,8 @@ public sealed class WholeCraftRuntime : IDisposable
         for(int i=Manifest.materials.Length;i<table.Length;i++)
         {
             var m=table[i]; foreach(string property in new[] {"_ContinuumRetainedContract","_ContinuumRetained","_ContinuumState","_ContinuumStateShape","_ContinuumStateBase","_ContinuumRetainedAnchor"}) if(m==null||!m.HasProperty(property)) throw new InvalidDataException("Retained diagnostic shader interface absent: "+property);
-            if(m.GetFloat("_ContinuumRetainedContract")!=1) throw new InvalidDataException("Retained diagnostic shader contract differs.");
+            if(m.GetFloat("_ContinuumRetainedContract")!=2||!m.HasProperty("_ContinuumExplicitViewContract")||m.GetFloat("_ContinuumExplicitViewContract")!=1) throw new InvalidDataException("Retained explicit-view shader contract differs.");
+            for(int r=0;r<4;r++) if(!m.HasProperty("_ContinuumRetainedVP"+r)||!m.HasProperty("_ContinuumRetainedView"+r)) throw new InvalidDataException("Retained shader view rows absent.");
         }
     }
     public void ConfigureRetainedTargets(RenderTexture color,RenderTexture positiveDepth)
@@ -147,11 +152,12 @@ public sealed class WholeCraftRuntime : IDisposable
         {
             if(retainedColor==null||retainedDepth==null) throw new InvalidDataException("Retained targets must be configured before command preparation.");
             commands.SetRenderTarget(new[] {new RenderTargetIdentifier(retainedColor),new RenderTargetIdentifier(retainedDepth)},new RenderTargetIdentifier(retainedColor));
+            commands.SetViewport(new Rect(0,0,retainedColor.width,retainedColor.height));
             commands.ClearRenderTarget(true,true,Color.clear);
             var identity=new Matrix4x4[1023]; for(int i=0;i<identity.Length;i++) identity[i]=Matrix4x4.identity; int row=0;
             foreach(var p in packets)
             {
-                var material=table[Manifest.materials.Length+p.Recipe]; if(!material.HasProperty("_ContinuumRetainedContract")||material.GetFloat("_ContinuumRetainedContract")!=1) throw new InvalidDataException("Retained diagnostic shader contract absent.");
+                var material=table[Manifest.materials.Length+p.Recipe]; if(!material.HasProperty("_ContinuumRetainedContract")||material.GetFloat("_ContinuumRetainedContract")!=2) throw new InvalidDataException("Retained explicit-view shader contract absent.");
                 int stride=mode=="retained-grouped"?p.Sources.Length:1;
                 for(int i=0;i<p.Sources.Length;i+=stride)
                 {
@@ -160,21 +166,19 @@ public sealed class WholeCraftRuntime : IDisposable
                 }
                 row+=p.Sources.Length;
             }
-            commands.SetRenderTarget(BuiltinRenderTextureType.CameraTarget); CommandBuildCount++; return commands;
+            CommandBuildCount++; return commands;
         }
         catch { commands.Release(); throw; }
     }
     void ReplaceCommands(CommandBuffer next,int calls)
     {
-        if(retainedCamera!=null&&next!=null) retainedCamera.AddCommandBuffer(CameraEvent.AfterForwardOpaque,next);
-        if(retainedCamera!=null&&retainedCommands!=null) retainedCamera.RemoveCommandBuffer(CameraEvent.AfterForwardOpaque,retainedCommands);
         if(retainedCommands!=null) retainedCommands.Release(); retainedCommands=next; retainedCalls=calls;
     }
     public Material[] PrepareDebugShader(Shader shader)
     {
-        if(Retained(RenderMode)) { var probe=new Material(shader); try { if(!probe.HasProperty("_ContinuumRetainedContract")||probe.GetFloat("_ContinuumRetainedContract")!=1) throw new InvalidDataException("Staged shader lacks retained state contract."); } finally { UnityEngine.Object.Destroy(probe); } }
+        if(Retained(RenderMode)) { var probe=new Material(shader); try { if(!probe.HasProperty("_ContinuumRetainedContract")||probe.GetFloat("_ContinuumRetainedContract")!=2||!probe.HasProperty("_ContinuumExplicitViewContract")||probe.GetFloat("_ContinuumExplicitViewContract")!=1) throw new InvalidDataException("Staged shader lacks retained explicit-view contract."); } finally { UnityEngine.Object.Destroy(probe); } }
         var next=new Material[Manifest.materials.Length+recipes.Length];
-        try { for(int i=0;i<next.Length;i++) { bool grouped=i>=Manifest.materials.Length; var recipe=recipes[grouped?i-Manifest.materials.Length:materialRecipes[i]]; var m=new Material(shader) {enableInstancing=grouped}; next[i]=m; m.SetFloat("_Mode",DebugMode=="off"?7:ResidentMaterialRuntime.GeometryDebugMode(DebugMode)); m.SetFloat("_Cull",0); m.SetColor("_Tint",recipe.Tint); m.SetVector("_ContinuumRetainedAnchor",lastAnchor); if(recipe.Texture>=0) m.SetTexture("_MainTex",textures[recipe.Texture]); m.SetTextureScale("_MainTex",new Vector2(recipe.ST.x,recipe.ST.y)); m.SetTextureOffset("_MainTex",new Vector2(recipe.ST.z,recipe.ST.w)); } return next; }
+        try { for(int i=0;i<next.Length;i++) { bool grouped=i>=Manifest.materials.Length; var recipe=recipes[grouped?i-Manifest.materials.Length:materialRecipes[i]]; var m=new Material(shader) {enableInstancing=grouped}; next[i]=m; m.SetFloat("_Mode",DebugMode=="off"?7:ResidentMaterialRuntime.GeometryDebugMode(DebugMode)); m.SetFloat("_Cull",0); m.SetColor("_Tint",recipe.Tint); m.SetVector("_ContinuumRetainedAnchor",lastAnchor); if(recipe.Texture>=0) m.SetTexture("_MainTex",textures[recipe.Texture]); m.SetTextureScale("_MainTex",new Vector2(recipe.ST.x,recipe.ST.y)); m.SetTextureOffset("_MainTex",new Vector2(recipe.ST.z,recipe.ST.w)); } if(viewSet) BindView(next); return next; }
         catch { foreach(var m in next) if(m!=null) UnityEngine.Object.Destroy(m); throw; }
     }
     public sealed class DebugShaderCommit : IDisposable
@@ -209,18 +213,31 @@ public sealed class WholeCraftRuntime : IDisposable
         for(int i=0;i<matrices.Length;i++) { var m=bases[i]; m.m03+=anchor.x; m.m13+=anchor.y; m.m23+=anchor.z; matrices[i]=m; } foreach(var packet in packets) for(int i=0;i<packet.Sources.Length;i++) packet.Matrices[i]=matrices[packet.Sources[i]]; foreach(var m in materials) m.SetVector("_ContinuumRetainedAnchor",anchor); Bounds=bounds; lastAnchor=anchor; anchorSet=true;
     }
     public Vector3 PresentationInstanceCenter(string id,out float radius) { for(int i=0;i<Manifest.draws.Length;i++) if(Manifest.draws[i].id==id) { var b=meshes[Manifest.draws[i].meshIndex].bounds; var m=bases[i]; radius=(m.GetColumn(0).magnitude*b.extents.x+m.GetColumn(1).magnitude*b.extents.y+m.GetColumn(2).magnitude*b.extents.z); return m.MultiplyPoint3x4(b.center); } throw new InvalidDataException("Unknown whole-craft row identity."); }
+    static bool Same(Matrix4x4 a,Matrix4x4 b) { for(int r=0;r<4;r++) for(int c=0;c<4;c++) if(a[r,c]!=b[r,c]) return false; return true; }
+    void BindView(Material[] table)
+    {
+        var vp=retainedProjection*retainedView; Check(vp);
+        for(int i=Manifest.materials.Length;i<table.Length;i++) for(int r=0;r<4;r++) { table[i].SetVector(vpRows[r],vp.GetRow(r)); table[i].SetVector(viewRows[r],retainedView.GetRow(r)); }
+    }
+    void UpdateView(Camera camera)
+    {
+        var view=camera.worldToCameraMatrix; var projection=GL.GetGPUProjectionMatrix(camera.projectionMatrix,true); Check(view); Check(projection);
+        if(viewSet&&Same(view,retainedView)&&Same(projection,retainedProjection)) return;
+        retainedView=view; retainedProjection=projection; BindView(materials); viewSet=true; ViewUniformUpdateCount++;
+    }
     public void Submit(Camera camera)
     {
         if(disposed||lastFrame==Time.frameCount) return; lastFrame=Time.frameCount; long start=System.Diagnostics.Stopwatch.GetTimestamp(); LastSubmissionCalls=0;
         if(Retained(RenderMode))
         {
             if(camera==null||retainedCommands==null||camera.targetTexture!=retainedColor||(camera.cullingMask&LayerMask)!=LayerMask||camera.renderingPath!=RenderingPath.Forward) throw new InvalidDataException("Retained owner requires configured MRT and explicit Forward camera covering every admitted layer.");
-            if(retainedCamera!=camera) { camera.AddCommandBuffer(CameraEvent.AfterForwardOpaque,retainedCommands); if(retainedCamera!=null) retainedCamera.RemoveCommandBuffer(CameraEvent.AfterForwardOpaque,retainedCommands); retainedCamera=camera; }
+            UpdateView(camera); var previousTarget=RenderTexture.active;
+            try { Graphics.ExecuteCommandBuffer(retainedCommands); NativeExecuteCount++; } finally { RenderTexture.active=previousTarget; }
             LastSubmissionCalls=retainedCalls;
         }
         else if(RenderMode=="grouped") foreach(var packet in packets) { Graphics.DrawMeshInstanced(meshes[packet.Mesh],packet.Submesh,materials[Manifest.materials.Length+packet.Recipe],packet.Matrices,packet.Matrices.Length,packet.Block,ShadowCastingMode.On,false,packet.Layer,camera,LightProbeUsage.Off,null); LastSubmissionCalls++; }
         else for(int i=0;i<Manifest.draws.Length;i++) { var a=Manifest.draws[i]; if(!a.enabled||!a.active||a.forceRenderingOff) continue; Graphics.DrawMesh(meshes[a.meshIndex],matrices[i],materials[a.materialIndex],a.layer,camera,a.submeshIndex,referenceColors[i],ShadowCastingMode.On,false,null,LightProbeUsage.Off,null); LastSubmissionCalls++; }
         DrawCalls+=LastSubmissionCalls; SubmissionTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-start; SubmittedFrames++;
     }
-    public void Dispose() { if(disposed) return; disposed=true; ReplaceCommands(null,0); retainedCamera=null; foreach(var o in owned) if(o!=null) UnityEngine.Object.Destroy(o); }
+    public void Dispose() { if(disposed) return; disposed=true; ReplaceCommands(null,0); foreach(var o in owned) if(o!=null) UnityEngine.Object.Destroy(o); }
 }

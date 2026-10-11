@@ -1,5 +1,5 @@
 Shader "Continuum/MultiscaleDiagnostic" {
-Properties { _MainTex("Captured albedo",2D)="white"{} _Mode("Diagnostic",Float)=0 _MaterialColor("Stable material identity",Color)=(1,1,1,1) _Tint("Approximate captured tint",Color)=(1,1,1,1) _Cull("Diagnostic culling",Float)=2 _ContinuumPacketContract("Declared packet contract",Float)=1 _ContinuumRetainedContract("Declared retained state contract",Float)=1 _ContinuumRetained("Retained state enabled",Float)=0 _ContinuumState("Affine normal and hue table",2D)="black"{} _ContinuumStateBase("Packet source base",Float)=0 _ContinuumStateShape("State dimensions",Vector)=(8,1,0,0) _ContinuumRetainedAnchor("Camera relative anchor",Vector)=(0,0,0,0) }
+Properties { _MainTex("Captured albedo",2D)="white"{} _Mode("Diagnostic",Float)=0 _MaterialColor("Stable material identity",Color)=(1,1,1,1) _Tint("Approximate captured tint",Color)=(1,1,1,1) _Cull("Diagnostic culling",Float)=2 _ContinuumPacketContract("Declared packet contract",Float)=1 _ContinuumRetainedContract("Declared retained state contract",Float)=2 _ContinuumExplicitViewContract("Explicit view contract",Float)=1 _ContinuumRetainedVP0("VP row0",Vector)=(1,0,0,0) _ContinuumRetainedVP1("VP row1",Vector)=(0,1,0,0) _ContinuumRetainedVP2("VP row2",Vector)=(0,0,1,0) _ContinuumRetainedVP3("VP row3",Vector)=(0,0,0,1) _ContinuumRetainedView0("View row0",Vector)=(1,0,0,0) _ContinuumRetainedView1("View row1",Vector)=(0,1,0,0) _ContinuumRetainedView2("View row2",Vector)=(0,0,1,0) _ContinuumRetainedView3("View row3",Vector)=(0,0,0,1) _ContinuumRetained("Retained state enabled",Float)=0 _ContinuumState("Affine normal and hue table",2D)="black"{} _ContinuumStateBase("Packet source base",Float)=0 _ContinuumStateShape("State dimensions",Vector)=(8,1,0,0) _ContinuumRetainedAnchor("Camera relative anchor",Vector)=(0,0,0,0) }
 SubShader {
 Tags { "RenderType"="Opaque" } Cull [_Cull] ZWrite On ZTest LEqual
 Pass {
@@ -11,6 +11,8 @@ CGPROGRAM
 #include "UnityCG.cginc"
 sampler2D _MainTex; float4 _MainTex_ST,_Tint; float _Mode;
 sampler2D _ContinuumState; float4 _ContinuumStateShape,_ContinuumRetainedAnchor; float _ContinuumStateBase,_ContinuumRetained;
+float4 _ContinuumRetainedVP0,_ContinuumRetainedVP1,_ContinuumRetainedVP2,_ContinuumRetainedVP3;
+float4 _ContinuumRetainedView0,_ContinuumRetainedView1,_ContinuumRetainedView2,_ContinuumRetainedView3;
 float4 stateRow(float row,float column) { return tex2Dlod(_ContinuumState,float4((column+.5)/8,(row+.5)/_ContinuumStateShape.y,0,0)); }
 UNITY_INSTANCING_BUFFER_START(Props)
 UNITY_DEFINE_INSTANCED_PROP(float4,_MaterialColor)
@@ -26,11 +28,12 @@ row+=unity_InstanceID-unity_BaseInstanceID;
 #endif
 float4 r0=stateRow(row,0),r1=stateRow(row,1),r2=stateRow(row,2),r3=stateRow(row,3);
 float4 world=float4(dot(r0,v.vertex),dot(r1,v.vertex),dot(r2,v.vertex),dot(r3,v.vertex)); world.xyz+=_ContinuumRetainedAnchor.xyz;
-o.pos=mul(UNITY_MATRIX_VP,world);
-o.eyeDepth=max(0,-mul(UNITY_MATRIX_V,world).z);
+o.pos=float4(dot(_ContinuumRetainedVP0,world),dot(_ContinuumRetainedVP1,world),dot(_ContinuumRetainedVP2,world),dot(_ContinuumRetainedVP3,world));
+o.eyeDepth=max(0,-dot(_ContinuumRetainedView2,world));
 float3 n=float3(dot(stateRow(row,4).xyz,v.normal),dot(stateRow(row,5).xyz,v.normal),dot(stateRow(row,6).xyz,v.normal)); float q=dot(n,n); o.worldNormal=q>1e-20?n*rsqrt(q):float3(0,0,0); o.sourceHue=stateRow(row,7);
-} else { o.pos=UnityObjectToClipPos(v.vertex); o.worldNormal=UnityObjectToWorldNormal(v.normal); o.eyeDepth=max(0,-UnityObjectToViewPos(v.vertex).z); }
-o.viewNormal=mul((float3x3)UNITY_MATRIX_V,o.worldNormal); o.uv=v.uv; o.color=v.color; return o;
+o.viewNormal=float3(dot(_ContinuumRetainedView0.xyz,o.worldNormal),dot(_ContinuumRetainedView1.xyz,o.worldNormal),dot(_ContinuumRetainedView2.xyz,o.worldNormal));
+} else { o.pos=UnityObjectToClipPos(v.vertex); o.worldNormal=UnityObjectToWorldNormal(v.normal); o.eyeDepth=max(0,-UnityObjectToViewPos(v.vertex).z); o.viewNormal=mul((float3x3)UNITY_MATRIX_V,o.worldNormal); }
+o.uv=v.uv; o.color=v.color; return o;
 }
 float3 encoded(float3 n) { float q=dot(n,n); return q>1e-20?saturate(n*rsqrt(q)*.5+.5):float3(.5,.5,.5); }
 float4 shade(vary i) {
