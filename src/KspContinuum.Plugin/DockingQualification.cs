@@ -18,10 +18,17 @@ namespace KspContinuum
         static DockingQualification inputOwner;
         readonly Harmony inputHook = new Harmony(InputOwner);
         readonly System.Reflection.MethodInfo inputFeed = AccessTools.DeclaredMethod(typeof(Vessel), "FeedInputFeed");
+        readonly System.Reflection.MethodInfo cameraUpdate = AccessTools.DeclaredMethod(typeof(FlightCamera), "LateUpdate"), effectUpdate = AccessTools.DeclaredMethod(typeof(FXCamera), "LateUpdate"), depthUpdate = AccessTools.DeclaredMethod(typeof(FXDepthCamera), "LateUpdate");
+        bool inputHookOwned;
         readonly Dictionary<Vessel, ControlRow[]> controls = new Dictionary<Vessel, ControlRow[]>();
         readonly List<ControlRow> controlRows = new List<ControlRow>();
         sealed class CameraPose { public Camera camera; public Vector3 position; public Quaternion rotation; }
         CameraPose[] cameraPoses;
+        FlightCamera flightCamera;
+        Transform cameraPivot;
+        Vector3 priorPivotPosition, priorFlightPosition;
+        Quaternion priorPivotRotation, priorFlightRotation;
+        float priorCameraDistance;
         bool cameraHook;
         static OrbitRow[] preparedOrbits;
         static readonly System.Reflection.FieldInfo TransmitterQueue = typeof(ModuleDataTransmitter).GetField("transmissionQueue", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
@@ -64,6 +71,7 @@ namespace KspContinuum
             public bool cameraRestored;
             public int callbackRegistrationMutations = 0;
             public int cameraCallbacks;
+            public double maxCameraPositionErrorMeters, maxCameraAngleErrorDegrees;
             public double maximumDeltaTime, physicsFrameLimit, fixedDeltaTime;
             public int screenWidth, screenHeight;
             public double initialUniversalTime, electricChargeRateBudget, electricChargeCommandRateBudget, electricChargeDockingMotorRateBudget, electricChargeConsumed, minimumGapMeters, finalGapMeters, finalSeparationSpeedMetersPerSecond, maxAccelerationMetersPerSecondSquared = .01;
@@ -203,15 +211,24 @@ namespace KspContinuum
             startedWall = Time.realtimeSinceStartup; phaseUt = Planetarium.GetUniversalTime();
             try
             {
-                if (inputOwner != null || inputFeed == null || Harmony.GetPatchInfo(inputFeed)?.Owners.Any() == true)
+                if (inputOwner != null || new[] { inputFeed, cameraUpdate, effectUpdate, depthUpdate }.Any(method => method == null || Harmony.GetPatchInfo(method)?.Owners.Any() == true))
                     throw new InvalidOperationException("Docking input delivery requires one unpatched owner.");
                 InputLockManager.SetControlLock(ControlTypes.ALL_SHIP_CONTROLS | ControlTypes.TIMEWARP, Lock); lockOwned = true;
-                Attach(va); Attach(vb); inputOwner = this;
-                inputHook.Patch(inputFeed, prefix: new HarmonyMethod(AccessTools.DeclaredMethod(typeof(DockingQualification), "InputPrefix")));
+                Attach(va); Attach(vb);
                 if (FlightCamera.fetch == null || FlightCamera.fetch.cameras == null) throw new InvalidOperationException("Docking camera missing.");
                 cameraPoses = FlightCamera.fetch.cameras.Where(c => c != null).Distinct().Select(c => new CameraPose { camera = c, position = c.transform.localPosition, rotation = c.transform.localRotation }).ToArray();
                 if (cameraPoses.Length == 0) throw new InvalidOperationException("Docking rendered cameras missing.");
+                flightCamera = FlightCamera.fetch; cameraPivot = flightCamera.transform.parent;
+                if (cameraPivot == null) throw new InvalidOperationException("Docking camera rig missing.");
+                priorPivotPosition = cameraPivot.localPosition; priorPivotRotation = cameraPivot.localRotation;
+                priorFlightPosition = flightCamera.transform.localPosition; priorFlightRotation = flightCamera.transform.localRotation; priorCameraDistance = flightCamera.Distance;
+                inputOwner = this; inputHookOwned = true;
+                inputHook.Patch(inputFeed, prefix: new HarmonyMethod(AccessTools.DeclaredMethod(typeof(DockingQualification), "InputPrefix")));
+                inputHook.Patch(cameraUpdate, prefix: new HarmonyMethod(AccessTools.DeclaredMethod(typeof(DockingQualification), "CameraPrefix")));
+                var effectPrefix = new HarmonyMethod(AccessTools.DeclaredMethod(typeof(DockingQualification), "EffectPrefix"));
+                inputHook.Patch(effectUpdate, prefix: effectPrefix); inputHook.Patch(depthUpdate, prefix: effectPrefix);
                 Camera.onPreCull += RenderCamera; cameraHook = true;
+                ApplyCamera();
                 Record("seed");
             }
             catch { Dispose(); throw; }
@@ -328,10 +345,36 @@ namespace KspContinuum
                 Vector3 up = Vector3.ProjectOnPlane(a.nodeTransform.forward, sun).normalized;
                 if (up.sqrMagnitude < .9 || (Report.preparationRequested && HorizonClearance() <= 0)) throw new InvalidOperationException("Docking inspection lighting invalid.");
                 Vector3 center = (a.nodeTransform.position + b.nodeTransform.position) * .5f;
-                camera.transform.position = center + sun * 12f; camera.transform.rotation = Quaternion.LookRotation(-sun, up);
+                double positionError = (camera.transform.position - (center + sun * 12f)).magnitude;
+                double angleError = Math.Atan2(Vector3.Cross(camera.transform.forward, -sun).magnitude, Vector3.Dot(camera.transform.forward, -sun)) * 180 / Math.PI;
+                Report.maxCameraPositionErrorMeters = Math.Max(Report.maxCameraPositionErrorMeters, positionError);
+                Report.maxCameraAngleErrorDegrees = Math.Max(Report.maxCameraAngleErrorDegrees, angleError);
+                if (positionError > .005 || angleError > .005) throw new InvalidOperationException("Docking rendered camera differs from the owned rig.");
                 Report.cameraCallbacks++;
             }
             catch (Exception error) { Fail(error); }
+        }
+        void ApplyCamera()
+        {
+            if (flightCamera == null || FlightCamera.fetch != flightCamera || cameraPivot == null) throw new InvalidOperationException("Docking camera rig ownership changed.");
+            Vector3 sun = (Vector3)(Planetarium.fetch.Sun.position - a.vessel.GetWorldPos3D()).normalized;
+            Vector3 up = Vector3.ProjectOnPlane(a.nodeTransform.forward, sun).normalized;
+            if (up.sqrMagnitude < .9) throw new InvalidOperationException("Docking camera basis invalid.");
+            cameraPivot.position = (a.nodeTransform.position + b.nodeTransform.position) * .5f;
+            cameraPivot.rotation = Quaternion.LookRotation(-sun, up);
+            flightCamera.SetDistanceImmediate(12f); flightCamera.transform.localPosition = Vector3.back * 12f; flightCamera.transform.localRotation = Quaternion.identity;
+        }
+        static bool CameraPrefix(FlightCamera __instance)
+        {
+            DockingQualification owner = inputOwner;
+            if (owner == null || owner.disposed || owner.flightCamera != __instance) return true;
+            try { owner.ApplyCamera(); return false; } catch (Exception error) { owner.Fail(error); return true; }
+        }
+        static void EffectPrefix()
+        {
+            DockingQualification owner = inputOwner;
+            if (owner == null || owner.disposed) return;
+            try { owner.ApplyCamera(); } catch (Exception error) { owner.Fail(error); }
         }
         Vector3 Relative()
         {
@@ -481,11 +524,18 @@ namespace KspContinuum
         public void Dispose()
         {
             if (disposed) return; disposed = true;
-            inputHook.UnpatchAll(InputOwner);
-            Report.inputIngressRestored = inputFeed != null && Harmony.GetPatchInfo(inputFeed)?.Owners.Contains(InputOwner) != true;
+            if (inputHookOwned) { inputHook.UnpatchAll(InputOwner); inputHookOwned = false; }
+            Report.inputIngressRestored = !ReferenceEquals(inputOwner, this) || new[] { inputFeed, cameraUpdate, effectUpdate, depthUpdate }.All(method => method != null && Harmony.GetPatchInfo(method)?.Owners.Contains(InputOwner) != true);
             if (ReferenceEquals(inputOwner, this)) inputOwner = null;
             if (cameraHook) { Camera.onPreCull -= RenderCamera; cameraHook = false; }
             Report.cameraRestored = !cameraHook;
+            if (flightCamera != null && cameraPivot != null)
+            {
+                flightCamera.SetDistanceImmediate(priorCameraDistance);
+                cameraPivot.localPosition = priorPivotPosition; cameraPivot.localRotation = priorPivotRotation;
+                flightCamera.transform.localPosition = priorFlightPosition; flightCamera.transform.localRotation = priorFlightRotation;
+                Report.cameraRestored &= cameraPivot.localPosition == priorPivotPosition && cameraPivot.localRotation == priorPivotRotation && flightCamera.transform.localPosition == priorFlightPosition && flightCamera.transform.localRotation == priorFlightRotation && flightCamera.Distance == priorCameraDistance;
+            }
             if (cameraPoses != null) foreach (CameraPose pose in cameraPoses)
             {
                 if (pose.camera == null) { Report.cameraRestored = false; continue; }
@@ -546,7 +596,6 @@ namespace KspContinuum
                 Time.maximumDeltaTime = limit; GameSettings.PHYSICS_FRAME_DT_LIMIT = limit;
                 FlightDiagnosticControls.Apply();
                 owner = DockingQualification.Create(args, directory);
-                if (FlightCamera.fetch != null) FlightCamera.fetch.SetDistanceImmediate(12f);
             }
             catch (Exception error) { Rejected(args, error); }
             if (owner == null) yield break;

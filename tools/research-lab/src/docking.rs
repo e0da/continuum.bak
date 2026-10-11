@@ -102,6 +102,7 @@ pub fn validate(s: &Selection, r: &Value, run: &str, pid: u32, expected_parts: u
         || ["sourceUnchanged", "initialSeparate", "actualJointObserved", "exactPartPartitionsRestored", "crewConserved", "resourcesConserved", "hooksRemoved", "controlLockRemoved", "inputIngressRestored", "cameraRestored", "collisionsRestored", "schedulingRestored"].iter().any(|k| r[*k] != true)
         || r["callbackRegistrationMutations"] != 0
         || r["cameraCallbacks"].as_u64().unwrap_or(0) == 0
+        || number(r, "maxCameraPositionErrorMeters")? > 0.005 || number(r, "maxCameraAngleErrorDegrees")? > 0.005
         || ["mergeCount", "undockCalls", "splitCount"].iter().any(|k| r[*k] != 1)
     { return Err("docking ownership, stock event or cleanup contract failed; raw evidence retained".into()); }
     let controls = r["controlLeases"].as_array().filter(|rows| !rows.is_empty() && rows.len() % 4 == 0 && rows.len() <= 64).ok_or("docking input-control lease census missing")?;
