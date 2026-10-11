@@ -133,7 +133,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         try
         {
             var s=generation.Scene; bool bodyFocus=state.focus==s.bodyId; double[] anchor=bodyFocus?s.bodyAnchorMeters:s.vesselAnchorMeters;
-            if(state.focusInstance!=null) { float radius; Vector3 local=generation.Craft.PresentationInstanceCenter(state.focusInstance,out radius); for(int i=0;i<3;i++) focusAnchor[i]=s.vesselAnchorMeters[i]+local[i]; anchor=focusAnchor; } state.focusTargetMeters=anchor;
+            if(state.focusInstance!=null) { float instanceRadius; Vector3 local=generation.Craft.PresentationInstanceCenter(state.focusInstance,out instanceRadius); for(int i=0;i<3;i++) focusAnchor[i]=s.vesselAnchorMeters[i]+local[i]; anchor=focusAnchor; } state.focusTargetMeters=anchor;
             if(bodyFocus) distance=Math.Max(distance,s.bodyRadiusMeters*1.01); Vector3 offset=Quaternion.Euler(pitch,yaw,0)*Vector3.back;
             for(int i=0;i<3;i++) cameraAnchor[i]=anchor[i]+offset[i]*distance;
             float x,y,z; MultiscaleSceneFormat.RelativePosition(s.vesselAnchorMeters,cameraAnchor,out x,out y,out z); generation.Craft.SetPresentationAnchor(new Vector3(x,y,z));
