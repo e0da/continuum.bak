@@ -110,7 +110,7 @@ namespace KspContinuum
             int expected;
             if(!int.TryParse(selectedParts,NumberStyles.None,CultureInfo.InvariantCulture,out expected)||expected<1||vessel.parts.Count!=expected)throw new InvalidOperationException("Selected part count differs from reload fixture.");
             report.expectedParts=expected;
-            if (!ScaleCheckpointLoadState.SourceUnchanged() || vessel.id != ScaleCheckpointLoadState.VesselId || FlightDriver.Pause || MapView.MapIsEnabled || TimeWarp.CurrentRate != 1 || vessel.landed || vessel.splashed || vessel.altitude <= vessel.mainBody.atmosphereDepth ||
+            if (!ScaleCheckpointLoadState.SourceUnchanged() || vessel.id != ScaleCheckpointLoadState.VesselId || FlightDriver.Pause || MapView.MapIsEnabled || TimeWarp.CurrentRate != 1 || vessel.Landed || vessel.Splashed || vessel.altitude <= vessel.mainBody.atmosphereDepth ||
                 FlightGlobals.Vessels.Any(v => v != null && v.loaded && !v.packed && v != vessel) || vessel.Autopilot.Enabled || vessel.ActionGroups[KSPActionGroup.SAS] || vessel.ActionGroups[KSPActionGroup.RCS] || vessel.ctrlState.mainThrottle != 0 || vessel.parts.Any(p => p.Modules.OfType<ModuleEngines>().Any(e => e.EngineIgnited)))
                 throw new InvalidOperationException("Reload diagnostic requires one quiet physical vacuum vessel and immutable selected source.");
             InputLockManager.SetControlLock(ControlTypes.ALL_SHIP_CONTROLS | ControlTypes.TIMEWARP, Lock); lockOwned = true;
