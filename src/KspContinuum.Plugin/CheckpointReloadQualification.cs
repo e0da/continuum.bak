@@ -26,6 +26,7 @@ namespace KspContinuum
         int mainThread;
         MethodInfo trackMethod;
         ReloadMassInitialization massInitialization;
+        StockReloadMassInitialization stockReload;
         ReportData report;
         string directory, saveName, savePath;
         bool finished, cameraOwned, lockOwned, sunward, cameraReleaseObserved;
@@ -106,6 +107,9 @@ namespace KspContinuum
             public TrackRow firstTrack;
             public double[] savedLocalCoM, loadedSerializedLocalCoM;
             public ReloadMassInitialization.ReportData massInitialization;
+            public string reloadDriver="manual",reloadProducer="GamePersistence.LoadGame + declared quickload-completion sequence",stockReloadError;
+            public int stockFinishedCalls,stockScenarioCalls,stockPostLoadCalls,stockDispatchCalls;
+            public bool stockReloadHooksRemoved;
             public string[] restorationFailures;
             public SnapshotRow before, after; public MembershipRow[] memberships; public EventRow[] events; public string[] screenshots;
         }
@@ -130,6 +134,9 @@ namespace KspContinuum
             string massMode=Environment.GetEnvironmentVariable("CONTINUUM_RELOAD_MASS_BARRIER");
             if(massMode=="1"||massMode=="packed")report.massInitialization=new ReloadMassInitialization.ReportData{requested=true,status="requested",mode=massMode=="packed"?"packed":"unpacked"};
             else if(!string.IsNullOrEmpty(massMode))Fail(new InvalidOperationException("Unknown reload mass initialization mode."));
+            string reloadDriver=Environment.GetEnvironmentVariable("CONTINUUM_RELOAD_DRIVER");
+            if(reloadDriver=="stock")report.reloadDriver="stock";
+            else if(!string.IsNullOrEmpty(reloadDriver))Fail(new InvalidOperationException("Unknown reload driver."));
         }
         IEnumerator Start()
         {
@@ -159,6 +166,7 @@ namespace KspContinuum
             while (!PhysicalReady() || ReferenceEquals(FlightGlobals.ActiveVessel, vessel))
             {
                 if(finished)yield break;
+                if(stockReload!=null&&stockReload.Error!=null){Fail(stockReload.Error);yield break;}
                 if (Time.realtimeSinceStartup - loadStart > 90) { Fail(new TimeoutException("Reload physical readiness timeout.")); yield break; }
                 yield return null;
             }
@@ -242,7 +250,28 @@ namespace KspContinuum
             EndCamera();
             if (lockOwned) { InputLockManager.RemoveControlLock(Lock); lockOwned = false; }
             if (ScaleCheckpointLoadState.HashFile(savePath) != report.savedSha256) throw new InvalidOperationException("Owned checkpoint changed before reload.");
+            if(report.reloadDriver=="stock")
+            {
+                ConfigNode savedNode=ConfigNode.Load(savePath),gameNode=savedNode==null?null:savedNode.GetNode("GAME");
+                if(gameNode==null||gameNode.HasNode("MISSIONTOSTART"))throw new InvalidOperationException("Stock quickload fixture is missing GAME or enters unsupported mission-start persistence branch.");
+                stockReload=new StockReloadMassInitialization(game=>{AdmitLoadedGame(game);ArmMassInitialization();},report);
+                Record("reload-requested");Export();
+                stockReload.Run(saveName,ScaleCheckpointLoadState.Save);
+                return;
+            }
             reloadedGame = GamePersistence.LoadGame(saveName, ScaleCheckpointLoadState.Save, true, true);
+            AdmitLoadedGame(reloadedGame);
+            Record("reload-requested"); Export();
+            GamePersistence.UpdateScenarioModules(reloadedGame); report.scenarioModulesUpdated = true;
+            ConfigNode node = ConfigNode.Load(savePath); if (node == null) throw new InvalidOperationException("Owned saved ConfigNode is unavailable.");
+            GameEvents.onGameStatePostLoad.Fire(node); report.postLoadNotified = true;
+            if(HighLogic.SaveFolder!=ScaleCheckpointLoadState.Save)throw new InvalidOperationException("Selected save folder changed before reload.");
+            ArmMassInitialization();
+            FlightDriver.StartAndFocusVessel(reloadedGame, reloadedGame.flightState.activeVesselIdx);
+        }
+        void AdmitLoadedGame(Game game)
+        {
+            reloadedGame=game;
             report.loadedCompatible = reloadedGame != null && reloadedGame.compatible;
             report.loadedStartScene = reloadedGame == null ? null : reloadedGame.startScene.ToString();
             report.loadedMemberships = reloadedGame == null || reloadedGame.flightState == null ? null : Memberships(reloadedGame);
@@ -260,17 +289,20 @@ namespace KspContinuum
                 report.loadedSerializedLocalCoM=V(reloadedGame.flightState.protoVessels[reloadedGame.flightState.activeVesselIdx].CoM);
                 InstallPhysicalWitness();
             }
-            Record("reload-requested"); Export();
-            GamePersistence.UpdateScenarioModules(reloadedGame); report.scenarioModulesUpdated = true;
-            ConfigNode node = ConfigNode.Load(savePath); if (node == null) throw new InvalidOperationException("Owned saved ConfigNode is unavailable.");
-            GameEvents.onGameStatePostLoad.Fire(node); report.postLoadNotified = true;
             if(HighLogic.SaveFolder!=ScaleCheckpointLoadState.Save)throw new InvalidOperationException("Selected save folder changed before reload.");
+        }
+        void ArmMassInitialization()
+        {
             if(report.massInitialization!=null)
             {
-                massInitialization=ReloadMassInitialization.Create(Guid.Parse(before.vesselId),before.instanceId,before.parts.Select(p=>p.flightId).ToArray(),report.massInitialization.mode=="packed",report.massInitialization);
-                report.massInitialization=massInitialization.Report;
+                try{massInitialization=ReloadMassInitialization.Create(Guid.Parse(before.vesselId),before.instanceId,before.parts.Select(p=>p.flightId).ToArray(),report.massInitialization.mode=="packed",report.massInitialization,report.reloadDriver=="stock");}
+                catch
+                {
+                    if(report.reloadDriver!="stock"||!report.massInitialization.hooksRemoved)throw;
+                    report.massInitialization.status="unsupported-stock-fallback";
+                }
+                if(massInitialization!=null)report.massInitialization=massInitialization.Report;
             }
-            FlightDriver.StartAndFocusVessel(reloadedGame, reloadedGame.flightState.activeVesselIdx);
         }
         static MembershipRow[] Memberships(Game game)
         {
@@ -313,6 +345,7 @@ namespace KspContinuum
         void Verify()
         {
             if (!ReferenceEquals(HighLogic.CurrentGame, reloadedGame) || HighLogic.SaveFolder != ScaleCheckpointLoadState.Save || !PhysicalReady()) throw new InvalidOperationException("Reload live owner differs.");
+            if(stockReload!=null)stockReload.Dispose();
             if(massInitialization!=null)massInitialization.Dispose();
             if(report.physicalWitnessRequested)
             {
@@ -344,6 +377,7 @@ namespace KspContinuum
             if (!report.orbitRestored) failures.Add("physical-orbit");
             if(report.physicalWitnessRequested&&(report.physicalWitnessStatus!="observed"||!report.physicalHooksRemoved))failures.Add("physical-witness");
             if(report.massInitialization!=null&&(report.massInitialization.status!="completed"||report.massInitialization.calls!=1||report.massInitialization.faults!=0||!report.massInitialization.hooksRemoved))failures.Add("mass-initialization");
+            if(report.reloadDriver=="stock"&&(stockReload==null||stockReload.Error!=null||report.stockFinishedCalls!=1||report.stockScenarioCalls!=1||report.stockPostLoadCalls!=1||report.stockDispatchCalls!=1||!report.stockReloadHooksRemoved))failures.Add("stock-reload-producer");
             report.restorationFailures = failures.ToArray();
             if (failures.Count != 0) { report.reason = "Saved gameplay state failed frozen gates: " + string.Join(",", failures); report.faults++; }
             InputLockManager.SetControlLock(ControlTypes.ALL_SHIP_CONTROLS | ControlTypes.TIMEWARP, Lock); lockOwned = true;
@@ -400,11 +434,12 @@ namespace KspContinuum
         bool Try(Action action){try{action();return !finished;}catch(Exception e){Fail(e);return false;}}
         void Cleanup()
         {
+            if(stockReload!=null)stockReload.Dispose();
             if(massInitialization!=null)massInitialization.Dispose();
             RemovePhysicalWitness();
             EndCamera();if(lockOwned){InputLockManager.RemoveControlLock(Lock);lockOwned=false;}
             if (!cameraReleaseObserved) report.cameraRestored = !cameraOwned;
-            report.hooksRemoved=CameraMethods.All(m=>m!=null&&Harmony.GetPatchInfo(m)?.Owners.Contains(Hook)!=true)&&report.physicalHooksRemoved&&(report.massInitialization==null||report.massInitialization.hooksRemoved);report.controlLockRemoved=!lockOwned&&InputLockManager.GetControlLock(Lock)==ControlTypes.None;
+            report.hooksRemoved=CameraMethods.All(m=>m!=null&&Harmony.GetPatchInfo(m)?.Owners.Contains(Hook)!=true)&&report.physicalHooksRemoved&&(report.massInitialization==null||report.massInitialization.hooksRemoved)&&(report.reloadDriver!="stock"||report.stockReloadHooksRemoved);report.controlLockRemoved=!lockOwned&&InputLockManager.GetControlLock(Lock)==ControlTypes.None;
             report.cleanupStatus=report.hooksRemoved&&report.controlLockRemoved&&report.cameraRestored?"removed-owned-hooks-locks-restored-camera":"cleanup-error";
             if(report.cleanupStatus=="cleanup-error")report.faults++;
         }

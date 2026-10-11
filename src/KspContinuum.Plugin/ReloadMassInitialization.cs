@@ -24,6 +24,7 @@ namespace KspContinuum
         readonly int oldInstance, expectedParts, thread;
         readonly HashSet<uint> parts;
         readonly bool packedMode;
+        readonly bool unsupportedFallback;
         bool owned, publishing;
         HashSet<Part> publishingParts;
         internal readonly ReportData Report;
@@ -54,9 +55,9 @@ namespace KspContinuum
             public StateRow before, after;
         }
 
-        internal static ReloadMassInitialization Create(Guid selected,int priorInstance,uint[] selectedParts,bool earlyPacked,ReportData report)
+        internal static ReloadMassInitialization Create(Guid selected,int priorInstance,uint[] selectedParts,bool earlyPacked,ReportData report,bool allowUnsupportedFallback=false)
         {
-            try{return new ReloadMassInitialization(selected,priorInstance,selectedParts,earlyPacked,report);}
+            try{return new ReloadMassInitialization(selected,priorInstance,selectedParts,earlyPacked,report,allowUnsupportedFallback);}
             catch(Exception error)
             {
                 report.status="invalid";report.faults++;report.error=ExceptionText(error);
@@ -76,12 +77,13 @@ namespace KspContinuum
             for(int i=0;error!=null&&i<8;i++,error=error.InnerException)messages.Add(error.GetType().FullName+": "+error.Message);
             return string.Join(" -> ",messages);
         }
-        ReloadMassInitialization(Guid selected, int priorInstance, uint[] selectedParts, bool earlyPacked,ReportData suppliedReport)
+        ReloadMassInitialization(Guid selected, int priorInstance, uint[] selectedParts, bool earlyPacked,ReportData suppliedReport,bool allowUnsupportedFallback)
         {
             Report = suppliedReport; Report.requested=true;Report.status="requested";Report.vesselId=selected.ToString("D");
             vesselId = selected; oldInstance = priorInstance; parts = new HashSet<uint>(selectedParts); expectedParts = selectedParts.Length;
             thread = System.Threading.Thread.CurrentThread.ManagedThreadId;
             packedMode=earlyPacked; Report.mode=packedMode?"packed":"unpacked";
+            unsupportedFallback=allowUnsupportedFallback;
             Report.clockFrequency=System.Diagnostics.Stopwatch.Frequency;
             if (active != null || parts.Count != expectedParts) throw new InvalidOperationException("Reload mass barrier owner/part identities are ambiguous.");
             StartupPinnedGameIdentity.Require(typeof(Vessel).Assembly);
@@ -134,12 +136,17 @@ namespace KspContinuum
         static void StatsPrefix(VesselPrecalculate __instance)
         {
             ReloadMassInitialization owner=active;
-            if(owner==null||!owner.packedMode||owner.Report.calls!=0)return;
+            if(owner==null||!owner.packedMode||owner.Report.calls!=0||owner.Report.status=="unsupported-stock-fallback")return;
             Vessel vessel=__instance.GetComponent<Vessel>();
             if(vessel==null||vessel.id!=owner.vesselId||vessel.GetInstanceID()==owner.oldInstance)return;
             // Zero-mass stock statistics retains the serialized local CoM; it cannot publish a weighted replacement.
             if(!vessel.parts.Any(p=>p.rb!=null&&p.physicsMass>0)){owner.Report.zeroMassStatsSeen++;return;}
-            owner.Complete(vessel,OrbitDriver.UpdateMode.UPDATE);
+            try{owner.Complete(vessel,OrbitDriver.UpdateMode.UPDATE);}
+            catch
+            {
+                if(!owner.unsupportedFallback||owner.Report.calls!=0)throw;
+                owner.Report.status="unsupported-stock-fallback";
+            }
         }
 
         static IEnumerable<CodeInstruction> Transpile(IEnumerable<CodeInstruction> source)
