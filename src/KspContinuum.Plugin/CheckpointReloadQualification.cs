@@ -15,10 +15,16 @@ namespace KspContinuum
     {
         const string Lock = "continuum-checkpoint-reload";
         const string Hook = "continuum.checkpoint-reload-camera";
+        const string PhysicalHook = "continuum.checkpoint-reload-physical-witness";
         static CheckpointReloadQualification owner;
         readonly List<EventRow> events = new List<EventRow>();
         readonly List<string> images = new List<string>();
         readonly Harmony harmony = new Harmony(Hook);
+        readonly Harmony physicalHarmony = new Harmony(PhysicalHook);
+        readonly List<string> physicalErrors = new List<string>();
+        bool physicalHookOwned, physicalArmed;
+        int mainThread;
+        MethodInfo trackMethod;
         ReportData report;
         string directory, saveName, savePath;
         bool finished, cameraOwned, lockOwned, sunward, cameraReleaseObserved;
@@ -39,6 +45,30 @@ namespace KspContinuum
         [Serializable] public sealed class PartRow { public uint flightId, persistentId, parentFlightId; public string name; public int instanceId; public string[] crew, modules; }
         [Serializable] public sealed class MembershipRow { public string vesselId; public uint[] parts; }
         [Serializable] public sealed class EngineRow { public uint partId; public int moduleIndex; public bool beforeIgnited, afterIgnited; }
+        [Serializable] public sealed class OrbitRow
+        {
+            public double[] elements, storedPosition, storedVelocity, frameX, frameY, frameZ;
+            public string referenceBody;
+        }
+        [Serializable] public sealed class GeometryRow
+        {
+            public string vesselId, bodyName;
+            public int instanceId, frame, parts, rigidbodies;
+            public bool packed, holdPhysics, canonicalComplete, weightedAvailable;
+            public double universalTime, physicsMass;
+            public double[] liveCoMD, liveLocalCoM, rootPosition, rootRotation, bodyPosition, weightedRigidbodyCoM, weightedRigidbodyLocalCoM, canonicalWorldCoM, canonicalLocalCoM;
+            public OrbitRow orbit;
+        }
+        [Serializable] public sealed class TrackRow
+        {
+            public int methodToken, driverModeBefore, driverModeAfter; public string moduleMvid, referenceBody, originalException;
+            public string[] callerStack;
+            public double fdtOffset;
+            public long startedTicks, endedTicks, observerTicks, clockFrequency = System.Diagnostics.Stopwatch.Frequency;
+            public GeometryRow input, output;
+            public double[] driverPositionBefore, driverVelocityBefore, driverPositionAfter, driverVelocityAfter;
+            public double lastTrackUTBefore, lastTrackUTAfter;
+        }
         [Serializable] public sealed class SnapshotRow
         {
             public string vesselId, bodyName; public uint persistentId; public int instanceId;
@@ -68,6 +98,12 @@ namespace KspContinuum
             public double[] loadedOrbitPosition, loadedOrbitVelocity;
             public double loadedPositionErrorMeters, loadedVelocityErrorMetersPerSecond;
             public bool loadedOrbitRestored;
+            public bool physicalWitnessRequested, physicalHooksRemoved;
+            public string physicalWitnessStatus = "not-requested", physicalWitnessScope = "Intrusive record-only first original TrackRigidbody transition. No reconciliation or tolerance change; canonical CoM reconstruction is separately labeled derived geometry.";
+            public string[] physicalWitnessErrors;
+            public GeometryRow beforePhysical, readyPhysical;
+            public TrackRow firstTrack;
+            public double[] savedLocalCoM, loadedSerializedLocalCoM;
             public string[] restorationFailures;
             public SnapshotRow before, after; public MembershipRow[] memberships; public EventRow[] events; public string[] screenshots;
         }
@@ -86,6 +122,9 @@ namespace KspContinuum
             directory = Path.Combine(KSPUtil.ApplicationRootPath, "GameData", "KspContinuum", "PluginData", "checkpoint-reload-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(directory);
             report = new ReportData { runId = RunId(Environment.GetCommandLineArgs()), processId = System.Diagnostics.Process.GetCurrentProcess().Id, sourceSha256 = ScaleCheckpointLoadState.SourceSha256 };
+            mainThread=System.Threading.Thread.CurrentThread.ManagedThreadId;
+            report.physicalWitnessRequested=Environment.GetEnvironmentVariable("CONTINUUM_RELOAD_PHYSICAL_WITNESS")=="1"||Environment.GetCommandLineArgs().Contains("--continuum-checkpoint-reload-physical-witness");
+            if(report.physicalWitnessRequested)report.physicalWitnessStatus="requested";
         }
         IEnumerator Start()
         {
@@ -169,6 +208,7 @@ namespace KspContinuum
         {
             GameEvents.onGameAboutToQuicksave.Fire(); report.aboutToQuicksaveNotified = true;
             before = Snapshot(vessel, Planetarium.GetUniversalTime()); report.before = before;
+            if(report.physicalWitnessRequested)report.beforePhysical=Geometry(vessel);
             report.electricChargeRateBudget = vessel.parts.Sum(p => p.Modules.OfType<ModuleCommand>().Sum(m => m.resHandler.inputResources.Where(r => r.name == "ElectricCharge").Sum(r => r.rate)));
             saveName = "continuum-reload-" + Guid.NewGuid().ToString("N");
             savePath = Path.GetFullPath(Path.Combine(KSPUtil.ApplicationRootPath, "saves", ScaleCheckpointLoadState.Save, saveName + ".sfs"));
@@ -178,7 +218,7 @@ namespace KspContinuum
             state.startScene = GameScenes.FLIGHT;
             report.savedStartScene = state.startScene.ToString();
             string result;
-            try { report.memberships = Memberships(state); result = GamePersistence.SaveGame(state, saveName, ScaleCheckpointLoadState.Save, SaveMode.ABORT); }
+            try { report.memberships = Memberships(state); if(report.physicalWitnessRequested)report.savedLocalCoM=V(state.flightState.protoVessels.Single(v=>v.vesselID==vessel.id).CoM); result = GamePersistence.SaveGame(state, saveName, ScaleCheckpointLoadState.Save, SaveMode.ABORT); }
             finally { state.startScene = returnScene; }
             if (result != saveName || !File.Exists(savePath)) throw new InvalidOperationException("Stock save did not publish the owned checkpoint.");
             report.savedPath = savePath; report.savedSha256 = ScaleCheckpointLoadState.HashFile(savePath); Record("saved"); Export();
@@ -210,6 +250,11 @@ namespace KspContinuum
             report.loadedPositionErrorMeters = (loadedPosition - V(before.orbitPosition)).magnitude;
             report.loadedVelocityErrorMetersPerSecond = (loadedVelocity - V(before.orbitVelocity)).magnitude;
             report.loadedOrbitRestored = report.loadedPositionErrorMeters <= report.positionToleranceMeters && report.loadedVelocityErrorMetersPerSecond <= report.velocityToleranceMetersPerSecond;
+            if(report.physicalWitnessRequested)
+            {
+                report.loadedSerializedLocalCoM=V(reloadedGame.flightState.protoVessels[reloadedGame.flightState.activeVesselIdx].CoM);
+                InstallPhysicalWitness();
+            }
             Record("reload-requested"); Export();
             GamePersistence.UpdateScenarioModules(reloadedGame); report.scenarioModulesUpdated = true;
             ConfigNode node = ConfigNode.Load(savePath); if (node == null) throw new InvalidOperationException("Owned saved ConfigNode is unavailable.");
@@ -258,6 +303,12 @@ namespace KspContinuum
         void Verify()
         {
             if (!ReferenceEquals(HighLogic.CurrentGame, reloadedGame) || HighLogic.SaveFolder != ScaleCheckpointLoadState.Save || !PhysicalReady()) throw new InvalidOperationException("Reload live owner differs.");
+            if(report.physicalWitnessRequested)
+            {
+                report.readyPhysical=Geometry(vessel);
+                RemovePhysicalWitness();
+                report.physicalWitnessStatus=physicalErrors.Count!=0?"observer-error":report.firstTrack!=null&&report.firstTrack.output!=null&&report.firstTrack.originalException==null?"observed":"incomplete";
+            }
             SnapshotRow after = Snapshot(vessel, before.universalTime); report.after = after;
             report.reloadSimulationSeconds = after.universalTime - before.universalTime;
             report.timeRestored = report.reloadSimulationSeconds >= 0 && report.reloadSimulationSeconds <= report.maximumReloadSimulationSeconds;
@@ -280,6 +331,7 @@ namespace KspContinuum
             if (!report.resourcesRestored) failures.Add("resources");
             if (!report.loadedOrbitRestored) failures.Add("serialized-orbit");
             if (!report.orbitRestored) failures.Add("physical-orbit");
+            if(report.physicalWitnessRequested&&(report.physicalWitnessStatus!="observed"||!report.physicalHooksRemoved))failures.Add("physical-witness");
             report.restorationFailures = failures.ToArray();
             if (failures.Count != 0) { report.reason = "Saved gameplay state failed frozen gates: " + string.Join(",", failures); report.faults++; }
             InputLockManager.SetControlLock(ControlTypes.ALL_SHIP_CONTROLS | ControlTypes.TIMEWARP, Lock); lockOwned = true;
@@ -336,9 +388,10 @@ namespace KspContinuum
         bool Try(Action action){try{action();return !finished;}catch(Exception e){Fail(e);return false;}}
         void Cleanup()
         {
+            RemovePhysicalWitness();
             EndCamera();if(lockOwned){InputLockManager.RemoveControlLock(Lock);lockOwned=false;}
             if (!cameraReleaseObserved) report.cameraRestored = !cameraOwned;
-            report.hooksRemoved=CameraMethods.All(m=>m!=null&&Harmony.GetPatchInfo(m)?.Owners.Contains(Hook)!=true);report.controlLockRemoved=!lockOwned&&InputLockManager.GetControlLock(Lock)==ControlTypes.None;
+            report.hooksRemoved=CameraMethods.All(m=>m!=null&&Harmony.GetPatchInfo(m)?.Owners.Contains(Hook)!=true)&&report.physicalHooksRemoved;report.controlLockRemoved=!lockOwned&&InputLockManager.GetControlLock(Lock)==ControlTypes.None;
             report.cleanupStatus=report.hooksRemoved&&report.controlLockRemoved&&report.cameraRestored?"removed-owned-hooks-locks-restored-camera":"cleanup-error";
             if(report.cleanupStatus=="cleanup-error")report.faults++;
         }
@@ -346,6 +399,7 @@ namespace KspContinuum
         {
             report.sourceUnchanged=ScaleCheckpointLoadState.SourceUnchanged();report.savedUnchanged=savePath!=null&&File.Exists(savePath)&&ScaleCheckpointLoadState.HashFile(savePath)==report.savedSha256;
             report.events=events.ToArray();report.screenshots=images.ToArray();
+            report.physicalWitnessErrors=physicalErrors.ToArray();
             if(!report.sourceUnchanged||(report.savedSha256!=null&&!report.savedUnchanged)){report.status="invalid";report.faults++;}
             File.WriteAllText(Path.Combine(directory,"checkpoint-reload.json"),ReportJson.Encode(report));
         }
@@ -355,5 +409,75 @@ namespace KspContinuum
             try{Cleanup();Export();}catch(Exception cleanup){Debug.LogException(cleanup);}Application.Quit(2);
         }
         void OnDestroy(){if(owner!=this)return;if(!finished&&report!=null)Fail(new InvalidOperationException("Persistent reload coordinator destroyed before completion."));owner=null;}
+
+        static OrbitRow OrbitState(Orbit orbit)
+        {
+            return new OrbitRow{elements=new[]{orbit.semiMajorAxis,orbit.eccentricity,orbit.inclination,orbit.LAN,orbit.argumentOfPeriapsis,orbit.meanAnomalyAtEpoch,orbit.epoch},storedPosition=V(orbit.pos),storedVelocity=V(orbit.vel),frameX=V(orbit.OrbitFrame.X),frameY=V(orbit.OrbitFrame.Y),frameZ=V(orbit.OrbitFrame.Z),referenceBody=orbit.referenceBody.bodyName};
+        }
+        static GeometryRow Geometry(Vessel value)
+        {
+            Vector3d actual=Vector3d.zero,canonical=Vector3d.zero;
+            double mass=0;int bodies=0;bool canonicalComplete=true;
+            Vector3d root=value.transform.position;QuaternionD rotation=value.transform.rotation;
+            for(int index=value.parts.Count-1;index>=0;index--)
+            {
+                Part part=value.parts[index];Rigidbody rb=part.rb;if(rb==null)continue;
+                double weight=part.physicsMass;actual+=(Vector3d)rb.worldCenterOfMass*weight;mass+=weight;bodies++;
+                if(rb.transform!=part.transform)canonicalComplete=false;
+                canonical+=(root+rotation*((Vector3d)part.orgPos+(QuaternionD)part.orgRot*(Vector3d)rb.centerOfMass))*weight;
+            }
+            if(mass<0||double.IsNaN(mass)||double.IsInfinity(mass))throw new InvalidOperationException("Physical witness weighted own rigidbody mass is invalid.");
+            bool available=mass>0;
+            if(available){actual/=mass;canonical/=mass;}else canonicalComplete=false;
+            Vector3d actualLocal=QuaternionD.Inverse(rotation)*(actual-root),canonicalLocal=QuaternionD.Inverse(rotation)*(canonical-root);
+            var row=new GeometryRow{vesselId=value.id.ToString("D"),bodyName=value.mainBody.bodyName,instanceId=value.GetInstanceID(),frame=Time.frameCount,parts=value.parts.Count,rigidbodies=bodies,packed=value.packed,holdPhysics=value.HoldPhysics,canonicalComplete=canonicalComplete,weightedAvailable=available,universalTime=Planetarium.GetUniversalTime(),physicsMass=mass,liveCoMD=V(value.CoMD),liveLocalCoM=V(value.localCoM),rootPosition=V(root),rootRotation=new[]{rotation.x,rotation.y,rotation.z,rotation.w},bodyPosition=V(value.mainBody.position),weightedRigidbodyCoM=available?V(actual):null,weightedRigidbodyLocalCoM=available?V(actualLocal):null,canonicalWorldCoM=canonicalComplete?V(canonical):null,canonicalLocalCoM=canonicalComplete?V(canonicalLocal):null,orbit=OrbitState(value.orbit)};
+            if(row.liveCoMD.Concat(row.liveLocalCoM).Concat(row.rootPosition).Concat(row.rootRotation).Concat(row.bodyPosition).Concat(row.weightedAvailable?row.weightedRigidbodyCoM.Concat(row.weightedRigidbodyLocalCoM):Enumerable.Empty<double>()).Concat(row.orbit.elements).Concat(row.orbit.storedPosition).Concat(row.orbit.storedVelocity).Concat(row.orbit.frameX).Concat(row.orbit.frameY).Concat(row.orbit.frameZ).Concat(row.canonicalComplete?row.canonicalWorldCoM.Concat(row.canonicalLocalCoM):Enumerable.Empty<double>()).Any(x=>double.IsNaN(x)||double.IsInfinity(x)))throw new InvalidOperationException("Physical witness geometry is nonfinite.");
+            return row;
+        }
+        void InstallPhysicalWitness()
+        {
+            StartupPinnedGameIdentity.Require(typeof(OrbitDriver).Assembly);
+            trackMethod=AccessTools.DeclaredMethod(typeof(OrbitDriver),"TrackRigidbody",new[]{typeof(CelestialBody),typeof(double)});
+            if(trackMethod==null||trackMethod.DeclaringType!=typeof(OrbitDriver)||trackMethod.ReturnType!=typeof(void)||trackMethod.IsStatic||trackMethod.GetMethodBody()==null||trackMethod.Module.ModuleVersionId!=new Guid("10657063-2fc3-43a7-84fa-d39e75e877bf")||Harmony.GetPatchInfo(trackMethod)?.Owners.Any()==true)throw new InvalidOperationException("First physical orbit transition seam is absent or already owned.");
+            physicalHookOwned=true;
+            physicalHarmony.Patch(trackMethod,prefix:new HarmonyMethod(AccessTools.DeclaredMethod(typeof(CheckpointReloadQualification),"TrackPrefix")),finalizer:new HarmonyMethod(AccessTools.DeclaredMethod(typeof(CheckpointReloadQualification),"TrackFinalizer")));
+            physicalArmed=true;report.physicalWitnessStatus="armed";
+        }
+        void RemovePhysicalWitness()
+        {
+            physicalArmed=false;
+            if(physicalHookOwned){physicalHarmony.UnpatchAll(PhysicalHook);physicalHookOwned=false;}
+            report.physicalHooksRemoved=trackMethod==null||Harmony.GetPatchInfo(trackMethod)?.Owners.Contains(PhysicalHook)!=true;
+        }
+        void PhysicalError(Exception error)
+        {
+            if(physicalErrors.Count<3)physicalErrors.Add(error.GetType().Name+": "+error.Message);
+            report.physicalWitnessStatus="observer-error";
+        }
+        static void TrackPrefix(OrbitDriver __instance,CelestialBody __0,double __1,out TrackRow __state)
+        {
+            __state=null;CheckpointReloadQualification active=owner;
+            if(active==null||!active.physicalArmed||active.report.firstTrack!=null||__instance.vessel==null||__instance.vessel.id.ToString("D")!=active.before.vesselId||__instance.vessel.GetInstanceID()==active.before.instanceId)return;
+            long start=System.Diagnostics.Stopwatch.GetTimestamp();
+            var row=new TrackRow{methodToken=active.trackMethod.MetadataToken,moduleMvid=active.trackMethod.Module.ModuleVersionId.ToString("D"),referenceBody=__0==null?null:__0.bodyName,fdtOffset=__1,startedTicks=start};active.report.firstTrack=row;__state=row;
+            try
+            {
+                if(System.Threading.Thread.CurrentThread.ManagedThreadId!=active.mainThread)throw new InvalidOperationException("Physical witness left its main thread.");
+                row.callerStack=new System.Diagnostics.StackTrace(1,false).GetFrames().Take(12).Select(frame=>{MethodBase method=frame.GetMethod();return (method.DeclaringType==null?"":method.DeclaringType.FullName+".")+method.Name;}).ToArray();
+                row.input=Geometry(__instance.vessel);row.driverModeBefore=(int)__instance.updateMode;row.driverPositionBefore=V(__instance.pos);row.driverVelocityBefore=V(__instance.vel);row.lastTrackUTBefore=__instance.lastTrackUT;
+            }
+            catch(Exception error){active.PhysicalError(error);}
+            finally{row.observerTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-start;}
+        }
+        static Exception TrackFinalizer(OrbitDriver __instance,TrackRow __state,Exception __exception)
+        {
+            if(__state==null)return __exception;CheckpointReloadQualification active=owner;
+            if(active==null)return __exception;
+            long start=System.Diagnostics.Stopwatch.GetTimestamp();
+            try{__state.originalException=__exception==null?null:__exception.GetType().FullName+": "+__exception.Message;__state.output=Geometry(__instance.vessel);__state.driverModeAfter=(int)__instance.updateMode;__state.driverPositionAfter=V(__instance.pos);__state.driverVelocityAfter=V(__instance.vel);__state.lastTrackUTAfter=__instance.lastTrackUT;}
+            catch(Exception error){active.PhysicalError(error);}
+            finally{__state.endedTicks=System.Diagnostics.Stopwatch.GetTimestamp();__state.observerTicks+=__state.endedTicks-start;}
+            return __exception;
+        }
     }
 }
