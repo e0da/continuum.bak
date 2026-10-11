@@ -71,7 +71,7 @@ namespace KspContinuum
         {
             this.directory = directory;
             if (va == vb || va != FlightGlobals.ActiveVessel || !Ready(va) || !Ready(vb) || va.mainBody != vb.mainBody || va.mainBody.bodyName != "Kerbin" ||
-                va.altitude < va.mainBody.atmosphereDepth || vb.altitude < vb.mainBody.atmosphereDepth || MapView.MapIsEnabled || TimeWarp.CurrentRate != 1 ||
+                va.altitude < va.mainBody.atmosphereDepth || vb.altitude < vb.mainBody.atmosphereDepth || MapView.MapIsEnabled || FlightDriver.Pause || TimeWarp.CurrentRate != 1 ||
                 !ScaleCheckpointLoadState.Ready || !ScaleCheckpointLoadState.SourceUnchanged())
                 throw new InvalidOperationException("Docking needs an owned, normal-time paired physical Kerbin orbital checkpoint.");
             a = Port(va, pa); b = Port(vb, pb);
@@ -80,7 +80,7 @@ namespace KspContinuum
                 a.state != "Ready" || b.state != "Ready" || a.otherNode != null || b.otherNode != null || a.dockedPartUId != 0 || b.dockedPartUId != 0 ||
                 a.nodeTypes == null || b.nodeTypes == null || !a.nodeTypes.Overlaps(b.nodeTypes) || a.gendered != b.gendered || (a.gendered && a.genderFemale == b.genderFemale))
                 throw new InvalidOperationException("Distinct Ready compatible docking ports and unique part identities are required.");
-            if (va.ActionGroups[KSPActionGroup.SAS] || vb.ActionGroups[KSPActionGroup.SAS] || va.ActionGroups[KSPActionGroup.RCS] || vb.ActionGroups[KSPActionGroup.RCS] ||
+            if (va.Autopilot.Enabled || vb.Autopilot.Enabled || va.GroupOverride != 0 || vb.GroupOverride != 0 || va.ActionGroups[KSPActionGroup.SAS] || vb.ActionGroups[KSPActionGroup.SAS] || va.ActionGroups[KSPActionGroup.RCS] || vb.ActionGroups[KSPActionGroup.RCS] ||
                 parts.Any(p => p.Modules.OfType<ModuleEngines>().Any(e => e.EngineIgnited)) || !Zero(va.ctrlState) || !Zero(vb.ctrlState))
                 throw new InvalidOperationException("Seed must have idle controls, SAS/RCS off and no ignited engines.");
             ValidateCallbacks(va); ValidateCallbacks(vb);
@@ -154,10 +154,17 @@ namespace KspContinuum
         static bool Zero(FlightCtrlState c) { return c != null && c.mainThrottle == 0 && c.X == 0 && c.Y == 0 && c.Z == 0 && c.pitch == 0 && c.yaw == 0 && c.roll == 0 && c.pitchTrim == 0 && c.yawTrim == 0 && c.rollTrim == 0; }
         void ValidateCallbacks(Vessel v)
         {
-            foreach (FlightInputCallback chain in new[] { v.OnPreAutopilotUpdate, v.OnAutopilotUpdate, v.OnPostAutopilotUpdate, v.OnFlyByWire })
-                if (chain != null) foreach (Delegate callback in chain.GetInvocationList())
-                    if (callback != (Delegate)(FlightInputCallback)Quiet && (callback.Method.DeclaringType != typeof(Vessel) || callback.Method.Module.ModuleVersionId != new Guid("10657063-2fc3-43a7-84fa-d39e75e877bf")))
+            FlightInputCallback[] chains = { v.OnPreAutopilotUpdate, v.OnAutopilotUpdate, v.OnPostAutopilotUpdate, v.OnFlyByWire };
+            for (int index = 0; index < chains.Length; index++)
+            {
+                FlightInputCallback chain = chains[index]; if (chain == null) continue;
+                foreach (Delegate callback in chain.GetInvocationList())
+                    if (callback != (Delegate)(FlightInputCallback)Quiet &&
+                        (callback.Method.MetadataToken != 0x0600aa76 + index || callback.Method.Module.ModuleVersionId != new Guid("10657063-2fc3-43a7-84fa-d39e75e877bf")))
                         throw new InvalidOperationException("Unowned control provider in docking seed.");
+                if (hooked.Contains(v) && index == 3 && !chain.GetInvocationList().Last().Equals((Delegate)(FlightInputCallback)Quiet))
+                    throw new InvalidOperationException("Docking control callback lost tail ownership.");
+            }
         }
         void Attach(Vessel v)
         {
