@@ -89,7 +89,7 @@ static class MenuShaderGraft
             var originalProperties = originalField["m_ParsedForm"]["m_PropInfo"];
             var donorProperties = field["m_ParsedForm"]["m_PropInfo"];
             if (originalProperties.IsDummy || donorProperties.IsDummy || !PropertyContract(originalProperties).SequenceEqual(PropertyContract(donorProperties)))
-                throw new InvalidDataException("Cooked shader changes material property exposure/types/order: " + name);
+                throw new InvalidDataException("Cooked shader changes material property exposure/types/order: " + name + "; original=" + string.Join(",", PropertyContract(originalProperties)) + "; donor=" + string.Join(",", PropertyContract(donorProperties)));
             byte[] originalPropertyBytes = originalProperties.WriteToByteArray();
             int propertyIndex = field["m_ParsedForm"].Children.FindIndex(c => c.TemplateField.Name == "m_PropInfo");
             if (propertyIndex < 0) throw new InvalidDataException("Shader property field missing.");
