@@ -13,6 +13,7 @@ namespace KspContinuum
             public PQS Sphere;
             public Transform Temporary;
             public LaunchSite Site;
+            public bool OrientationConsumed;
         }
         static long serial;
         internal static Context Begin(PQS sphere, Transform temporary, LaunchSite site)
@@ -61,15 +62,28 @@ namespace KspContinuum
                 if (count == hits.Length) throw new InvalidOperationException("Saturated nearest-hit witness.");
                 int nearest = -1; for (int i = 0; i < count; i++) if (nearest < 0 || hits[i].distance < hits[nearest].distance) nearest = i;
                 Collider collider = nearest < 0 ? null : hits[nearest].collider;
-                PQ selected = collider == null ? null : collider.GetComponent<PQ>();
-                Mesh mesh = selected == null ? null : selected.mesh;
+                var association = new Dictionary<Collider, PQ>();
+                foreach (PQ quad in tree) if (quad.meshCollider != null)
+                {
+                    if (association.ContainsKey(quad.meshCollider)) throw new InvalidOperationException("Collider is shared by multiple PQ tree nodes.");
+                    association.Add(quad.meshCollider, quad);
+                }
+                PQ selected = null;
+                if (collider != null) association.TryGetValue(collider, out selected);
+                MeshCollider nativeMeshCollider = collider as MeshCollider;
+                Mesh mesh = nativeMeshCollider == null ? null : nativeMeshCollider.sharedMesh;
                 bool member = selected != null && tree.Contains(selected) && ReferenceEquals(selected.sphereRoot, sphere);
                 bool leaf = selected != null && !selected.isSubdivided;
-                bool exact = selected != null && selected.meshCollider == collider && mesh != null && selected.meshCollider.sharedMesh == mesh;
+                bool exact = selected != null && selected.meshCollider == collider && mesh != null && selected.mesh == mesh;
                 bool live = collider != null && collider.enabled && collider.gameObject.activeInHierarchy;
                 string digest = mesh == null ? "none" : MeshDigest(mesh);
                 bool eligible = member && leaf && exact && live && selected.isBuilt && selected.isActive && !selected.isCached && policies > 0 && selected.subdivision >= minimum && foreign == 0;
                 CelestialBody body = sphere.PQSModCBTransform == null ? null : sphere.PQSModCBTransform.body;
+                DescribeHit(context, phase, "nearest-actual", collider, selected, nearest < 0 ? -1 : hits[nearest].distance);
+                int terrainHit = -1;
+                for (int i = 0; i < count; i++) if (hits[i].collider != null && association.ContainsKey(hits[i].collider) &&
+                    (terrainHit < 0 || hits[i].distance < hits[terrainHit].distance)) terrainHit = i;
+                if (terrainHit >= 0) DescribeHit(context, phase, "nearest-owned-terrain-separate", hits[terrainHit].collider, association[hits[terrainHit].collider], hits[terrainHit].distance);
                 Debug.Log("[Continuum terrain generation] serial=" + context.Serial + " phase=" + phase + " status=observed sphere=" + Id(sphere) +
                     " body=" + Id(body) + " site=" + Uri.EscapeDataString(context.Site.name ?? "") + " siteOwner=" + Id(context.Site.isPQSCity ? (UnityEngine.Object)context.Site.pqsCity : context.Site.pqsCity2) +
                     " temporary=" + Id(context.Temporary) + " target=" + Id(sphere.target) + " tree=" + tree.Count + " built=" + built + " leaves=" + leaves + " foreign=" + foreign +
@@ -79,6 +93,31 @@ namespace KspContinuum
                     " minimumColliderLevel=" + minimum + " policies=" + policies + " eligible=" + eligible + " geometrySha256=" + digest + " ticks=" + (System.Diagnostics.Stopwatch.GetTimestamp() - start) + " clockFrequency=" + System.Diagnostics.Stopwatch.Frequency);
             }
             catch (Exception error) { Debug.LogError("[Continuum terrain generation] serial=" + (context == null ? 0 : context.Serial) + " phase=" + phase + " status=invalid reason=" + Uri.EscapeDataString(error.Message)); }
+        }
+        static void DescribeHit(Context context, string phase, string role, Collider collider, PQ associated, float distance)
+        {
+            var ancestry = new List<string>();
+            Transform cursor = collider == null ? null : collider.transform;
+            while (cursor != null && ancestry.Count < 16) { ancestry.Add(Id(cursor) + ":" + Uri.EscapeDataString(cursor.name)); cursor = cursor.parent; }
+            MeshCollider mc = collider as MeshCollider; PhysicMaterial material = collider == null ? null : collider.sharedMaterial;
+            string matrix = "none";
+            if (collider != null)
+            {
+                Matrix4x4 m = collider.transform.localToWorldMatrix; var values = new string[16];
+                for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++) values[r * 4 + c] = m[r, c].ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+                matrix = string.Join(",", values);
+            }
+            Debug.Log("[Continuum terrain generation hit] serial=" + context.Serial + " phase=" + phase + " role=" + role +
+                " collider=" + Id(collider) + " type=" + (collider == null ? "none" : collider.GetType().Name) + " name=" + (collider == null ? "none" : Uri.EscapeDataString(collider.name)) +
+                " layer=" + (collider == null ? -1 : collider.gameObject.layer) + " distance=" + distance.ToString("R", System.Globalization.CultureInfo.InvariantCulture) +
+                " associationByReference=" + (associated != null) + " associatedPQ=" + Id(associated) + " componentPQ=" + Id(collider == null ? null : collider.GetComponent<PQ>()) +
+                " nativeMesh=" + Id(mc == null ? null : mc.sharedMesh) + " convex=" + (mc != null && mc.convex) + " trigger=" + (collider != null && collider.isTrigger) +
+                " built=" + (associated != null && associated.isBuilt) + " active=" + (associated != null && associated.isActive) + " cached=" + (associated != null && associated.isCached) + " subdivision=" + (associated == null ? -1 : associated.subdivision) +
+                " geometrySha256=" + (mc == null || mc.sharedMesh == null ? "none" : MeshDigest(mc.sharedMesh)) +
+                " material=" + Id(material) + " dynamicFriction=" + (material == null ? "none" : material.dynamicFriction.ToString("R", System.Globalization.CultureInfo.InvariantCulture)) +
+                " staticFriction=" + (material == null ? "none" : material.staticFriction.ToString("R", System.Globalization.CultureInfo.InvariantCulture)) +
+                " bounciness=" + (material == null ? "none" : material.bounciness.ToString("R", System.Globalization.CultureInfo.InvariantCulture)) +
+                " ancestry=" + string.Join("/", ancestry.ToArray()) + " matrix=" + matrix);
         }
         static string MeshDigest(Mesh mesh)
         {

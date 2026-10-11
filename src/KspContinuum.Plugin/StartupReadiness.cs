@@ -24,6 +24,7 @@ namespace KspContinuum
         bool quitting;
         bool stockTargetReadiness;
         bool generationWitness;
+        MethodInfo generationCityOrientate, generationCity2Orientate;
         public sealed class Frame
         {
             public PQS Sphere;
@@ -69,6 +70,14 @@ namespace KspContinuum
                 siteField = AccessTools.DeclaredField(iterator, "<launchSite>5__4");
                 if (sphereField?.FieldType != typeof(PQS) || temporaryField?.FieldType != typeof(GameObject) || siteField?.FieldType != typeof(LaunchSite))
                     throw new InvalidOperationException("Launch-site state differs.");
+                if (generationWitness)
+                {
+                    generationCityOrientate = AccessTools.DeclaredMethod(typeof(PQSCity), "Orientate", new[] { typeof(bool) });
+                    generationCity2Orientate = AccessTools.DeclaredMethod(typeof(PQSCity2), "Orientate", Type.EmptyTypes);
+                    foreach (MethodInfo method in new[] { generationCityOrientate, generationCity2Orientate })
+                        if (method == null || method.ReturnType != typeof(void) || Harmony.GetPatchInfo(method)?.Owners.Count > 0)
+                            throw new InvalidOperationException("Original city orientation witness seam absent or already patched at admission.");
+                }
                 active = this; harmony = new Harmony(Owner);
                 originalForce = (Action<PSystemSetup, PQS, Transform>)Delegate.CreateDelegate(typeof(Action<PSystemSetup, PQS, Transform>), force);
                 StartupDeferredTerrain.Install(originalForce, () => current != null);
@@ -111,14 +120,19 @@ namespace KspContinuum
                 catch (Exception error) { Debug.LogError("[Continuum terrain generation] serial=" + frame.Generation.Serial + " phase=after-fixed status=invalid reason=" + Uri.EscapeDataString(error.Message)); }
             }
         }
-        static void BeforeOrientate(object iterator)
+        static void BeforeOrientate(object iterator, UnityEngine.Object city)
         {
             Frame frame;
-            if (active.frames.TryGetValue(iterator, out frame) && frame.Generation != null)
-                StartupTerrainGenerationWitness.Observe(frame.Generation, "before-stock-orientate");
+            if (!active.frames.TryGetValue(iterator, out frame) || frame.Generation == null || frame.Generation.OrientationConsumed) return;
+            LaunchSite site = active.siteField.GetValue(iterator) as LaunchSite;
+            var context = frame.Generation;
+            if (!ReferenceEquals(site, context.Site) || site == null ||
+                !ReferenceEquals(city, site.isPQSCity ? (UnityEngine.Object)site.pqsCity : site.pqsCity2)) return;
+            context.OrientationConsumed = true;
+            StartupTerrainGenerationWitness.Observe(context, "before-stock-orientate");
         }
-        static void OrientateCity(PQSCity city, bool allowReposition, object iterator) { BeforeOrientate(iterator); city.Orientate(allowReposition); }
-        static void OrientateCity2(PQSCity2 city, object iterator) { BeforeOrientate(iterator); city.Orientate(); }
+        static void OrientateCity(PQSCity city, bool allowReposition, object iterator) { BeforeOrientate(iterator, city); city.Orientate(allowReposition); }
+        static void OrientateCity2(PQSCity2 city, object iterator) { BeforeOrientate(iterator, city); city.Orientate(); }
         static IEnumerable<CodeInstruction> LaunchTranspile(IEnumerable<CodeInstruction> source)
         {
             var body = source.ToList(); ConstructorInfo wait = typeof(WaitForSeconds).GetConstructor(new[] { typeof(float) });
@@ -148,11 +162,11 @@ namespace KspContinuum
             {
                 foreach (Type city in new[] { typeof(PQSCity), typeof(PQSCity2) })
                 {
-                    MethodInfo method = AccessTools.DeclaredMethod(city, "Orientate", city == typeof(PQSCity) ? new[] { typeof(bool) } : Type.EmptyTypes);
+                    MethodInfo method = city == typeof(PQSCity) ? active.generationCityOrientate : active.generationCity2Orientate;
                     int[] atSites = body.Select((instruction, index) => new { instruction, index })
                         .Where(x => (x.instruction.opcode == OpCodes.Call || x.instruction.opcode == OpCodes.Callvirt) && Equals(x.instruction.operand, method)).Select(x => x.index).ToArray();
-                    if (atSites.Length != 1 || method == null || method.ReturnType != typeof(void) || Harmony.GetPatchInfo(method)?.Owners.Count > 0)
-                        throw new InvalidOperationException("Original city orientation witness seam differs or is patched.");
+                    if (atSites.Length != 1)
+                        throw new InvalidOperationException("Original city orientation witness call shape differs.");
                     int at = atSites[0]; var instance = new CodeInstruction(OpCodes.Ldarg_0);
                     instance.labels.AddRange(body[at].labels); instance.blocks.AddRange(body[at].blocks); body[at] = instance;
                     body.Insert(at + 1, new CodeInstruction(OpCodes.Call, AccessTools.DeclaredMethod(typeof(StartupReadiness), city == typeof(PQSCity) ? nameof(OrientateCity) : nameof(OrientateCity2))));
