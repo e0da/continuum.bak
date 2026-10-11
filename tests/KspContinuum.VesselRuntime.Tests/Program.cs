@@ -8,6 +8,7 @@ static class Program
     static void Reject(Action action) { try { action(); } catch (InvalidDataException) { return; } catch (EndOfStreamException) { return; } throw new Exception("Expected rejection."); }
     static int Main(string[] args)
     {
+        if(args.Length>0 && args[0]=="--compare") return RecordingComparison.Run(args);
         var frame = new VesselRuntimeFrame { sequence=1, universalTime=123, rootToWorld=Identity(), poses=Identity(), visible=new[]{true}, altitude=60000, density=.001, speed=2000, loads=new double[]{2,0,0,0,3,0, -2,0,0,0,-3,0} };
         var recording = new VesselRuntimeRecording { sessionId="analytic", vesselId="vessel", manifestSha256=new string('a',64), topology=1, drawIds=new[]{"1/0/MeshRenderer/slot/0"}, partIds=new uint[]{1,2}, frames=new[]{frame} };
         var result=VesselRuntimeFormat.Analyze(frame); Check(result.force[0]==0 && result.force[1]==0 && result.moment[2]==12, "Independent analytic force couple differs.");
