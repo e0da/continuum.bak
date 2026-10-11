@@ -13,6 +13,7 @@ public static class BuildAeroFieldWorkbench
     {
         public string schema = "continuum-aero-workbench-build/v1", unity, editorRevision, graphicsApi, output, workbenchSourceSha256, residentSourceSha256, residentFormatSourceSha256, buildSourceSha256, fixtureShaderSourceSha256, status, toolAssemblySha256, playerAssemblySha256, packagesSha256,multiscaleSourceSha256,multiscaleFormatSourceSha256;
         public string qualification = "Player built; actual rendering, fixture loading and persistent reload require native consumer proof.";
+        public string wholeCraftRuntimeSourceSha256,wholeCraftFormatSourceSha256;
     }
     static string Hash(string path) { using(var stream=File.OpenRead(path)) using(var sha=SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-","").ToLowerInvariant(); }
     public static void Build()
@@ -55,6 +56,7 @@ public static class BuildAeroFieldWorkbench
                 workbenchSourceSha256=Hash("Assets/AeroFieldWorkbench.cs"),buildSourceSha256=Hash("Assets/Editor/BuildAeroFieldWorkbench.cs"),fixtureShaderSourceSha256=Hash("Assets/FixtureOpaque.shader"),
                 residentSourceSha256=Hash("Assets/ResidentMaterialRuntime.cs"),residentFormatSourceSha256=Hash("Assets/ResidentMaterialFormat.cs"),
                 multiscaleSourceSha256=File.Exists("Assets/MultiscaleWorkbench.cs")?Hash("Assets/MultiscaleWorkbench.cs"):null,multiscaleFormatSourceSha256=File.Exists("Assets/MultiscaleSceneFormat.cs")?Hash("Assets/MultiscaleSceneFormat.cs"):null,
+                wholeCraftRuntimeSourceSha256=File.Exists("Assets/WholeCraftRuntime.cs")?Hash("Assets/WholeCraftRuntime.cs"):null,wholeCraftFormatSourceSha256=File.Exists("Assets/WholeCraftSceneFormat.cs")?Hash("Assets/WholeCraftSceneFormat.cs"):null,
                 toolAssemblySha256=Hash(typeof(BuildAeroFieldWorkbench).Assembly.Location),playerAssemblySha256=Hash(Path.Combine(output,"Contents/Resources/Data/Managed/Assembly-CSharp.dll")),packagesSha256=Hash("Packages/manifest.json") };
             using(var writer=new StreamWriter(new FileStream(output+".build.json",FileMode.CreateNew,FileAccess.Write))) writer.Write(JsonUtility.ToJson(receipt,true));
         }

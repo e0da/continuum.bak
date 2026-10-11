@@ -1,14 +1,14 @@
 Shader "Continuum/MultiscaleDiagnostic" {
-Properties { _MainTex("Captured albedo",2D)="white"{} _Mode("Diagnostic",Float)=0 _MaterialColor("Stable material identity",Color)=(1,1,1,1) }
+Properties { _MainTex("Captured albedo",2D)="white"{} _Mode("Diagnostic",Float)=0 _MaterialColor("Stable material identity",Color)=(1,1,1,1) _Tint("Approximate captured tint",Color)=(1,1,1,1) _Cull("Diagnostic culling",Float)=2 }
 SubShader {
-Tags { "RenderType"="Opaque" } Cull Back ZWrite On ZTest LEqual
+Tags { "RenderType"="Opaque" } Cull [_Cull] ZWrite On ZTest LEqual
 Pass {
 CGPROGRAM
 #pragma target 3.5
 #pragma vertex vert
 #pragma fragment frag
 #include "UnityCG.cginc"
-sampler2D _MainTex; float4 _MainTex_ST,_MaterialColor; float _Mode;
+sampler2D _MainTex; float4 _MainTex_ST,_MaterialColor,_Tint; float _Mode;
 struct app { float4 vertex:POSITION; float3 normal:NORMAL; float2 uv:TEXCOORD0; float4 color:COLOR; };
 struct vary { float4 pos:SV_POSITION; float3 worldNormal:TEXCOORD0; float3 viewNormal:TEXCOORD1; float2 uv:TEXCOORD2; float4 color:COLOR; };
 vary vert(app v) { vary o; o.pos=UnityObjectToClipPos(v.vertex); o.worldNormal=UnityObjectToWorldNormal(v.normal); o.viewNormal=mul((float3x3)UNITY_MATRIX_V,o.worldNormal); o.uv=v.uv; o.color=v.color; return o; }
@@ -20,7 +20,8 @@ if(_Mode<2.5) return float4(encoded(i.viewNormal),1);
 if(_Mode<3.5) return float4(tex2D(_MainTex,i.uv*_MainTex_ST.xy+_MainTex_ST.zw).rgb,1);
 if(_Mode<4.5) return float4(i.color.rgb,1);
 if(_Mode<5.5) return float4(frac(i.uv),0,1);
-return float4(_MaterialColor.rgb,1);
+if(_Mode<6.5) return float4(_MaterialColor.rgb,1);
+return float4(tex2D(_MainTex,i.uv*_MainTex_ST.xy+_MainTex_ST.zw).rgb*_Tint.rgb*i.color.rgb,1);
 }
 ENDCG
 }
