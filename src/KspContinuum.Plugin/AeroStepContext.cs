@@ -43,7 +43,7 @@ namespace KspContinuum
         ILiftProvider[] providers;
         Part[][] children;
         bool disposed, disabled, installing, cleaning, acquired;
-        int windowCount, verifyWindows;
+        int windowCount, verifyWindows, compareWindows;
         long sequence;
 
         [Serializable] public sealed class ReportData
@@ -54,7 +54,8 @@ namespace KspContinuum
             public string scope = "Original root Integrate, original nine reached Mach Evaluate sites and six lazy exact float values. All directional/weighted arithmetic, recursive part order and native force publication remain original. No global FloatCurve hook or cross-root value reuse.";
             public string ownershipScope = "Reserved frozen research patch/managed-callgraph ownership lease, qualified at installation and cleanup. No per-root Harmony/reflection/hash scan. Root typed guards reject changed part/cube/provider owners and curve alias disagreement before Integrate. Concurrent or within-root curve/native/patch mutation is unsupported; cleanup detection invalidates evidence and does not roll back native forces.";
             public string partOwnerScope = "Exact pinned Part or stock CompoundPart with inherited nonvirtual Part Rigidbody/DragCubes/ShieldedFromAirstream accessors; exact non-null DragCubeList. CompoundPart lifecycle/editor overrides are outside the retained Integrate callgraph. Custom subclasses and absent cube owners are unsupported.";
-            public string timingScope = "Query windows charge original root elapsed plus complete context prefix/admission/reset/end bookkeeping; root contains lookup/first-use Evaluate/native force costs. Installation and first invocation retained separately. Verify is original-return same-state numerical proof, not a stock/candidate complete-method speedup comparator; it records at most two captured roots and then runs stock. No FPS claim.";
+            public string timingScope = "Query windows charge original root elapsed plus complete context prefix/admission/reset/end bookkeeping; root contains lookup/first-use Evaluate/native force costs. Installation and first invocation retained separately. Verify is original-return same-state numerical proof; it records at most two captured roots and then runs stock. Compare alternates captured control-original/query roots with identical admission, slot, lookup, counter and window instrumentation and one original force fold per root; control hits evaluate and return original without verification comparisons/timers. Different adjacent physical states remain a confound, not a same-state complete-fold benchmark. No FPS claim.";
+            public string compareScope = "Captured comparison sequence is fixed before root timing: even control-original, odd query. Pre-capture compare roots use control-original. Slot hits count initialized lookups on both arms; only query hits are memoized returns. Both arms charge complete context costs; no duplicate force fold. Independent prior verify witness is required for numerical qualification, not supplied by compare.";
             public string fallbackScope = "Admission failure runs the entire original root without memoization. Unexpected in-root key/context or nonfinite result stops future reuse and marks this experiment invalid; no synthetic native-force rollback or all-or-none publication claim.";
             public string[] roleOrder = { "surface-tail", "surface", "surface-tip", "surface-multiplier-and-exposure", "cd-power", "body-lift-mach" };
             public int processId, boundParts, boundStockParts, boundCompoundParts, surfaceFieldToken, patchedMethods, shapeAdmissions, transpilerExecutions, cleanupRecompositions, staticCallsites, errors, originalExceptions, recursionStops, safetyStops, verificationMismatches, droppedWindows;
@@ -62,6 +63,7 @@ namespace KspContinuum
             public long firstInvocationAdmissionTicks, firstInvocationRootTicks, firstInvocationContextCompleteTicks;
             public bool firstInvocationCaptured;
             public long calls, captureCalls, admittedRoots, captureAdmittedRoots, fallbacks, captureFallbacks, completedRoots, captureCompletedRoots, memoizedCalls, captureMemoizedCalls, originalEvaluations, verificationEvaluations;
+            public long captureControlCompletedRoots, captureQueryCompletedRoots, captureControlOriginalEvaluations, captureQueryOriginalEvaluations;
             public MethodRow[] methods = new MethodRow[0];
             public Window[] windows = new Window[0];
         }
@@ -74,11 +76,11 @@ namespace KspContinuum
         }
         [Serializable] public sealed class Window
         {
-            public long sequence, fixedStartedTicks, startedTicks, endedTicks, fixedEndedTicks, rootTicks, prefixTicks, admissionTicks, endBookkeepingTicks, contextCompleteTicks, verificationTicks;
+            public long sequence, compareSequence = -1, fixedStartedTicks, startedTicks, endedTicks, fixedEndedTicks, rootTicks, prefixTicks, admissionTicks, endBookkeepingTicks, contextCompleteTicks, verificationTicks;
             public int frame, parts, inputBits, reachedRoleMask, aeroEntries, faceEntries, surfaceEntries;
             public double universalTime, mach;
             public bool completed, captureActiveAtEnd, firstInvocation, originalReturnVerification;
-            public string fallback, mismatch;
+            public string treatment, fallback, mismatch;
             public long[] calls = new long[Roles], hits = new long[Roles], originalEvaluations = new long[Roles];
             public int[] firstValueBits = new int[Roles];
         }
@@ -87,7 +89,7 @@ namespace KspContinuum
             internal AeroStepContext owner;
             internal FlightIntegrator integrator;
             internal Window window;
-            internal bool eligible, verifying, captured;
+            internal bool eligible, verifying, comparing, control, captured;
             internal long fixedStart, prefixTicks, rootStart, admissionTicks;
             internal bool firstInvocation;
             internal int inputBits, validMask, aeroEntries, faceEntries, surfaceEntries;
@@ -139,12 +141,12 @@ namespace KspContinuum
         {
             string mode = Environment.GetEnvironmentVariable("CONTINUUM_AERO_STEP_CONTEXT");
             if (string.IsNullOrEmpty(mode)) return null;
-            if ((mode != "verify" && mode != "query") || string.IsNullOrEmpty(runId) || capturing == null || FlightGlobals.ActiveVessel == null ||
+            if ((mode != "verify" && mode != "query" && mode != "compare") || string.IsNullOrEmpty(runId) || capturing == null || FlightGlobals.ActiveVessel == null ||
                 !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_AERO_INTEGRATION_ATTRIBUTION")) ||
                 args.Any(arg => arg == "--continuum-callback-attribution" || arg == "--continuum-flight-integrator-update-attribution" ||
                     arg == "--continuum-live-setdrag-provider" || arg == "--continuum-setdrag-stress-candidate" ||
                     (arg.StartsWith("--continuum-convection-replacement=", StringComparison.Ordinal) && arg != "--continuum-convection-replacement=query")))
-                throw new InvalidOperationException("Aero step context requires one verify/query environment mode and excludes competing aero/broad/provider observers or convection verification.");
+                throw new InvalidOperationException("Aero step context requires one verify/query/compare environment mode and excludes competing aero/broad/provider observers or convection verification.");
             return new AeroStepContext(mode, runId, capturing);
         }
         static void Require(bool condition, string detail) { if (!condition) throw new InvalidOperationException(detail); }
@@ -386,6 +388,9 @@ namespace KspContinuum
             AeroStepContext owner = context.owner; long admission = Stopwatch.GetTimestamp(); owner.Report.calls++;
             if (context.captured) owner.Report.captureCalls++;
             context.verifying = owner.Report.mode == "verify";
+            context.comparing = owner.Report.mode == "compare";
+            int compareSequence = context.comparing && context.captured ? owner.compareWindows++ : -1;
+            context.control = context.comparing && (compareSequence < 0 || (compareSequence & 1) == 0);
             if (context.verifying && (!context.captured || owner.verifyWindows >= 2)) return;
             try
             {
@@ -400,6 +405,7 @@ namespace KspContinuum
                         window = owner.windows[owner.windowCount++]; context.window = window; window.sequence = owner.sequence; window.frame = Time.frameCount;
                         window.parts = owner.parts.Length; window.mach = integrator.mach; window.universalTime = Planetarium.GetUniversalTime(); window.inputBits = context.inputBits;
                         window.fixedStartedTicks = context.fixedStart; window.prefixTicks = context.prefixTicks; window.originalReturnVerification = context.verifying;
+                        window.compareSequence = compareSequence; window.treatment = context.verifying ? "verify-original-return" : context.control ? "control-original" : "query";
                         window.firstInvocation = context.firstInvocation; window.fallback = context.eligible ? null : owner.Report.lastFallback;
                         if (context.verifying && context.eligible) owner.verifyWindows++;
                     }
@@ -436,6 +442,12 @@ namespace KspContinuum
                 context.values[role] = value; context.validMask |= bit; return value;
             }
             if (window != null) window.hits[role]++;
+            if (context.control)
+            {
+                float original = curve.Evaluate(input); owner.Report.originalEvaluations++;
+                if (window != null) window.originalEvaluations[role]++;
+                return original;
+            }
             if (context.verifying)
             {
                 long start = Stopwatch.GetTimestamp(); float original = curve.Evaluate(input); owner.Report.verificationEvaluations++;
@@ -472,6 +484,12 @@ namespace KspContinuum
             if (context.rootStart != 0)
             {
                 owner.Report.completedRoots++; if (context.captured) owner.Report.captureCompletedRoots++;
+                if (window != null && context.comparing)
+                {
+                    long evaluations = window.originalEvaluations.Sum();
+                    if (context.control) { owner.Report.captureControlCompletedRoots++; owner.Report.captureControlOriginalEvaluations += evaluations; }
+                    else { owner.Report.captureQueryCompletedRoots++; owner.Report.captureQueryOriginalEvaluations += evaluations; }
+                }
                 if (context.firstInvocation)
                 {
                     owner.Report.firstInvocationAdmissionTicks = context.admissionTicks; owner.Report.firstInvocationRootTicks = ended - context.rootStart;
@@ -535,6 +553,35 @@ namespace KspContinuum
             { reason = "Two original-return bitwise witnesses incomplete."; return false; }
             if (Report.mode == "query" && (Report.captureMemoizedCalls <= 0 || Report.windows.Any(window => window.originalReturnVerification)))
             { reason = "No captured query reuse or mixed verification cost."; return false; }
+            if (Report.mode == "compare")
+            {
+                if (Report.fallbacks != 0 || Report.captureMemoizedCalls <= 0 || Report.verificationEvaluations != 0 ||
+                    Report.captureControlCompletedRoots <= 0 || Report.captureQueryCompletedRoots <= 0 ||
+                    (Report.captureControlCompletedRoots != Report.captureQueryCompletedRoots && Report.captureControlCompletedRoots != Report.captureQueryCompletedRoots + 1) ||
+                    compareWindows != Report.windows.Length || Report.captureCalls != Report.windows.Length || Report.captureAdmittedRoots != Report.windows.Length ||
+                    Report.captureCompletedRoots != Report.windows.Length || Report.captureControlCompletedRoots + Report.captureQueryCompletedRoots != Report.windows.Length)
+                { reason = "Complete balanced control/query comparison coverage absent."; return false; }
+                long controlEvaluations = 0, queryEvaluations = 0, controlRoots = 0, queryRoots = 0;
+                for (int i = 0; i < Report.windows.Length; i++)
+                {
+                    Window window = Report.windows[i]; bool control = (i & 1) == 0;
+                    if (window.compareSequence != i || window.treatment != (control ? "control-original" : "query") ||
+                        window.originalReturnVerification || window.verificationTicks != 0 || !window.captureActiveAtEnd || window.fallback != null || window.mismatch != null ||
+                        window.fixedEndedTicks < window.endedTicks || window.hits.Sum() <= 0)
+                    { reason = "Comparison alternation, completion or instrumentation differs."; return false; }
+                    for (int role = 0; role < Roles; role++)
+                    {
+                        long calls = window.calls[role], evaluations = window.originalEvaluations[role], first = calls > 0 ? 1 : 0;
+                        if (calls < 0 || window.hits[role] != calls - first || evaluations != (control ? calls : first))
+                        { reason = "Control original/query first-use evaluation witness differs."; return false; }
+                    }
+                    if (control) { controlRoots++; controlEvaluations += window.originalEvaluations.Sum(); }
+                    else { queryRoots++; queryEvaluations += window.originalEvaluations.Sum(); }
+                }
+                if (controlRoots != Report.captureControlCompletedRoots || queryRoots != Report.captureQueryCompletedRoots ||
+                    controlEvaluations != Report.captureControlOriginalEvaluations || queryEvaluations != Report.captureQueryOriginalEvaluations)
+                { reason = "Comparison arm totals differ from complete windows."; return false; }
+            }
             reason = null; return true;
         }
     }
