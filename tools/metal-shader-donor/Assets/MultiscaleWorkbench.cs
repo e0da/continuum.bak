@@ -20,6 +20,10 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     {
         public string schema="continuum-multiscale-workbench/v1",status="starting",error,hostId,unity,backend,assemblySha256,scenePath,sceneSha256,vesselFixtureSha256,bodyGeometrySha256,bodyTextureSha256,bodyRecipe,preset="balanced",context="flight",focus,crop="rejected-unqualified-selective-coverage",geometryFallback="Only captured original meshes exist; no geometric LOD hierarchy",shadowFallback="Shadow requests unsatisfied; directional shadow maps disabled for first two-domain composition",lastPng,lastPngSha256,cleanupStatus;
         public string partBundleSha256,originalBundleSha256,bodyTextureCapture,materialMode="instanced",view="composed";
+        public string debugShader="Continuum/MultiscaleDiagnostic",debugBundleSha256,debugLegend="Diagnostic only; no material fidelity or performance qualification",debugInputs="Actual captured geometry, camera-relative matrices, explicit white craft vertex COLOR, captured MainTex and ST; material IDs ordered by captured material index",fixtureScope="Captured material-family subset; not whole craft",fixtureFamily;
+        public int fixtureInstances,fixtureMeshes,fixtureTextures;
+        public string focusInstance; public double[] focusTargetMeters;
+        public int debugShaderGeneration,craftDrawCalls; public float depthDisplayNear,depthDisplayFar; public int actualBodyMipCount; public string bodyMipPolicySatisfaction;
         public int processId,port,frames,bodyDraws,craftFrames,width,height,bodyWidth,bodyHeight,craftWidth,craftHeight,commands,sceneReloads;
         public long vesselGeneration; public double distance,logDistance; public double[] cameraAnchorMeters;
         public float yaw,pitch,fov,bodyNear,bodyFar,craftNear,craftFar;
@@ -29,8 +33,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     }
     sealed class Generation : IDisposable
     {
-        public MultiscaleSceneManifest Scene; public ResidentMaterialRuntime Craft; public Mesh Body; public Texture2D Texture; public Material Material; public string Hash;
-        public void Dispose() { if(Craft!=null) Craft.Dispose(); if(Body!=null) UnityEngine.Object.Destroy(Body); if(Texture!=null) UnityEngine.Object.Destroy(Texture); if(Material!=null) UnityEngine.Object.Destroy(Material); }
+        public MultiscaleSceneManifest Scene; public ResidentMaterialRuntime Craft; public Mesh Body; public Texture2D Texture; public Material Material,DebugMaterial; public string Hash;
+        public void Dispose() { if(Craft!=null) Craft.Dispose(); if(Body!=null) UnityEngine.Object.Destroy(Body); if(Texture!=null) UnityEngine.Object.Destroy(Texture); if(Material!=null) UnityEngine.Object.Destroy(Material); if(DebugMaterial!=null) UnityEngine.Object.Destroy(DebugMaterial); }
     }
     sealed class Command { public string Text,Reply; public volatile bool Done,ReplyWritten; }
     sealed class Target : IDisposable
@@ -44,7 +48,10 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     string output,partBundle,originalBundle,seen; double distance; float yaw,pitch; double pollAt; bool capturing,settingsOwned,quitRequested; TcpListener listener; Thread socket; volatile bool stopping; int queued;
     readonly double[] cameraAnchor=new double[3]; readonly List<Camera> disabledCameras=new List<Camera>(); int priorAA,priorVsync,priorFrameRate;
     readonly double[] bodyGeometryAnchor=new double[3];
+    readonly double[] focusAnchor=new double[3];
     Vector4 priorCameraPosition,priorCameraDirection;
+    Material debugDepth; Shader debugShader; AssetBundle debugBundle; bool bodyGeometryDebug;
+    static readonly string[] debugViews={"composed","craft-color","body-color","craft-flat","body-flat","craft-world-normals","body-world-normals","craft-view-normals","body-view-normals","craft-albedo","body-albedo","craft-vertex-colors","craft-uv","body-uv","craft-material-id","body-material-id","craft-linear-depth","body-linear-depth","craft-log-depth","body-log-depth"};
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)] static void Bootstrap()
     { if(!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_MULTISCALE_SCENE"))) new GameObject("Continuum Multiscale Workbench").AddComponent<MultiscaleWorkbench>(); }
     static string Absolute(string path) { if(string.IsNullOrEmpty(path)||!Path.IsPathRooted(path)) throw new InvalidDataException("Absolute private path required."); return Path.GetFullPath(path); }
@@ -68,6 +75,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
             present=gameObject.AddComponent<Camera>(); present.cullingMask=0; present.clearFlags=CameraClearFlags.SolidColor; present.backgroundColor=Color.black; present.allowMSAA=false;
             craftCamera=NewCamera("Craft depth domain"); bodyCamera=NewCamera("Body depth domain");
             composite=NewMaterial("Hidden/Continuum/MultiscaleComposite"); depthCopy=NewMaterial("Hidden/Continuum/MultiscaleDepthCopy");
+            debugDepth=NewMaterial("Hidden/Continuum/MultiscaleDebugDepth"); debugShader=Shader.Find("Continuum/MultiscaleDiagnostic"); ValidateDebugShader(debugShader);
             partBundle=Absolute(Environment.GetEnvironmentVariable("CONTINUUM_RESIDENT_PART_BUNDLE")); originalBundle=Environment.GetEnvironmentVariable("CONTINUUM_RESIDENT_ORIGINAL_BUNDLE");
             Reload(Absolute(Environment.GetEnvironmentVariable("CONTINUUM_MULTISCALE_SCENE")),true);
             Camera.onPreCull+=BeforeCamera; listener=new TcpListener(IPAddress.Loopback,0); listener.Start(4); state.port=((IPEndPoint)listener.LocalEndpoint).Port; socket=new Thread(SocketLoop) {IsBackground=true,Name="Continuum multiscale control"}; socket.Start();
@@ -96,6 +104,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
             var t=scene.bodyTexture; byte[] bytes=File.ReadAllBytes(texture); if(bytes.LongLength!=t.payloadLength||BytesHash(bytes)!=t.payloadSha256) throw new InvalidDataException("Body raw texture mismatch."); next.Texture=new Texture2D(t.width,t.height,(TextureFormat)t.format,t.mipCount>1,t.linear); next.Texture.LoadRawTextureData(bytes); next.Texture.Apply(false,true); next.Texture.filterMode=(FilterMode)t.filter; next.Texture.wrapMode=(TextureWrapMode)t.wrap; next.Texture.anisoLevel=t.aniso;
             var formatProperty=typeof(Texture).GetProperty("graphicsFormat"); if(next.Texture.mipmapCount!=t.mipCount||(int)next.Texture.format!=t.format||formatProperty==null||Convert.ToInt32(formatProperty.GetValue(next.Texture,null))!=t.graphicsFormat) throw new InvalidDataException("Body native texture format mismatch.");
             next.Material=NewMaterial("Continuum/MultiscaleBodyDiffuse"); next.Material.SetTexture("_MainTex",next.Texture); next.Material.color=new Color(scene.bodyColor[0],scene.bodyColor[1],scene.bodyColor[2],scene.bodyColor[3]); var st=scene.bodyTextureScaleOffset; next.Material.SetTextureScale("_MainTex",new Vector2(st[0],st[1])); next.Material.SetTextureOffset("_MainTex",new Vector2(st[2],st[3]));
+            next.Craft.CommitDebugShader(next.Craft.PrepareDebugShader(debugShader)); next.DebugMaterial=PrepareBodyDebug(next,debugShader);
+            if(state.focusInstance!=null) { float radius; next.Craft.PresentationInstanceCenter(state.focusInstance,out radius); }
             if(Hash(path)!=next.Hash||Hash(vessel)!=scene.vesselFixtureSha256||Hash(geometry)!=scene.bodyGeometrySha256) throw new InvalidDataException("Scene changed during preparation."); return next;
         }
         catch { next.Dispose(); throw; }
@@ -106,6 +116,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         catch { next.Dispose(); throw; }
         var previous=generation; generation=next; policyDirty=true; if(previous!=null) previous.Dispose(); state.scenePath=path; state.sceneSha256=seen=next.Hash; state.vesselFixtureSha256=next.Scene.vesselFixtureSha256; state.bodyGeometrySha256=next.Scene.bodyGeometrySha256; state.bodyTextureSha256=next.Scene.bodyTexture.payloadSha256; state.bodyRecipe=next.Scene.bodyMaterialRecipe; state.bodyTextureCapture=next.Scene.bodyTextureCapture; state.partBundleSha256=next.Craft.BundleSha256; state.originalBundleSha256=next.Craft.OriginalBundleSha256; state.sceneReloads++;
         if(initial) { state.focus=next.Scene.initialCameraTarget; var o=next.Scene.initialCameraOffsetMeters; distance=Math.Sqrt(o[0]*o[0]+o[1]*o[1]+o[2]*o[2]); yaw=(float)(Math.Atan2(-o[0],-o[2])*180/Math.PI); pitch=(float)(Math.Asin(o[1]/distance)*180/Math.PI); }
+        SelectView(state.view);
+        state.fixtureInstances=generation.Craft.InstanceCount; state.fixtureMeshes=generation.Craft.MeshCount; state.fixtureTextures=generation.Craft.Manifest.textures.Length; state.fixtureFamily=generation.Craft.Manifest.family;
     }
     void Update()
     {
@@ -121,6 +133,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         try
         {
             var s=generation.Scene; bool bodyFocus=state.focus==s.bodyId; double[] anchor=bodyFocus?s.bodyAnchorMeters:s.vesselAnchorMeters;
+            if(state.focusInstance!=null) { float radius; Vector3 local=generation.Craft.PresentationInstanceCenter(state.focusInstance,out radius); for(int i=0;i<3;i++) focusAnchor[i]=s.vesselAnchorMeters[i]+local[i]; anchor=focusAnchor; } state.focusTargetMeters=anchor;
             if(bodyFocus) distance=Math.Max(distance,s.bodyRadiusMeters*1.01); Vector3 offset=Quaternion.Euler(pitch,yaw,0)*Vector3.back;
             for(int i=0;i<3;i++) cameraAnchor[i]=anchor[i]+offset[i]*distance;
             float x,y,z; MultiscaleSceneFormat.RelativePosition(s.vesselAnchorMeters,cameraAnchor,out x,out y,out z); generation.Craft.SetPresentationAnchor(new Vector3(x,y,z));
@@ -137,7 +150,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
             double bd=Math.Sqrt((double)x*x+(double)y*y+(double)z*z); bodyCamera.nearClipPlane=(float)Math.Max(1,(bd-s.bodyRadiusMeters)*.5); bodyCamera.farClipPlane=(float)Math.Max(bodyCamera.nearClipPlane*2,bd+s.bodyRadiusMeters*2);
             if(bodyCamera.nearClipPlane<=0||craftCamera.nearClipPlane<=0) throw new InvalidDataException("Invalid depth domain.");
             Shader.SetGlobalVector("_LocalCameraPos",new Vector4(0,0,0,priorCameraPosition.w)); Vector3 forward=rotation*Vector3.forward; Shader.SetGlobalVector("_LocalCameraDir",new Vector4(forward.x,forward.y,forward.z,priorCameraDirection.w));
-            Graphics.DrawMesh(generation.Body,bodyMatrix,generation.Material,29,bodyCamera,0,null,ShadowCastingMode.On,false); bodyCamera.Render(); craftCamera.Render();
+            Graphics.DrawMesh(generation.Body,bodyMatrix,bodyGeometryDebug?generation.DebugMaterial:generation.Material,29,bodyCamera,0,null,ShadowCastingMode.On,false); bodyCamera.Render(); craftCamera.Render();
+            state.craftDrawCalls=generation.Craft.DrawCalls; state.actualBodyMipCount=generation.Texture.mipmapCount; state.bodyMipPolicySatisfaction=state.actualBodyMipCount==1?"unsupported-single-level":"bias-applied-unqualified";
             composite.SetTexture("_BodyColor",bodyTarget.Color); composite.SetTexture("_BodyDepth",bodyTarget.Depth); composite.SetTexture("_CraftColor",craftTarget.Color); composite.SetTexture("_CraftDepth",craftTarget.Depth);
             state.frames++; state.bodyDraws++; state.craftFrames=generation.Craft.SubmittedFrames; state.width=Screen.width; state.height=Screen.height; state.bodyWidth=bodyTarget.Color.width; state.bodyHeight=bodyTarget.Color.height; state.craftWidth=craftTarget.Color.width; state.craftHeight=craftTarget.Color.height; state.distance=distance; state.logDistance=Math.Log10(distance); state.yaw=yaw; state.pitch=pitch; state.fov=s.fov; state.cameraAnchorMeters=cameraAnchor; state.vesselGeneration=generation.Craft.Generation; state.bodyNear=bodyCamera.nearClipPlane; state.bodyFar=bodyCamera.farClipPlane; state.craftNear=craftCamera.nearClipPlane; state.craftFar=craftCamera.farClipPlane;
             if(state.frames%30==0) Write();
@@ -155,10 +169,11 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     void OnRenderImage(RenderTexture source,RenderTexture destination)
     {
         if(composite==null||craftTarget==null||bodyTarget==null||state.status=="failed") { Graphics.Blit(source,destination); return; }
-        if(state.view=="craft-color") Graphics.Blit(craftTarget.Color,destination);
-        else if(state.view=="body-color") Graphics.Blit(bodyTarget.Color,destination);
+        if(state.view.EndsWith("linear-depth",StringComparison.Ordinal)||state.view.EndsWith("log-depth",StringComparison.Ordinal)) { bool body=state.view.StartsWith("body-",StringComparison.Ordinal); float near=body?bodyCamera.nearClipPlane:craftCamera.nearClipPlane,far=body?bodyCamera.farClipPlane:craftCamera.farClipPlane; state.depthDisplayNear=near; state.depthDisplayFar=far; debugDepth.SetVector("_Range",new Vector4(near,far,state.view.EndsWith("log-depth",StringComparison.Ordinal)?1:0,0)); Graphics.Blit(body?bodyTarget.Depth:craftTarget.Depth,destination,debugDepth); }
         else if(state.view=="craft-depth") Graphics.Blit(craftTarget.Depth,destination);
         else if(state.view=="body-depth") Graphics.Blit(bodyTarget.Depth,destination);
+        else if(state.view.StartsWith("craft-",StringComparison.Ordinal)) Graphics.Blit(craftTarget.Color,destination);
+        else if(state.view.StartsWith("body-",StringComparison.Ordinal)) Graphics.Blit(bodyTarget.Color,destination);
         else Graphics.Blit(source,destination,composite);
     }
     void Execute(string text)
@@ -168,16 +183,49 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         if(words[0]=="status") { Write(); return; }
         if(words[0]=="captureframe") { StartCoroutine(Capture()); return; }
         if(words[0]=="materialmode"&&words.Length==2&&(words[1]=="reference"||words[1]=="instanced")) { generation.Craft.SetMode(words[1]); state.materialMode=words[1]; }
-        else if(words[0]=="view"&&words.Length==2&&(words[1]=="composed"||words[1]=="craft-color"||words[1]=="body-color"||words[1]=="craft-depth"||words[1]=="body-depth")) state.view=words[1];
+        else if(words[0]=="view"&&words.Length==2) SelectView(words[1]);
+        else if(words[0]=="debugshaderreload") ReloadDebugShader(Absolute(text.Substring(words[0].Length).Trim()));
         else if(words[0]=="zoom"&&words.Length==2) distance=Math.Max(.25,Math.Min(1e10,Math.Pow(10,Number(words[1]))));
         else if(words[0]=="orbit"&&words.Length==3) { yaw=(float)Number(words[1]); pitch=Mathf.Clamp((float)Number(words[2]),-89,89); }
-        else if(words[0]=="focus"&&words.Length==2&&(words[1]==generation.Scene.vesselId||words[1]==generation.Scene.bodyId)) state.focus=words[1];
+        else if(words[0]=="focusinstance"&&words.Length==2) { float radius; generation.Craft.PresentationInstanceCenter(words[1],out radius); state.focus=generation.Scene.vesselId; state.focusInstance=words[1]; distance=Math.Max(.25,radius*3); }
+        else if(words[0]=="focus"&&words.Length==2&&(words[1]==generation.Scene.vesselId||words[1]==generation.Scene.bodyId)) { state.focus=words[1]; state.focusInstance=null; }
         else if(words[0]=="preset"&&words.Length==2) { PresentationQualityPolicy.Resolve(words[1],state.context,"craft","world",generation.Scene.vesselId,overrides); state.preset=words[1]; }
         else if(words[0]=="override"&&words.Length==5) { string id=words[1]; if(id!=generation.Scene.bodyId&&id!=generation.Scene.vesselId) throw new InvalidDataException("Known asset ID required."); var next=overrides.Where(o=>o.assetId!=id).Concat(new[] {new PresentationQualityOverride {scope="asset",assetId=id,pass="world",scaleSet=true,worldScale=(float)Number(words[2]),mipSet=true,textureMipBias=(float)Number(words[3]),geometrySet=true,geometryErrorPixels=(float)Number(words[4])}}).ToArray(); PresentationQualityPolicy.Resolve(state.preset,state.context,id==generation.Scene.bodyId?"body":"craft","world",id,next); overrides=next; }
         else if(words[0]=="fixturehotreload") Reload(Absolute(text.Substring(words[0].Length).Trim()),false);
         else if(words[0]=="snapshotreload") { string path=Absolute(text.Substring(words[0].Length).Trim()); var snap=ResidentMaterialFormat.ReadSnapshot(path); if(snap.instances.Any(i=>i.opacityEffective!=1)) throw new InvalidDataException("Translucent snapshot rejected."); generation.Craft.ReloadSnapshot(path); }
         else throw new InvalidDataException("status|quit|captureframe|materialmode reference/instanced|view composed/craft-color/body-color/craft-depth/body-depth|zoom log10metres|orbit yaw pitch|focus ID|preset low/balanced/high|override ID scale mip error|fixturehotreload PATH|snapshotreload PATH");
         policyDirty=true; Write();
+    }
+    static void ValidateDebugShader(Shader shader)
+    {
+        if(shader==null||!shader.isSupported||shader.name!="Continuum/MultiscaleDiagnostic") throw new InvalidDataException("Supported exact diagnostic shader required.");
+        var probe=new Material(shader); try { foreach(string name in new[] {"_MainTex","_Mode","_MaterialColor"}) if(!probe.HasProperty(name)) throw new InvalidDataException("Diagnostic shader interface missing: "+name); } finally { Destroy(probe); }
+    }
+    static Material PrepareBodyDebug(Generation value,Shader shader)
+    {
+        var m=new Material(shader); m.SetTexture("_MainTex",value.Texture); m.SetTextureScale("_MainTex",value.Material.GetTextureScale("_MainTex")); m.SetTextureOffset("_MainTex",value.Material.GetTextureOffset("_MainTex")); m.SetColor("_MaterialColor",Color.magenta); return m;
+    }
+    void SelectView(string value)
+    {
+        if(value=="composed") { generation.Craft.SetGeometryDebug("off"); bodyGeometryDebug=false; state.view=value; return; }
+        bool body=value.StartsWith("body-",StringComparison.Ordinal),craft=value.StartsWith("craft-",StringComparison.Ordinal); if(!body&&!craft) throw new InvalidDataException("View requires craft- or body- prefix.");
+        string mode=value.Substring(body?5:6); bool geometry=mode!="color"&&mode!="depth"&&mode!="linear-depth"&&mode!="log-depth";
+        int debug=geometry?ResidentMaterialRuntime.GeometryDebugMode(mode):0;
+        if(body&&mode=="vertex-colors") throw new InvalidDataException("Body source COLOR was not captured; refusing fabricated vertex-color diagnostic.");
+        generation.Craft.SetGeometryDebug(craft&&geometry?mode:"off"); bodyGeometryDebug=body&&geometry; if(bodyGeometryDebug) generation.DebugMaterial.SetFloat("_Mode",debug);
+        state.view=value; state.debugLegend=geometry?"Unlit actual geometry; normals encoded [-1,1] to [0,1]; UV fractional RG; stable material-index hue":"Depth metres: raw clamps on display; linear near/far or log(1+depth)/log(1+far); black is unwritten";
+    }
+    void ReloadDebugShader(string path)
+    {
+        string digest=Hash(path); AssetBundle next=AssetBundle.LoadFromFile(path); if(next==null) throw new InvalidDataException("Diagnostic bundle load failed."); Material[] craft=null; Material body=null;
+        try
+        {
+            Shader selected=null; foreach(var shader in next.LoadAllAssets<Shader>()) if(shader.name=="Continuum/MultiscaleDiagnostic") { if(selected!=null) throw new InvalidDataException("Duplicate diagnostic shader."); selected=shader; }
+            ValidateDebugShader(selected); craft=generation.Craft.PrepareDebugShader(selected); body=PrepareBodyDebug(generation,selected); if(bodyGeometryDebug) body.SetFloat("_Mode",ResidentMaterialRuntime.GeometryDebugMode(state.view.Substring(5)));
+            if(Hash(path)!=digest) throw new InvalidDataException("Diagnostic bundle changed during preparation.");
+            var oldBundle=debugBundle; var oldBody=generation.DebugMaterial; generation.Craft.CommitDebugShader(craft); craft=null; generation.DebugMaterial=body; body=null; debugShader=selected; debugBundle=next; next=null; Destroy(oldBody); if(oldBundle!=null) oldBundle.Unload(true); state.debugBundleSha256=digest; state.debugShaderGeneration++; Write();
+        }
+        finally { if(craft!=null) foreach(var m in craft) Destroy(m); if(body!=null) Destroy(body); if(next!=null) next.Unload(true); }
     }
     IEnumerator QuitAfterReply(Command command)
     {
@@ -199,7 +247,9 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         GUI.Box(new Rect(10,10,430,150),"Continuous multiscale scene — captured assets"); GUI.Label(new Rect(20,35,410,20),state.preset+" / "+state.distance.ToString("G5")+" metres / "+state.materialMode+" / "+state.view);
         float log=GUI.HorizontalSlider(new Rect(20,65,400,20),(float)Math.Log10(Math.Max(.25,distance)),-.6f,10); if(!capturing) distance=Math.Pow(10,log);
         if(GUI.Button(new Rect(20,90,100,22),"low")&&!capturing) { state.preset="low"; policyDirty=true; } if(GUI.Button(new Rect(130,90,100,22),"balanced")&&!capturing) { state.preset="balanced"; policyDirty=true; } if(GUI.Button(new Rect(240,90,100,22),"high")&&!capturing) { state.preset="high"; policyDirty=true; }
-        GUI.Label(new Rect(20,120,410,30),"Native UI; original meshes only; body material approximate");
+        GUI.Label(new Rect(20,120,410,30),state.fixtureScope+" / "+state.fixtureInstances+" rows / "+state.fixtureMeshes+" meshes");
+        GUI.Label(new Rect(450,10,Screen.width-460,70),state.debugLegend);
+        for(int i=0;i<debugViews.Length;i++) if(GUI.Button(new Rect(10+(i%2)*215,170+(i/2)*23,210,22),debugViews[i])&&!capturing&&!quitRequested) { SelectView(debugViews[i]); Write(); }
     }
     void SocketLoop()
     {
@@ -209,7 +259,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     void Fail(Exception e) { state.status="failed"; state.error=e.ToString(); if(present!=null) present.enabled=false; Write(); Debug.LogException(e); }
     void OnDestroy()
     {
-        stopping=true; if(listener!=null) listener.Stop(); Camera.onPreCull-=BeforeCamera; if(generation!=null) generation.Dispose(); if(craftTarget!=null) craftTarget.Dispose(); if(bodyTarget!=null) bodyTarget.Dispose(); if(craftCamera!=null) Destroy(craftCamera.gameObject); if(bodyCamera!=null) Destroy(bodyCamera.gameObject); if(composite!=null) Destroy(composite); if(depthCopy!=null) Destroy(depthCopy);
+        if(debugDepth!=null) Destroy(debugDepth);
+        stopping=true; if(listener!=null) listener.Stop(); Camera.onPreCull-=BeforeCamera; if(generation!=null) generation.Dispose(); if(debugBundle!=null) debugBundle.Unload(true); if(craftTarget!=null) craftTarget.Dispose(); if(bodyTarget!=null) bodyTarget.Dispose(); if(craftCamera!=null) Destroy(craftCamera.gameObject); if(bodyCamera!=null) Destroy(bodyCamera.gameObject); if(composite!=null) Destroy(composite); if(depthCopy!=null) Destroy(depthCopy);
         foreach(Camera c in disabledCameras) if(c!=null) c.enabled=true; if(settingsOwned) { QualitySettings.antiAliasing=priorAA; QualitySettings.vSyncCount=priorVsync; Application.targetFrameRate=priorFrameRate; Shader.SetGlobalVector("_LocalCameraPos",priorCameraPosition); Shader.SetGlobalVector("_LocalCameraDir",priorCameraDirection); } state.cleanupStatus="release-requested-owned-hooks-removed-settings-restored"; Write();
     }
 }

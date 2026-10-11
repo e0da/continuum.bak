@@ -26,6 +26,11 @@ captureframe
 quit
 materialmode reference|instanced
 view composed|craft-color|body-color|craft-depth|body-depth
+view craft-flat|craft-world-normals|craft-view-normals|craft-albedo|craft-vertex-colors|craft-uv|craft-material-id
+view body-flat|body-world-normals|body-view-normals|body-albedo|body-uv|body-material-id
+view craft-linear-depth|craft-log-depth|body-linear-depth|body-log-depth
+focusinstance CAPTURED_INSTANCE_ID
+debugshaderreload ABSOLUTE_NEW_DIAGNOSTIC_BUNDLE
 fixturehotreload ABSOLUTE_SCENE_MANIFEST
 snapshotreload ABSOLUTE_NEWER_SNAPSHOT
 ```
@@ -37,3 +42,9 @@ The craft constructor removes its original float root translation **before** com
 First admission is opaque-only: translucent vessel states and body/craft layer collisions reject. Directional shadow maps are disabled; shadow policy requests and geometry-error requests are reported unsatisfied. No geometric hierarchy, skinning, detailed terrain, impostor, solar-system content, atmosphere/ocean or temporal history exists here. Selective supersampling/crop is explicitly rejected pending a qualified coverage compositor. Different target resolutions retain only one nearest opaque depth per pixel; cross-domain silhouette coverage is a remaining fidelity gate.
 
 Source/portable checks do not qualify GPU execution. The root-owned native observation must show the actual craft and actual body at two resolving camera ranges, correct orientation/relative placement and occlusion, plus sharp native UI at a changed world scale. Inspect the recorded native images and depth conventions on each backend. This workbench is not a KSP FPS comparison or an arm-to-solar-system completion claim.
+
+The fixture is an admitted material-family subset, not whole-craft coverage. Native status records its family and instance/mesh/texture counts. Geometry diagnostics deliberately use one unlit DrawMesh per actual instance, with the same immutable mesh and current camera-relative affine transform. These views isolate geometry and texture inputs without relying on the normal part shader or instancing variants. MainTex uses the captured texture and scale/offset; material-ID hue is stable by ordered captured material index. Craft COLOR is the admitted explicit-white semantic; body COLOR was not captured and its vertex-color view rejects rather than fabricates values. Normal views encode normalized world/view components from [-1,1] to [0,1]; zero normals encode neutral gray. UV displays fractional raw UV in RG. Readable depth uses the current clip near/far or log(1+metres)/log(1+far), with zero reserved for unwritten pixels. Raw depth remains available and clamps at display conversion.
+
+The built-in `Continuum/MultiscaleDiagnostic` shader is retained by the player builder. A matching shader bundle can replace only cached debug materials with `debugshaderreload`; exact supported shader identity and MainTex/Mode/MaterialColor interface are required. Preparation and hashing finish before the frame-boundary swap; rejected bundles preserve the prior shader/materials. Geometry, captured textures, pose state, camera and socket remain resident. Status binds bundle SHA and reload generation. Returning to composed/color/depth views disables debug geometry without modifying normal materials or global shader inputs. Native appearance, HMR recovery and cleanup remain qualification gates; these diagnostics carry no fidelity or performance claim.
+
+Single-level body captures report `unsupported-single-level` for mip policy: assigning a mip bias cannot select absent coarser levels. Multi-level bias application also remains visually unqualified until inspected.

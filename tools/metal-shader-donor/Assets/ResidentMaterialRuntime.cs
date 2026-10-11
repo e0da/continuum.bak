@@ -21,6 +21,8 @@ public sealed class ResidentMaterialRuntime : IDisposable
     public string StateSha256 { get; private set; }
     public string Mode { get; private set; } = "reference";
     public string Diagnostic { get; private set; } = "off";
+    public string GeometryDebug { get; private set; } = "off";
+    Material[] debugMaterials;
     public long Generation { get { return snapshot.generation; } }
     public string TopologyId { get { return Manifest.topologyId; } }
     public int InstanceCount { get { return Manifest.instances.Length; } }
@@ -199,6 +201,32 @@ public sealed class ResidentMaterialRuntime : IDisposable
     }
     public void SetMode(string value) { if(value!="original"&&value!="reference"&&value!="instanced") throw new InvalidDataException("Material mode original|reference|instanced."); if(value=="original"&&originalMaterials==null) throw new InvalidDataException("Loaded original shader and bindings required."); Mode=value; }
     public void SetDiagnostic(string value) { if(value!="off"&&value!="defaults"&&value!="single") throw new InvalidDataException("Material diagnostic off|defaults|single."); Diagnostic=value; }
+    public static int GeometryDebugMode(string value)
+    {
+        switch(value) { case "flat":return 0; case "world-normals":return 1; case "view-normals":return 2; case "albedo":return 3; case "vertex-colors":return 4; case "uv":return 5; case "material-id":return 6; default:throw new InvalidDataException("Unknown geometry debug mode."); }
+    }
+    public void SetGeometryDebug(string value)
+    {
+        if(value=="off") { GeometryDebug=value; return; }
+        int mode=GeometryDebugMode(value);
+        if(debugMaterials==null)
+        {
+            Shader shader=Shader.Find("Continuum/MultiscaleDiagnostic"); if(shader==null||!shader.isSupported) throw new InvalidDataException("Native geometry diagnostic shader unavailable.");
+            CommitDebugShader(PrepareDebugShader(shader));
+        }
+        foreach(var m in debugMaterials) m.SetFloat("_Mode",mode); GeometryDebug=value;
+    }
+    public Material[] PrepareDebugShader(Shader shader)
+    {
+        var result=new Material[referenceMaterials.Length];
+        try { for(int i=0;i<result.Length;i++) { var m=new Material(shader); result[i]=m; var original=referenceMaterials[i]; if(original.HasProperty("_MainTex")) { m.SetTexture("_MainTex",original.GetTexture("_MainTex")); m.SetTextureScale("_MainTex",original.GetTextureScale("_MainTex")); m.SetTextureOffset("_MainTex",original.GetTextureOffset("_MainTex")); } m.SetColor("_MaterialColor",Color.HSVToRGB((i*.61803398875f)%1,.7f,.95f)); m.SetFloat("_Mode",GeometryDebug=="off"?0:GeometryDebugMode(GeometryDebug)); } return result; }
+        catch { foreach(var m in result) if(m!=null) UnityEngine.Object.Destroy(m); throw; }
+    }
+    public void CommitDebugShader(Material[] next)
+    {
+        if(debugMaterials!=null) foreach(var m in debugMaterials) { owned.Remove(m); UnityEngine.Object.Destroy(m); }
+        debugMaterials=next; owned.AddRange(next);
+    }
     public void SetTextureMipBias(float bias) { if(float.IsNaN(bias)||float.IsInfinity(bias)||bias < -2||bias>4) throw new InvalidDataException("Texture mip policy bound."); for(int i=0;i<textures.Length;i++) textures[i].mipMapBias=Manifest.textures[i].mipBias+bias; }
     public void IncludePresentationLightLayer(int layer) { if(layer<0||layer>31) throw new InvalidDataException("Presentation light layer bound."); lightObject.GetComponent<Light>().cullingMask|=1<<layer; }
     public void DisablePresentationShadows() { lightObject.GetComponent<Light>().shadows=LightShadows.None; }
@@ -228,6 +256,11 @@ public sealed class ResidentMaterialRuntime : IDisposable
         foreach(var p in packets) for(int i=0;i<p.Sources.Length;i++) p.Matrices[i]=matrices[p.Sources[i]];
         Bounds=presentationBaseBounds; var b=Bounds; b.center+=offset; Bounds=b;
     }
+    public Vector3 PresentationInstanceCenter(string id,out float radius)
+    {
+        for(int i=0;i<Manifest.instances.Length;i++) if(Manifest.instances[i].id==id) { var b=meshes[Manifest.instances[i].meshIndex].bounds; var m=presentationBaseMatrices[i]; Vector3 e=b.extents; var worldExtents=new Vector3(Math.Abs(m.m00)*e.x+Math.Abs(m.m01)*e.y+Math.Abs(m.m02)*e.z,Math.Abs(m.m10)*e.x+Math.Abs(m.m11)*e.y+Math.Abs(m.m12)*e.z,Math.Abs(m.m20)*e.x+Math.Abs(m.m21)*e.y+Math.Abs(m.m22)*e.z); radius=worldExtents.magnitude; return m.MultiplyPoint3x4(b.center); }
+        throw new InvalidDataException("Unknown captured instance identity.");
+    }
     static MaterialPropertyBlock Block(ResidentSnapshot state,int[] ids,bool arrays)
     {
         int n=ids.Length; var block=new MaterialPropertyBlock(); var temperature=new Vector4[n]; var rim=new Vector4[n]; var emission=new Vector4[n]; var falloff=new float[n]; var opacity=new float[n]; var sh=new SphericalHarmonicsL2[n]; var occlusion=new Vector4[n];
@@ -248,7 +281,8 @@ public sealed class ResidentMaterialRuntime : IDisposable
     public void Submit(Camera camera)
     {
         if(disposed||!activated||lastFrame==Time.frameCount) return; lastFrame=Time.frameCount;
-        if(Mode=="reference"||Mode=="original") for(int i=0;i<Manifest.instances.Length;i++) { var a=Manifest.instances[i]; Graphics.DrawMesh(meshes[a.meshIndex],matrices[i],(Mode=="original"?originalMaterials:referenceMaterials)[a.materialIndex],a.layer,camera,0,referenceBlocks[i],(ShadowCastingMode)a.shadowCasting,a.receiveShadows,null,LightProbeUsage.CustomProvided,null); DrawCalls++; }
+        if(GeometryDebug!="off") for(int i=0;i<Manifest.instances.Length;i++) { var a=Manifest.instances[i]; Graphics.DrawMesh(meshes[a.meshIndex],matrices[i],debugMaterials[a.materialIndex],a.layer,camera,0,null,ShadowCastingMode.On,false,null,LightProbeUsage.Off,null); DrawCalls++; }
+        else if(Mode=="reference"||Mode=="original") for(int i=0;i<Manifest.instances.Length;i++) { var a=Manifest.instances[i]; Graphics.DrawMesh(meshes[a.meshIndex],matrices[i],(Mode=="original"?originalMaterials:referenceMaterials)[a.materialIndex],a.layer,camera,0,referenceBlocks[i],(ShadowCastingMode)a.shadowCasting,a.receiveShadows,null,LightProbeUsage.CustomProvided,null); DrawCalls++; }
         else if(Diagnostic=="single") for(int i=0;i<Manifest.instances.Length;i++) { var a=Manifest.instances[i]; Graphics.DrawMeshInstanced(meshes[a.meshIndex],0,packetMaterials[a.materialIndex],singleMatrices[i],1,singleBlocks[i],(ShadowCastingMode)a.shadowCasting,a.receiveShadows,a.layer,camera,LightProbeUsage.CustomProvided,null); DrawCalls++; }
         else foreach(var p in packets) { Graphics.DrawMeshInstanced(meshes[p.Mesh],0,packetMaterials[p.Material],p.Matrices,p.Matrices.Length,Diagnostic=="defaults"?null:p.Block,(ShadowCastingMode)p.Shadow,p.Receive,p.Layer,camera,Diagnostic=="defaults"?LightProbeUsage.Off:LightProbeUsage.CustomProvided,null); DrawCalls++; }
         SubmittedFrames++;

@@ -40,7 +40,7 @@ public static class BuildAeroFieldWorkbench
             var material=new Material(fixtureShader); AssetDatabase.CreateAsset(material,materialPath); placeholder.GetComponent<Renderer>().sharedMaterial=material;
             placeholder.SetActive(false);
             if(Environment.GetEnvironmentVariable("CONTINUUM_MULTISCALE_WORKBENCH_BUILD")=="1")
-                foreach(string name in new[] {"BodyDiffuse","DepthCopy","Composite"})
+                foreach(string name in new[] {"BodyDiffuse","DepthCopy","Composite","DebugGeometry","DebugDepth"})
                 {
                     Shader shader=AssetDatabase.LoadAssetAtPath<Shader>("Assets/ContinuumMultiscale/"+name+".shader");
                     if(shader==null||ShaderUtil.ShaderHasError(shader)) throw new InvalidOperationException("Multiscale shader import failed: "+name);
