@@ -15,12 +15,12 @@ namespace KspContinuum
         [Serializable] public sealed class Recipe { public string schema, unity; public FileRow[] files; public string[] requiredShaders; }
         [Serializable] public sealed class ShaderRow { public string name; public bool present, supported; }
         [Serializable] public sealed class MaterialRow { public string renderer, material, shader; public int rendererId, materialId; public bool supported; public string[] textureProperties, textureNames; }
-        [Serializable] public sealed class CameraRow { public string name; public int id, mask; public float depth, near, far; }
+        [Serializable] public sealed class CameraRow { public string name, clearFlags, renderingPath, target; public int id, mask, targetSamples; public float depth, near, far; public bool allowMSAA; }
         [Serializable] public sealed class Report
         {
             public string schema = "continuum-metal-menu-presentation-observation/v1", runId, status, error, actualBackend, unity;
             public string recipePath, recipeSha256, pngPath, pngSha256, cleanupStatus;
-            public int processId, width, height, activeRenderers, unsupportedMaterials, backgroundCameras, releasedReadbackTextures;
+            public int processId, width, height, activeRenderers, unsupportedMaterials, backgroundCameras, releasedReadbackTextures, antiAliasing;
             public bool originalRenderTargetRestored, reference;
             public float presentationWaitSeconds; public bool presentationReady;
             public ShaderRow[] requiredShaders; public MaterialRow[] materials; public CameraRow[] cameras; public string[] menuTexts;
@@ -106,7 +106,8 @@ namespace KspContinuum
                     }
                 }
                 report.materials = materials.ToArray(); report.unsupportedMaterials = materials.Count(m => !m.supported);
-                report.cameras = activeCameras.Select(c => new CameraRow { name = c.name, id = c.GetInstanceID(), mask = c.cullingMask, depth = c.depth, near = c.nearClipPlane, far = c.farClipPlane }).ToArray();
+                report.cameras = activeCameras.Select(c => new CameraRow { name = c.name, id = c.GetInstanceID(), mask = c.cullingMask, depth = c.depth, near = c.nearClipPlane, far = c.farClipPlane, clearFlags = c.clearFlags.ToString(), renderingPath = c.actualRenderingPath.ToString(), allowMSAA = c.allowMSAA, target = c.targetTexture == null ? "screen" : c.targetTexture.name, targetSamples = c.targetTexture == null ? 0 : c.targetTexture.antiAliasing }).ToArray();
+                report.antiAliasing = QualitySettings.antiAliasing;
                 report.backgroundCameras = report.cameras.Length;
                 MainMenu menu = UnityEngine.Object.FindObjectOfType<MainMenu>();
                 report.menuTexts = MenuTexts(menu); report.width = Screen.width; report.height = Screen.height;
