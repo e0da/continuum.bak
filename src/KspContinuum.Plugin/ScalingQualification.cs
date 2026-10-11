@@ -483,6 +483,13 @@ namespace KspContinuum
             { reason = "callback-attribution-invalid"; return false; }
             string integratorReason;
             if (!IntegratorAttributionComplete(report, out integratorReason)) { reason = integratorReason; return false; }
+            if (Array.Exists(Environment.GetCommandLineArgs(), arg => arg.StartsWith("--continuum-convection-capture=", StringComparison.Ordinal)))
+            {
+                var capture = report.convectionCapture as ConvectionCapture.CaptureReport;
+                if (capture == null || capture.status != "complete" || capture.cleanupStatus != "removed-owned-patch" ||
+                    capture.capturedFrames != 4 || capture.faults != 0 || capture.runId != report.runId || string.IsNullOrEmpty(capture.sha256))
+                { reason = "convection-capture-incomplete"; return false; }
+            }
             if (report.dryBuoyancy != null && (report.dryBuoyancy.status != "complete" ||
                 report.dryBuoyancy.cleanupStatus != "restored-owned-enables" || report.dryBuoyancy.ownedComponents < 1 ||
                 report.dryBuoyancy.fixedSteps < 1 || report.dryBuoyancy.bypassed < 1 || report.dryBuoyancy.errors != 0))

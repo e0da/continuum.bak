@@ -87,6 +87,8 @@ pub struct Startup {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Diagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub convection_capture: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub integrator_update_attribution: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -222,6 +224,7 @@ impl ResolvedLaunch {
                 work_scheduler: boolean("--startup-work-scheduler")?,
             },
             diagnostics: Diagnostics {
+                convection_capture: path("--flight-convection-capture"),
                 integrator_update_attribution: boolean("--flight-integrator-update-attribution")?,
                 backend_menu_presentation: path("--backend-menu-presentation"),
                 backend_pixel_proof_bundle: path("--backend-pixel-proof-bundle"),
@@ -250,6 +253,26 @@ impl ResolvedLaunch {
             return Err("timeout must be 1..1800 seconds".into());
         }
         let s = &self.startup;
+        if let Some(path) = &self.diagnostics.convection_capture {
+            if self.flight.is_none()
+                || self.diagnostics.integrator_update_attribution
+                || self
+                    .flight
+                    .as_ref()
+                    .is_some_and(|flight| flight.callback_attribution)
+                || !path.is_absolute()
+                || path.exists()
+                || !path.parent().is_some_and(|parent| parent.is_dir())
+                || path
+                    .parent()
+                    .unwrap()
+                    .canonicalize()
+                    .map_err(|e| e.to_string())?
+                    != path.parent().unwrap()
+            {
+                return Err("convection capture requires exclusive flight and a new canonical absolute output".into());
+            }
+        }
         if self.diagnostics.integrator_update_attribution
             && (self.flight.is_none()
                 || self

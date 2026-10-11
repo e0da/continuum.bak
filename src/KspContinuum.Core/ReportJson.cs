@@ -62,6 +62,7 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.AssetGenerationReport" ||
                  type.FullName == "KspContinuum.AssetGenerationCapability" ||
                  type.FullName == "KspContinuum.VesselRuntimeCapture+CaptureReport" ||
+                 type.FullName == "KspContinuum.ConvectionCapture+CaptureReport" ||
                  type.FullName == "KspContinuum.VesselRuntimeCapture+ResultRow" ||
                  type.FullName == "KspContinuum.FlightLocalCamera+Report" ||
                  type.FullName == "KspContinuum.FlightLocalCamera+CameraRow" ||

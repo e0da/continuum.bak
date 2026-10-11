@@ -27,6 +27,7 @@ namespace KspContinuum
         PartForceObservation partForces;
         FixedCallbackAttribution callbackAttribution;
         FlightIntegratorUpdateAttribution integratorUpdateAttribution;
+        ConvectionCapture convectionCapture;
         DryBuoyancyRuntime dryBuoyancy;
         VesselRuntimeCapture vesselRuntime;
         Action<ProbeReport> completion;
@@ -107,6 +108,8 @@ namespace KspContinuum
                 vesselRuntime = VesselRuntimeCapture.Create(FlightGlobals.ActiveVessel, report.runId);
                 foreach (MarkerReport row in report.markers) Acquire(row);
                 string[] arguments = Environment.GetCommandLineArgs();
+                convectionCapture = ConvectionCapture.Create(arguments, report.runId, () => captureActive);
+                if (convectionCapture != null) report.convectionCapture = convectionCapture.Report;
                 string canaryReason;
                 bool canaryRequested = ActiveVesselPhysicsSubstitutionCanary.RequestedAndQualified(arguments, out canaryReason);
                 if (canaryRequested && canaryReason != null)
@@ -338,6 +341,13 @@ namespace KspContinuum
             if (finished) return;
             finished = true;
             var errors = new List<string>();
+            if (convectionCapture != null)
+            {
+                try { convectionCapture.Dispose(); }
+                catch (Exception error) { errors.Add("ConvectionCapture: " + error.GetType().Name); }
+                if (convectionCapture.Report.status != "complete") errors.Add("ConvectionCapture: " + convectionCapture.Report.status);
+                convectionCapture = null;
+            }
             if (substitutionCanary != null)
             {
                 try { substitutionCanary.Dispose(); }

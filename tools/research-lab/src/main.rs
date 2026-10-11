@@ -55,6 +55,7 @@ fn run() -> Result<()> {
             "--project-sha256",
         ],
         "run" | "resolve" => &[
+            "--flight-convection-capture",
             "--live-play",
             "--flight-integrator-update-attribution",
             "--instance",
@@ -795,6 +796,14 @@ fn smoke(
         ])
         .arg(&log_path)
         .arg(format!("--continuum-research-run={run_id}"))
+        .args(
+            selection
+                .diagnostics
+                .convection_capture
+                .as_ref()
+                .map(|path| vec![format!("--continuum-convection-capture={}", path.display())])
+                .unwrap_or_default(),
+        )
         .args(if selection.diagnostics.integrator_update_attribution {
             vec!["--continuum-flight-integrator-update-attribution"]
         } else {

@@ -135,6 +135,7 @@ namespace KspContinuum
         public PhysicsSubstitutionCanaryReport substitutionCanary;
         public CallbackAttributionReport callbackAttribution;
         public object flightIntegratorUpdateAttribution;
+        public object convectionCapture;
         public DryBuoyancyReport dryBuoyancy;
     }
 

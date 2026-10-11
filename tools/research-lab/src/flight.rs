@@ -811,6 +811,10 @@ pub fn analyze(
         summary["flightIntegratorUpdateAttribution"] = crate::integrator_summary::summarize(report)?;
         summary["intrusiveDiagnosticsRequested"] = Value::Bool(true);
     }
+    if !report["convectionCapture"].is_null() {
+        summary["convectionCapture"] = report["convectionCapture"].clone();
+        summary["intrusiveDiagnosticsRequested"] = Value::Bool(true);
+    }
     Ok(summary)
 }
 pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> {
