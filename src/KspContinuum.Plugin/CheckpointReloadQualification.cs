@@ -38,6 +38,7 @@ namespace KspContinuum
         [Serializable] public sealed class ResourceRow { public uint partId; public string name; public double amount; }
         [Serializable] public sealed class PartRow { public uint flightId, persistentId, parentFlightId; public string name; public int instanceId; public string[] crew, modules; }
         [Serializable] public sealed class MembershipRow { public string vesselId; public uint[] parts; }
+        [Serializable] public sealed class EngineRow { public uint partId; public int moduleIndex; public bool beforeIgnited, afterIgnited; }
         [Serializable] public sealed class SnapshotRow
         {
             public string vesselId, bodyName; public uint persistentId; public int instanceId;
@@ -48,7 +49,7 @@ namespace KspContinuum
         [Serializable] public sealed class ReportData
         {
             public string schema = "continuum-checkpoint-reload/v1", status = "running", cleanupStatus = "owned", reason, runId, sourceSha256, savedSha256, savedPath;
-            public string scope = "Quiet vacuum checkpoint; stock save and quickload completion; persistent primitive KSPFields only. Not arbitrary module OnSave, full scenario equality, deterministic replay, FPS or visual equivalence qualification.";
+            public string scope = "Quiet vacuum checkpoint after declared settling and stock shutdown of armed zero-throttle engines; stock save and quickload completion; persistent primitive KSPFields only. Not arbitrary module OnSave, full scenario equality, deterministic replay, FPS or visual equivalence qualification.";
             public int processId, faults, cameraCallbacks, expectedParts;
             public bool sourceUnchanged, savedUnchanged, newVesselObject, newPartObjects, identityRestored, resourcesRestored, crewRestored, modulesRestored, fieldsRestored, orbitRestored, timeRestored, departureObserved, scenarioModulesUpdated, postLoadNotified, hooksRemoved, controlLockRemoved, cameraRestored;
             public double positionToleranceMeters = .01, velocityToleranceMetersPerSecond = .00001, resourceTolerance = .000001, fieldAbsoluteTolerance = .000001, fieldRelativeTolerance = .000001, maximumReloadSimulationSeconds = 2;
@@ -58,6 +59,9 @@ namespace KspContinuum
             public double beforeHorizonClearanceMeters, afterHorizonClearanceMeters;
             public double[] beforeSunDirection, afterSunDirection;
             public double[] departureVelocityBefore, departureVelocityAfter;
+            public double settleSeconds;
+            public string[] admissionFailures;
+            public EngineRow[] shutdownEngines;
             public SnapshotRow before, after; public MembershipRow[] memberships; public EventRow[] events; public string[] screenshots;
         }
         sealed class CameraPose { public Camera camera; public Vector3 position; public Quaternion rotation; }
@@ -80,6 +84,21 @@ namespace KspContinuum
         {
             if (owner != this) yield break;
             while (!PhysicalReady()) { if(finished)yield break; if (Time.realtimeSinceStartup - began > 90) { Fail(new TimeoutException("Initial checkpoint readiness timeout.")); yield break; } yield return null; }
+            if (!Try(() => {
+                string settle = Environment.GetCommandLineArgs().Single(a => a.StartsWith("--continuum-flight-settle=", StringComparison.Ordinal)).Substring("--continuum-flight-settle=".Length);
+                double seconds;
+                if (!double.TryParse(settle, NumberStyles.Float, CultureInfo.InvariantCulture, out seconds) || double.IsNaN(seconds) || double.IsInfinity(seconds) || seconds < 0 || seconds > 60)
+                    throw new InvalidOperationException("Invalid declared reload settling interval.");
+                report.settleSeconds = seconds;
+            })) yield break;
+            float readySince = Time.realtimeSinceStartup;
+            while (Time.realtimeSinceStartup - readySince < report.settleSeconds)
+            {
+                if (finished) yield break;
+                if (!PhysicalReady()) readySince = Time.realtimeSinceStartup;
+                if (Time.realtimeSinceStartup - began > 90) { Fail(new TimeoutException("Initial checkpoint settling timeout.")); yield break; }
+                yield return null;
+            }
             if (!Try(Admit)) yield break;
             yield return new WaitForFixedUpdate(); yield return new WaitForEndOfFrame();
             if (!Try(() => { Image("before"); Record("before-image"); SaveAndDepart(); })) yield break;
@@ -104,16 +123,39 @@ namespace KspContinuum
         }
         void Admit()
         {
+            if (!PhysicalReady()) throw new InvalidOperationException("Reload physical owner lost before admission.");
             vessel = FlightGlobals.ActiveVessel;
             const string partsPrefix = "--continuum-scale-parts=";
             string selectedParts = Environment.GetCommandLineArgs().Single(a=>a.StartsWith(partsPrefix,StringComparison.Ordinal)).Substring(partsPrefix.Length);
             int expected;
             if(!int.TryParse(selectedParts,NumberStyles.None,CultureInfo.InvariantCulture,out expected)||expected<1||vessel.parts.Count!=expected)throw new InvalidOperationException("Selected part count differs from reload fixture.");
             report.expectedParts=expected;
-            if (!ScaleCheckpointLoadState.SourceUnchanged() || vessel.id != ScaleCheckpointLoadState.VesselId || FlightDriver.Pause || MapView.MapIsEnabled || TimeWarp.CurrentRate != 1 || vessel.Landed || vessel.Splashed || vessel.altitude <= vessel.mainBody.atmosphereDepth ||
-                FlightGlobals.Vessels.Any(v => v != null && v.loaded && !v.packed && v != vessel) || vessel.Autopilot.Enabled || vessel.ActionGroups[KSPActionGroup.SAS] || vessel.ActionGroups[KSPActionGroup.RCS] || vessel.ctrlState.mainThrottle != 0 || vessel.parts.Any(p => p.Modules.OfType<ModuleEngines>().Any(e => e.EngineIgnited)))
-                throw new InvalidOperationException("Reload diagnostic requires one quiet physical vacuum vessel and immutable selected source.");
+            var failures = new List<string>();
+            if (!ScaleCheckpointLoadState.SourceUnchanged()) failures.Add("source-changed");
+            if (vessel.id != ScaleCheckpointLoadState.VesselId) failures.Add("selected-vessel-differs");
+            if (FlightDriver.Pause) failures.Add("paused");
+            if (MapView.MapIsEnabled) failures.Add("map-view");
+            if (TimeWarp.CurrentRate != 1 || TimeWarp.CurrentRateIndex != 0) failures.Add("non-normal-time");
+            if (vessel.Landed || vessel.Splashed || vessel.altitude <= vessel.mainBody.atmosphereDepth) failures.Add("non-vacuum-flight");
+            foreach (Vessel other in FlightGlobals.Vessels.Where(v => v != null && v.loaded && !v.packed && v != vessel)) failures.Add("other-physical-vessel:" + other.id.ToString("D"));
+            if (vessel.Autopilot.Enabled) failures.Add("autopilot");
+            if (vessel.ActionGroups[KSPActionGroup.SAS]) failures.Add("sas");
+            if (vessel.ActionGroups[KSPActionGroup.RCS]) failures.Add("rcs");
+            if (vessel.ctrlState == null || vessel.ctrlState.mainThrottle != 0) failures.Add("nonzero-or-missing-throttle");
+            report.admissionFailures = failures.ToArray();
+            if (failures.Count != 0) throw new InvalidOperationException("Reload quiet admission failed: " + string.Join(",", failures));
             InputLockManager.SetControlLock(ControlTypes.ALL_SHIP_CONTROLS | ControlTypes.TIMEWARP, Lock); lockOwned = true;
+            var engines = new List<EngineRow>();
+            foreach (Part part in vessel.parts.OrderBy(p => p.flightID)) for (int i = 0; i < part.Modules.Count; i++)
+            {
+                ModuleEngines engine = part.Modules[i] as ModuleEngines;
+                if (engine == null || !engine.EngineIgnited) continue;
+                var row = new EngineRow { partId = part.flightID, moduleIndex = i, beforeIgnited = engine.EngineIgnited };
+                engines.Add(row); report.shutdownEngines = engines.ToArray();
+                engine.Shutdown(); row.afterIgnited = engine.EngineIgnited;
+                if (row.afterIgnited) throw new InvalidOperationException("Stock engine shutdown did not establish the quiet reload fixture.");
+            }
+            report.shutdownEngines = engines.ToArray();
             BeginCamera(); Record("admitted");
         }
         void SaveAndDepart()
@@ -262,6 +304,7 @@ namespace KspContinuum
         void Cleanup()
         {
             EndCamera();if(lockOwned){InputLockManager.RemoveControlLock(Lock);lockOwned=false;}
+            if (!cameraReleaseObserved) report.cameraRestored = !cameraOwned;
             report.hooksRemoved=CameraMethods.All(m=>m!=null&&Harmony.GetPatchInfo(m)?.Owners.Contains(Hook)!=true);report.controlLockRemoved=!lockOwned&&InputLockManager.GetControlLock(Lock)==ControlTypes.None;
             report.cleanupStatus=report.hooksRemoved&&report.controlLockRemoved&&report.cameraRestored?"removed-owned-hooks-locks-restored-camera":"cleanup-error";
             if(report.cleanupStatus=="cleanup-error")report.faults++;

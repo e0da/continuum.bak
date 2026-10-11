@@ -31,6 +31,9 @@ pub fn validate(r: &Value, run: &str, pid: u32, expected: u32, source: &str) -> 
         || number(r,"resourceTolerance")? != 0.000001 || number(r,"fieldAbsoluteTolerance")? != 0.000001
         || number(r,"fieldRelativeTolerance")? != 0.000001 || number(r,"maximumReloadSimulationSeconds")? != 2.
     { return Err("checkpoint reload ownership or frozen behavior contract failed; raw evidence retained".into()); }
+    if !rows(r,"admissionFailures")?.is_empty() || !(0.0..=60.).contains(&number(r,"settleSeconds")?) {
+        return Err("reload quiet admission or declared settling failed".into());
+    }
     let a = &r["before"]; let b = &r["after"];
     if a["vesselId"] != b["vesselId"] || a["bodyName"] != b["bodyName"] || a["bodyName"].as_str().is_none()
         || a["vesselId"].as_str().is_none_or(|s| s.len()!=36)
@@ -52,6 +55,17 @@ pub fn validate(r: &Value, run: &str, pid: u32, expected: u32, source: &str) -> 
             || a["instanceId"]==b["instanceId"] || number(a,"instanceId")?==0. || number(b,"instanceId")?==0.
             || a["name"].as_str().is_none_or(|s|s.is_empty()) || a["crew"].as_array().is_none() || a["modules"].as_array().is_none()
         { return Err("reload part/crew/module ownership differs".into()); }
+    }
+    let mut shutdowns = BTreeSet::new();
+    for engine in rows(r,"shutdownEngines")? {
+        let id = engine["partId"].as_u64().ok_or("reload shutdown part missing")?;
+        let index = engine["moduleIndex"].as_u64().ok_or("reload shutdown module missing")? as usize;
+        let part = ap.iter().find(|p|p["flightId"]==id).ok_or("reload shutdown part not in snapshot")?;
+        let modules = rows(part,"modules")?;
+        if !shutdowns.insert((id,index)) || engine["beforeIgnited"]!=true || engine["afterIgnited"]!=false
+            || modules.get(index).and_then(Value::as_str).is_none_or(|name|!name.starts_with("ModuleEngines,") && !name.starts_with("ModuleEnginesFX,")) {
+            return Err("reload stock engine shutdown readback failed".into());
+        }
     }
     let af=rows(a,"fields")?; let bf=rows(b,"fields")?;
     if af.len()!=bf.len() || a["excludedFields"]!=b["excludedFields"] { return Err("reload field census differs".into()); }

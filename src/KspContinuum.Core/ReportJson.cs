@@ -78,6 +78,7 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.CheckpointReloadQualification+ResourceRow" ||
                  type.FullName == "KspContinuum.CheckpointReloadQualification+PartRow" ||
                  type.FullName == "KspContinuum.CheckpointReloadQualification+MembershipRow" ||
+                 type.FullName == "KspContinuum.CheckpointReloadQualification+EngineRow" ||
                  type.FullName == "KspContinuum.CheckpointReloadQualification+SnapshotRow" ||
                  type.FullName == "KspContinuum.VesselRuntimeCapture+ResultRow" ||
                  type.FullName == "KspContinuum.FlightLocalCamera+Report" ||
