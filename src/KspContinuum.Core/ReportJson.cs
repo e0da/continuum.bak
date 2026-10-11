@@ -100,6 +100,10 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.FlightRenderCensus+Group" ||
                  type.FullName == "KspContinuum.FlightRenderCensus+MaterialRow" ||
                  type.FullName == "KspContinuum.FlightAeroBatcher+Report" ||
+                 type.FullName == "KspContinuum.AeroIntegrationAttribution+ReportData" ||
+                 type.FullName == "KspContinuum.AeroIntegrationAttribution+MethodRow" ||
+                 type.FullName == "KspContinuum.AeroIntegrationAttribution+Window" ||
+                 type.FullName == "KspContinuum.AeroIntegrationAttribution+CurveReuseRow" ||
                  type.FullName == "KspContinuum.FlightIntegratorUpdateAttribution+ReportData" ||
                  type.FullName == "KspContinuum.FlightIntegratorUpdateAttribution+Window" ||
                  type.FullName == "KspContinuum.FlightAeroFieldRenderer+Report" ||
