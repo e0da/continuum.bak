@@ -93,14 +93,14 @@ static class MenuShaderCook
             var attributes = Attributes.ToList();
             foreach (var pair in new[] { (1u, "HideInInspector"), (2u, "PerRendererData"), (4u, "NoScaleOffset"), (8u, "Normal") }) if ((Flags & pair.Item1) != 0 && !attributes.Contains(pair.Item2)) attributes.Add(pair.Item2);
             if (attributes.Any(a => a.Length > 256 || a.Any(c => c is '[' or ']' or '\r' or '\n'))) throw new InvalidDataException("Unsafe property attribute.");
-            string type = Kind switch { 0 => "Color", 1 => "Vector", 2 => "Float", 3 => "Range(" + Number(Default[1]) + "," + Number(Default[2]) + ")", 4 when TextureDimension == 2 => "2D", _ => throw new InvalidDataException("Unsupported original property type/dimension: " + Name) };
+            string type = Kind switch { 0 => "Color", 1 => "Vector", 2 => "Float", 3 => "Range(" + Number(Default[1]) + "," + Number(Default[2]) + ")", 4 when TextureDimension == 1 => "Any", 4 when TextureDimension == 2 => "2D", _ => throw new InvalidDataException("Unsupported original property type/dimension: " + Name) };
             string value = Kind switch { 0 or 1 => "(" + string.Join(",", Default.Select(Number)) + ")", 2 or 3 => Number(Default[0]), 4 => Quote(TextureDefault) + "{}", _ => throw new InvalidDataException("Unsupported property.") };
             return string.Join("", attributes.Select(a => "[" + a + "]")) + Name + "(" + Quote(Description) + "," + type + ")=" + value;
         }
         public string Uniform() => (Kind == 4 ? "sampler2D " : Kind is 0 or 1 ? "float4 " : "float ") + Name + ";";
     }
     static JsonElement Child(JsonElement node, string name) => node.GetProperty("children").EnumerateArray().Single(c => c.GetProperty("name").GetString() == name);
-    static Dictionary<string, List<Contract>> ReadContracts(string recovery)
+    static Dictionary<string, List<Contract>> ReadContracts(string recovery, string? selectedName = null)
     {
         string manifest = Path.Combine(recovery, "recovery.json");
         if (!File.Exists(manifest) || new FileInfo(manifest).Length > 1024 * 1024) throw new InvalidDataException("Bounded recovery manifest required.");
@@ -109,7 +109,7 @@ static class MenuShaderCook
         foreach (var row in index.RootElement.GetProperty("rows").EnumerateArray())
         {
             string name = row.GetProperty("name").GetString()!, entry = row.GetProperty("entry").GetString()!;
-            if (!(name.StartsWith("KSP/", StringComparison.Ordinal) || name.StartsWith("Terrain/Scaled Planet", StringComparison.Ordinal) || name == "Sprite/Simple Texture (Unlit)" || name == "MaskedTexture")) continue;
+            if (selectedName != null ? name != selectedName : !(name.StartsWith("KSP/", StringComparison.Ordinal) || name.StartsWith("Terrain/Scaled Planet", StringComparison.Ordinal) || name == "Sprite/Simple Texture (Unlit)" || name == "MaskedTexture")) continue;
             if (!Regex.IsMatch(entry, "^shader-[0-9]{2}$")) throw new InvalidDataException("Unsafe recovery entry.");
             string path = Path.Combine(recovery, entry, "parsed-form.json");
             if (!File.Exists(path) || new FileInfo(path).Length > 8 * 1024 * 1024) throw new InvalidDataException("Bounded shader metadata required.");
@@ -140,5 +140,88 @@ static class MenuShaderCook
             }
         }
         return contracts;
+    }
+    public static int Bind(string[] args)
+    {
+        string recovery = Path.GetFullPath(args[1]), input = Path.GetFullPath(args[2]), output = Path.GetFullPath(args[3]), receiptPath = Path.GetFullPath(args[4]);
+        if (!Path.IsPathRooted(args[1]) || !Path.IsPathRooted(args[3]) || !Path.IsPathRooted(args[4]) || output == input || receiptPath == input || output == receiptPath || File.Exists(output) || File.Exists(receiptPath)) throw new InvalidDataException("Absolute private recovery and separate new output/receipt required.");
+        if (!File.Exists(input) || new FileInfo(input).Length > 1024 * 1024) throw new InvalidDataException("Bounded existing shader source required.");
+        string inputSha = Hash(input), text = File.ReadAllText(input);
+        var tokens = Tokens(text);
+        int shaderToken = tokens.FindIndex(t => t.Text == "Shader");
+        if (shaderToken < 0 || shaderToken + 1 >= tokens.Count || !tokens[shaderToken + 1].Text.StartsWith('"') || tokens.Count(t => t.Text == "Shader") != 1) throw new InvalidDataException("One explicit shader declaration required.");
+        string shaderName = JsonSerializer.Deserialize<string>(tokens[shaderToken + 1].Text) ?? throw new InvalidDataException("Shader name absent.");
+        string originalName = shaderName.Contains("/ContinuumOriginal-", StringComparison.Ordinal) ? shaderName.Substring(0, shaderName.LastIndexOf("/ContinuumOriginal-", StringComparison.Ordinal)) : shaderName;
+        var contracts = ReadContracts(recovery, originalName);
+        if (!contracts.TryGetValue(originalName, out var variants)) throw new InvalidDataException("Shader original identity not recovered.");
+        Contract contract;
+        if (variants.Count == 1) { contract = variants[0]; if (shaderName != originalName && shaderName != contract.DonorName) throw new InvalidDataException("Unrecognized donor alias."); }
+        else
+        {
+            if (shaderName == originalName) throw new InvalidDataException("Different same-name contracts require an explicit identity donor alias.");
+            contract = variants.SingleOrDefault(v => v.DonorName == shaderName) ?? throw new InvalidDataException("Unrecognized identity donor alias.");
+        }
+        int propertyToken = tokens.FindIndex(t => t.Text == "Properties");
+        if (propertyToken < 0 || tokens.Count(t => t.Text == "Properties") != 1 || tokens[propertyToken + 1].Text != "{") throw new InvalidDataException("One shader Properties block required.");
+        int opening = propertyToken + 1, closing = opening, depth = 0;
+        for (; closing < tokens.Count; closing++) { if (tokens[closing].Text == "{") depth++; if (tokens[closing].Text == "}" && --depth == 0) break; }
+        if (closing == tokens.Count) throw new InvalidDataException("Unbalanced shader Properties.");
+        string prefix = text.Substring(0, tokens[opening].End), body = text.Substring(tokens[closing].Start), originalBody = body;
+        int cullReplacements = 0; int? originalCull = null; string? originalCullBinding = null;
+        if (!contract.Properties.Any(p => p.Name == "_CullMode") && Regex.IsMatch(body, @"\bCull\s*\[\s*_CullMode\s*\]"))
+        {
+            var states = new List<int>(); var bindings = new List<string>();
+            foreach (var source in contract.Sources)
+            {
+                using var parsed = JsonDocument.Parse(File.ReadAllText(source.MetadataFile));
+                void Visit(JsonElement node)
+                {
+                    if (node.GetProperty("name").GetString() == "culling")
+                    {
+                        double value = Child(node, "val").GetProperty("value").GetDouble();
+                        string? binding = Child(node, "name").GetProperty("value").GetString();
+                        if ((binding != "<noninit>" && binding != "_CullMode") || value != Math.Truncate(value) || value < 0 || value > 2) throw new InvalidDataException("Original culling state cannot be reconstructed.");
+                        states.Add((int)value); bindings.Add(binding);
+                    }
+                    if (node.TryGetProperty("children", out var children)) foreach (var child in children.EnumerateArray()) Visit(child);
+                }
+                Visit(parsed.RootElement);
+            }
+            if (states.Count == 0 || states.Distinct().Count() != 1 || bindings.Distinct().Count() != 1) throw new InvalidDataException("Original culling states disagree.");
+            originalCull = states[0]; originalCullBinding = bindings[0];
+            if (originalCullBinding == "<noninit>")
+            {
+                string mode = originalCull == 0 ? "Off" : originalCull == 1 ? "Front" : "Back";
+                body = Regex.Replace(body, @"\bCull\s*\[\s*_CullMode\s*\]", _ => { cullReplacements++; return "Cull " + mode; });
+            }
+        }
+        string result = prefix + "\n" + string.Join("\n", contract.Properties.Select(p => p.Declaration())) + "\n" + body;
+        if (Hash(input) != inputSha || contract.Sources.Any(s => Hash(s.MetadataFile) != s.MetadataSha256)) throw new InvalidDataException("Binding input changed.");
+        string DigestText(string value) => Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+        var receipt = new { schema = "continuum-private-menu-property-binding/v1", input, inputSha256 = inputSha, output, outputSha256 = DigestText(result), shaderName, originalName, originalPropertyContractSha256 = contract.Digest, propertyCount = contract.Properties.Length, sources = contract.Sources, originalCull, originalCullBinding, cullReplacements, bodyBeforeSha256 = DigestText(originalBody), bodyAfterSha256 = DigestText(body), programBodyPreserved = originalBody == body, bodyTreatment = cullReplacements == 0 ? "verbatim (including recovered dynamic cull binding when declared by original)" : "Only Cull [_CullMode] replaced by recovered explicit original constant; program body otherwise verbatim." };
+        using (var stream = new FileStream(output, FileMode.CreateNew, FileAccess.Write)) using (var writer = new StreamWriter(stream)) writer.Write(result);
+        File.WriteAllText(receiptPath, JsonSerializer.Serialize(receipt, new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+        Console.WriteLine("Bound exact original properties: " + shaderName + "; explicit cull repairs=" + cullReplacements); return 0;
+    }
+    sealed record Token(string Text, int Start, int End);
+    static List<Token> Tokens(string source)
+    {
+        var result = new List<Token>(); int position = 0;
+        while (position < source.Length)
+        {
+            char c = source[position]; if (char.IsWhiteSpace(c)) { position++; continue; }
+            if (c == '/' && position + 1 < source.Length && source[position + 1] == '/') { while (position < source.Length && source[position] != '\n') position++; continue; }
+            if (c == '/' && position + 1 < source.Length && source[position + 1] == '*') { int end = source.IndexOf("*/", position + 2, StringComparison.Ordinal); if (end < 0) throw new InvalidDataException("Unterminated shader comment."); position = end + 2; continue; }
+            int start = position++;
+            if (c == '"')
+            {
+                bool closed = false;
+                while (position < source.Length) { char next = source[position++]; if (next == '\\') { if (position == source.Length) throw new InvalidDataException("Unterminated shader string."); position++; } else if (next == '"') { closed = true; break; } }
+                if (!closed) throw new InvalidDataException("Unterminated shader string.");
+            }
+            else if (char.IsLetterOrDigit(c) || c == '_') while (position < source.Length && (char.IsLetterOrDigit(source[position]) || source[position] == '_')) position++;
+            result.Add(new Token(source.Substring(start, position - start), start, position)); if (result.Count > 200000) throw new InvalidDataException("Shader token bound exceeded.");
+        }
+        return result;
     }
 }

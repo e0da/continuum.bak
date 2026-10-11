@@ -12,6 +12,7 @@ if (args.Length == 5 && args[0] == "recover-menu") return MenuShaderRecovery.Run
 if (args.Length == 4 && args[0] == "menu-materials") return MenuShaderRecovery.Materials(args);
 if (args.Length == 6 && args[0] == "graft-menu") return MenuShaderGraft.Run(args);
 if ((args.Length == 4 || args.Length == 5) && args[0] == "prepare-menu-cook") return MenuShaderCook.Run(args);
+if (args.Length == 5 && args[0] == "bind-menu-properties") return MenuShaderCook.Bind(args);
 
 if (!(args.Length == 3 && args[0] == "inspect") &&
     !(args.Length == 6 && (args[0] == "graft" || args[0] == "graft-list")))
