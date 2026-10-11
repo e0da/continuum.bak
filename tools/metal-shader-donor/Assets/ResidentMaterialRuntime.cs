@@ -293,7 +293,7 @@ public sealed class ResidentMaterialRuntime : IDisposable
         if(disposed) return; disposed=true; if(lightObject!=null) { lightObject.SetActive(false); UnityEngine.Object.Destroy(lightObject); }
         if(activated) { if(priorShaderGlobals!=null) foreach(var p in priorShaderGlobals) { if(p.kind==2) Shader.SetGlobalFloat(p.name,p.value[0]); else Shader.SetGlobalVector(p.name,V(p.value)); } if(activeCamera!=null) { activeCamera.cullingMask=priorCameraMask; activeCamera.transform.SetPositionAndRotation(priorPosition,priorRotation); activeCamera.fieldOfView=priorFov; activeCamera.nearClipPlane=priorNear; activeCamera.farClipPlane=priorFar; } RenderSettings.ambientMode=priorAmbient; RenderSettings.ambientSkyColor=priorSky; RenderSettings.ambientEquatorColor=priorEquator; RenderSettings.ambientGroundColor=priorGround; RenderSettings.ambientIntensity=priorAmbientIntensity; QualitySettings.shadowDistance=priorShadowDistance; QualitySettings.shadowCascades=priorShadowCascades; }
         foreach(var value in owned) if(value!=null) UnityEngine.Object.Destroy(value);
-        if(shaderLease!=null&&--shaderLease.References==0) { shaderLeases.Remove(BundleSha256); shaderLease.Bundle.Unload(true); }
-        if(originalShaderLease!=null&&--originalShaderLease.References==0) { shaderLeases.Remove(OriginalBundleSha256); originalShaderLease.Bundle.Unload(true); }
+        if(shaderLease!=null&&--shaderLease.References==0) { shaderLeases.Remove(BundleSha256); if(shaderLease.Bundle!=null) shaderLease.Bundle.Unload(true); }
+        if(originalShaderLease!=null&&--originalShaderLease.References==0) { shaderLeases.Remove(OriginalBundleSha256); if(originalShaderLease.Bundle!=null) originalShaderLease.Bundle.Unload(true); }
     }
 }
