@@ -88,6 +88,8 @@ pub struct Startup {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Diagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flight_lighting: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub convection_capture: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub integrator_update_attribution: bool,
@@ -224,6 +226,7 @@ impl ResolvedLaunch {
                 work_scheduler: boolean("--startup-work-scheduler")?,
             },
             diagnostics: Diagnostics {
+                flight_lighting: options.get("--flight-lighting").cloned(),
                 convection_capture: path("--flight-convection-capture"),
                 integrator_update_attribution: boolean("--flight-integrator-update-attribution")?,
                 backend_menu_presentation: path("--backend-menu-presentation"),
@@ -253,6 +256,13 @@ impl ResolvedLaunch {
             return Err("timeout must be 1..1800 seconds".into());
         }
         let s = &self.startup;
+        if let Some(mode) = &self.diagnostics.flight_lighting {
+            if !["frontlit", "side-lit", "backlit"].contains(&mode.as_str())
+                || self.flight.as_ref().is_none_or(|flight| flight.entry_target_altitude.is_none())
+            {
+                return Err("physical flight lighting requires frontlit, side-lit or backlit and an explicit entry target; sunward placement is a declared workload treatment".into());
+            }
+        }
         if let Some(path) = &self.diagnostics.convection_capture {
             if self.flight.is_none()
                 || self.diagnostics.integrator_update_attribution
@@ -466,6 +476,7 @@ impl ResolvedLaunch {
 }
 
 const FLIGHT_KEYS: &[(&str, &str)] = &[
+    ("expectedParts", "expected-parts"),
     ("researchPanel", "research-panel"),
     ("localCamera", "local-camera"),
     ("save", "save"),

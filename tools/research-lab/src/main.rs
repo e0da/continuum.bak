@@ -38,6 +38,8 @@ fn run() -> Result<()> {
         }
     }
     let allowed: &[&str] = match operation.as_str() {
+        "program-catalog" => &["--output"],
+        "program-plan" | "program-prepare" => &["--recipe", "--inputs", "--output"],
         "inventory" => &["--instance", "--output"],
         "admit-cache" => &["--instance", "--startup-cache", "--output"],
         "install-native-assets" => &["--instance", "--manifest", "--output"],
@@ -55,6 +57,8 @@ fn run() -> Result<()> {
             "--project-sha256",
         ],
         "run" | "resolve" => &[
+            "--flight-lighting",
+            "--flight-expected-parts",
             "--flight-convection-capture",
             "--live-play",
             "--flight-integrator-update-attribution",
@@ -162,6 +166,30 @@ fn run() -> Result<()> {
     };
     let output = Path::new(get("--output")?);
     match operation.as_str() {
+        "program-catalog" => {
+            write_new(output, &json!({"schema":"continuum-reference-program/v1","recipes":continuum_research_lab::reference_program::catalog()}))?;
+        }
+        "program-plan" | "program-prepare" => {
+            let inputs = read(Path::new(get("--inputs")?))?;
+            let plan = continuum_research_lab::reference_program::resolve(get("--recipe")?, &inputs)?;
+            let mut value = serde_json::to_value(&plan).map_err(|e| e.to_string())?;
+            if operation == "program-prepare" {
+                if output.exists() || plan.inputs.derived_profile.exists() {
+                    return Err("program preparation requires fresh plan and profile outputs".into());
+                }
+                let frozen = continuum_research_lab::profile::FrozenLaunch::capture(&plan.inputs.instance, &plan.selection)?;
+                let checkpoint = plan.inputs.instance.join("saves").join(&plan.inputs.save).join(format!("{}.sfs", plan.inputs.checkpoint));
+                if frozen.inputs.get(&checkpoint) != Some(&plan.inputs.checkpoint_sha256)
+                    || continuum_research_lab::reference_program::resolve(get("--recipe")?, &inputs)?.selection.identity_sha256()? != plan.selection.identity_sha256()?
+                {
+                    return Err("program inputs changed while freezing the derived profile".into());
+                }
+                write_new(&plan.inputs.derived_profile, &frozen)?;
+                value["preparedProfile"] = json!({"path":plan.inputs.derived_profile,"sha256":hash(&plan.inputs.derived_profile)?,"status":"frozen-current-inputs"});
+                value["requiredAction"] = json!("Execute the exact existing runArguments; frozen inputs are rechecked by the runner. Compare native outcome with this recipe's behavior contract and preserve parent linkage.");
+            }
+            write_new(output, &value)?;
+        }
         "summarize-integrator" => {
             let path = Path::new(get("--markers")?);
             let before = hash(path)?;
@@ -796,6 +824,7 @@ fn smoke(
         ])
         .arg(&log_path)
         .arg(format!("--continuum-research-run={run_id}"))
+        .args(selection.diagnostics.flight_lighting.as_ref().map(|mode| vec![format!("--continuum-flight-lighting={mode}")]).unwrap_or_default())
         .args(
             selection
                 .diagnostics
@@ -1129,11 +1158,18 @@ fn smoke(
             )?;
             continuum_research_lab::flight::validate_controls(
                 request,
+                selection.diagnostics.flight_lighting.as_deref(),
                 &run_id,
                 child.id(),
                 output,
                 &report,
             )?;
+            if let Some(mode) = selection.diagnostics.flight_lighting.as_deref() {
+                summary["lighting"] = continuum_research_lab::lighting::validate(
+                    mode, &read::<Value>(&output.join("flight-lighting.json"))?, &report, &run_id, child.id(),
+                    &flight_entry.as_ref().ok_or("lighting entry evidence absent")?["report"],
+                )?;
+            }
             summary["localCamera"] = continuum_research_lab::flight::local_camera_summary(
                 request,
                 &read::<Value>(&output.join("local-camera.json"))?,
@@ -1171,7 +1207,7 @@ fn smoke(
             }
             summary["entryEvidence"] = json!(flight_entry);
             summary["cameraReadbacks"] = json!({
-                "requestedCapture":{"contract":"continuum-root-relative-camera/v1","pitch":0.2,"heading":0.3,"distanceMeters":50.0,"fieldOfViewDegrees":60.0,"inputLocked":true},
+                "requestedCapture":if let Some(mode) = selection.diagnostics.flight_lighting.as_deref() { json!({"contract":"continuum-solar-relative-camera/v1","preset":mode,"distanceMeters":150.0,"fieldOfViewDegrees":60.0,"inputLocked":true}) } else { json!({"contract":"continuum-root-relative-camera/v1","pitch":0.2,"heading":0.3,"distanceMeters":50.0,"fieldOfViewDegrees":60.0,"inputLocked":true}) },
                 "captureStart":summary["diagnosticControls"]["report"],
                 "captureEnd":summary["diagnosticControlsEnd"]["report"],
                 "scope":"Root-relative camera pose is checked at camera pre-cull throughout capture; renderer suppression is witnessed separately by each replacement lifecycle."});

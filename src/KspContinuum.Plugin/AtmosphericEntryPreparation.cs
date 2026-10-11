@@ -24,6 +24,9 @@ namespace KspContinuum
             public double latitudeProofErrorDegrees, longitudeProofErrorDegrees;
             public double originalSavedLatitude, originalSavedLongitude, originalSavedAltitudeMeters;
             public double preparedRadiusErrorMeters;
+            public string lightingPlacement = "original-orbit-plane";
+            public double[] preparationSunDirectionZup;
+            public double preparedSolarAlignmentDegrees, placementSpeedErrorMetersPerSecond, placementRadialSpeedErrorMetersPerSecond;
             public string coordinateConvention = "Orbit epoch ZupAtT -> inertial -> epoch body-fixed -> current BodyFrame virtual radial for GetLatitude/GetLongitude; no duplicate body-rotation correction";
             public double admittedAltitudeMeters, admittedUniversalTime, approachWallSeconds;
             public string cleanupStatus = "no-owned-warp-yet";
@@ -87,6 +90,42 @@ namespace KspContinuum
             double mean = anomaly - e * Math.Sin(anomaly), epoch = game.flightState.universalTime;
             var orbit = new Orbit(original.inclination, e, a, original.LAN, original.argOfPeriapsis, mean, epoch, body);
             Vector3d position, velocity; orbit.GetOrbitalStateVectorsAtUT(epoch, out position, out velocity);
+            var entryZup = new Planetarium.CelestialFrame();
+            Planetarium.ZupAtT(epoch, body, ref entryZup);
+            if (Array.Exists(args, arg => arg.StartsWith("--continuum-flight-lighting=", StringComparison.Ordinal)))
+            {
+                if (body.orbit == null || body.orbit.referenceBody != Planetarium.fetch.Sun)
+                    throw new InvalidOperationException("Sunward entry placement requires the stock Kerbin solar orbit.");
+                Vector3d sun = entryZup.WorldToLocal(Planetarium.Zup.LocalToWorld(-body.orbit.getRelativePositionAtUT(epoch))).normalized;
+                Vector3d from = position.normalized;
+                double originalSpeed = velocity.magnitude, originalRadial = Vector3d.Dot(from, velocity);
+                Vector3d axis = Vector3d.Cross(from, sun);
+                double sine = axis.magnitude, cosine = Vector3d.Dot(from, sun);
+                if (sine > 1e-12)
+                {
+                    axis /= sine;
+                    velocity = velocity * cosine + Vector3d.Cross(axis, velocity) * sine + axis * Vector3d.Dot(axis, velocity) * (1 - cosine);
+                }
+                else if (cosine < 0)
+                {
+                    axis = Vector3d.Cross(from, Math.Abs(from.x) < .9 ? Vector3d.right : Vector3d.up).normalized;
+                    velocity = -velocity + 2 * axis * Vector3d.Dot(axis, velocity);
+                }
+                position = sun * radius;
+                orbit.UpdateFromStateVectors(Planetarium.Zup.WorldToLocal(entryZup.LocalToWorld(position)),
+                    Planetarium.Zup.WorldToLocal(entryZup.LocalToWorld(velocity)), body, epoch);
+                orbit.GetOrbitalStateVectorsAtUT(epoch, out position, out velocity);
+                report.lightingPlacement = "sunward-entry-at-source-epoch/v1";
+                report.coordinateConvention += "; lighting: solar relative position/current Zup -> inertial -> epoch Kerbin Zup; UpdateFromStateVectors explicitly converted back to current Zup";
+                report.recipe += " Explicit lighting treatment rotates the entry position and velocity toward the epoch Sun before loading; orbital radius, speed and descending radial speed are preserved. This is a new workload, not the former checkpoint's lighting.";
+                report.preparationSunDirectionZup = new[] { sun.x, sun.y, sun.z };
+                report.preparedSolarAlignmentDegrees = Math.Atan2(Vector3d.Cross(position.normalized, sun).magnitude, Vector3d.Dot(position.normalized, sun)) * 180 / Math.PI;
+                report.placementSpeedErrorMetersPerSecond = velocity.magnitude - originalSpeed;
+                report.placementRadialSpeedErrorMetersPerSecond = Vector3d.Dot(position.normalized, velocity) - originalRadial;
+                if (report.preparedSolarAlignmentDegrees > .0001 || Math.Abs(report.placementSpeedErrorMetersPerSecond) > .0001 ||
+                    Math.Abs(report.placementRadialSpeedErrorMetersPerSecond) > .0001)
+                    throw new InvalidOperationException("Sunward entry placement did not preserve the declared orbital invariants.");
+            }
             double radial = Vector3d.Dot(position, velocity) / position.magnitude;
             report.semiMajorAxis = a; report.eccentricity = e; report.meanAnomalyRadians = mean; report.epoch = epoch;
             report.preparedRadialSpeedMetersPerSecond = radial; report.preparedRadiusErrorMeters = position.magnitude - radius;
@@ -127,8 +166,9 @@ namespace KspContinuum
             proto.orbitSnapShot = new OrbitSnapshot(orbit);
             proto.altitude = position.magnitude - body.Radius; proto.latitude = latitude; proto.longitude = longitude;
             proto.situation = Vessel.Situations.ORBITING;
-            report.semiMajorAxis = a; report.eccentricity = e; report.meanAnomalyRadians = mean; report.epoch = epoch;
-            report.inclinationDegrees = original.inclination; report.lanDegrees = original.LAN; report.argumentOfPeriapsisDegrees = original.argOfPeriapsis;
+            report.semiMajorAxis = orbit.semiMajorAxis; report.eccentricity = orbit.eccentricity; report.meanAnomalyRadians = mean; report.epoch = epoch;
+            report.inclinationDegrees = orbit.inclination; report.lanDegrees = orbit.LAN; report.argumentOfPeriapsisDegrees = orbit.argumentOfPeriapsis;
+            report.meanAnomalyRadians = orbit.meanAnomalyAtEpoch;
             report.preparedLatitude = proto.latitude; report.preparedLongitude = proto.longitude; report.preparedRadialSpeedMetersPerSecond = radial;
             loaderDirectory = directory; Write();
         }

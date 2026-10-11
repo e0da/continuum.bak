@@ -16,6 +16,8 @@ pub struct Request {
     pub research_panel: ResearchPanelMode,
     #[serde(default)]
     pub local_camera: LocalCameraMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_parts: Option<u32>,
     pub save: String,
     pub checkpoint: String,
     pub maximum_delta: f64,
@@ -242,6 +244,7 @@ impl Request {
         Ok(Some(Self {
             research_panel,
             local_camera,
+            expected_parts: options.get("--flight-expected-parts").map(|value| value.parse::<u32>().map_err(|e| e.to_string()).and_then(|parts| if (1..=8192).contains(&parts) { Ok(parts) } else { Err("expected parts must be 1..8192".into()) })).transpose()?,
             save: name("--flight-save")?,
             checkpoint: name("--flight-checkpoint")?,
             maximum_delta: number("--flight-max-delta", 0.04, 0.001, 1.0)?,
@@ -297,6 +300,9 @@ impl Request {
         ];
         if let Some(mode) = &self.world_draw {
             args.push(format!("--continuum-flight-world-draw={mode}"));
+        }
+        if let Some(parts) = self.expected_parts {
+            args.push(format!("--continuum-scale-parts={parts}"));
         }
         if self.camera_chain {
             args.push("--continuum-flight-camera-chain".into());
@@ -831,6 +837,7 @@ pub fn retain(directory: &Path, output: &Path) -> Result<(Value, Value, Value)> 
     }
     for name in [
         "local-camera.json",
+        "flight-lighting.json",
         "diagnostic-controls.json",
         "diagnostic-controls-end.json",
         "aero-batch.json",
@@ -1331,11 +1338,11 @@ mod tests {
         let valid = json!({"cameraFrozen":true,"cameraContract":"continuum-root-relative-camera/v1: fixture",
             "cameraFailure":null,"cameraDistance":50.0,"cameraFieldOfView":60.0,
             "cameraObservedInvocations":10,"cameraMaxPositionErrorMeters":0.001,"cameraMaxAngleErrorDegrees":0.001});
-        assert!(validate_frozen_camera(&valid, true).is_ok());
+        assert!(validate_frozen_camera(&valid, true, None).is_ok());
         let mut missing = valid.clone(); missing["cameraObservedInvocations"] = json!(0);
-        assert!(validate_frozen_camera(&missing, true).is_err());
+        assert!(validate_frozen_camera(&missing, true, None).is_err());
         let mut drift = valid.clone(); drift["cameraMaxPositionErrorMeters"] = json!(0.1);
-        assert!(validate_frozen_camera(&drift, true).is_err());
+        assert!(validate_frozen_camera(&drift, true, None).is_err());
     }
     #[test]
     fn interpolation_uses_whole_distribution_and_rejects_missing_values() {
@@ -1446,6 +1453,7 @@ mod tests {
         let request = Request {
             research_panel: ResearchPanelMode::Visible,
             local_camera: LocalCameraMode::Stock,
+            expected_parts: None,
             save: "Lab".into(),
             checkpoint: "vacuum".into(),
             maximum_delta: 0.04,
@@ -1551,6 +1559,7 @@ mod tests {
         let request = Request {
             research_panel: ResearchPanelMode::Visible,
             local_camera: LocalCameraMode::Stock,
+            expected_parts: None,
             save: "Lab".into(),
             checkpoint: "vacuum".into(),
             maximum_delta: 0.04,
@@ -1875,11 +1884,12 @@ fn validate_panel_controls(request: &Request, controls: &Value) -> Result<()> {
     }
     Ok(())
 }
-fn validate_frozen_camera(controls: &Value, end: bool) -> Result<()> {
+fn validate_frozen_camera(controls: &Value, end: bool, lighting: Option<&str>) -> Result<()> {
+    let contract = lighting.map(|mode| format!("continuum-solar-relative-camera/v1:{mode}")).unwrap_or_else(|| "continuum-root-relative-camera/v1:".into());
     if controls["cameraFrozen"] != true
-        || !controls["cameraContract"].as_str().unwrap_or("").starts_with("continuum-root-relative-camera/v1:")
+        || !controls["cameraContract"].as_str().unwrap_or("").starts_with(&contract)
         || !controls["cameraFailure"].is_null()
-        || controls["cameraDistance"].as_f64() != Some(50.0)
+        || controls["cameraDistance"].as_f64() != Some(if lighting.is_some() { 150.0 } else { 50.0 })
         || controls["cameraFieldOfView"].as_f64() != Some(60.0)
         || (end && controls["cameraObservedInvocations"].as_u64().unwrap_or(0) == 0)
     {
@@ -1896,12 +1906,18 @@ fn validate_frozen_camera(controls: &Value, end: bool) -> Result<()> {
 
 pub fn validate_controls(
     request: &Request,
+    lighting: Option<&str>,
     run_id: &str,
     pid: u32,
     output: &Path,
     report: &Value,
 ) -> Result<()> {
     let aero_treatment = request.no_aero_fx || request.aero_quality.is_some();
+    if let Some(parts) = request.expected_parts {
+        if report["frames"].as_array().is_none_or(|frames| frames.is_empty() || frames.iter().any(|frame| frame["parts"].as_u64() != Some(parts as u64))) {
+            return Err("captured topology differs from the selected program situation".into());
+        }
+    }
     let controls_path = output.join("diagnostic-controls.json");
     if controls_path.exists() {
         let controls: Value = read(&controls_path)?;
@@ -1912,7 +1928,7 @@ pub fn validate_controls(
         {
             return Err("diagnostic control evidence identity or effective controls differ".into());
         }
-        validate_frozen_camera(&controls, false)?;
+        validate_frozen_camera(&controls, false, lighting)?;
         validate_panel_controls(request, &controls)?;
         if aero_treatment {
             if controls["phase"] != "capture-start" {
@@ -1932,7 +1948,7 @@ pub fn validate_controls(
         {
             return Err("end diagnostic control evidence identity differs".into());
         }
-        validate_frozen_camera(&end, true)?;
+        validate_frozen_camera(&end, true, lighting)?;
         validate_panel_controls(request, &end)?;
         if aero_treatment {
             validate_aero_boundary(request, &end)?;

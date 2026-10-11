@@ -43,16 +43,16 @@ fn row(
 ) -> Recipe {
     Recipe { id: id.into(), parent: parent.map(str::to_owned), kind: kind.into(), name: name.into(), capability,
         boundary: boundary.into(), objectives: vec!["Observe faithful state/ownership transitions and complete-workload cost".into()],
-        fixed_inputs: vec!["Checkpoint bytes, parent receipt, physical parts, mod/controller/settings and admitted launch-profile contents".into()],
+        fixed_inputs: vec!["Checkpoint bytes, parent receipt, vessel.parts.Count (including physicsless parts), mod/controller/settings and admitted launch-profile contents".into()],
         varied_inputs: vec!["One declared treatment; normal versus 4x is a different situation".into()],
         behavior_proof: vec!["Actual capture completion, unchanged topology/resources where required, owned cleanup and source restoration; observation is not deterministic replay".into()],
         cost_measurements: vec!["Frame distribution, achieved simulation rate, non-overlapping PlayerLoop scopes; intrusive diagnostics separately declared".into()],
-        checkpoint_requirements: vec!["Explicit private save/checkpoint/SHA256, expected physical parts, parent attempt and receipt SHA256".into()],
+        checkpoint_requirements: vec!["Explicit private save/checkpoint/SHA256, expected vessel.parts.Count (including physicsless parts), parent attempt and receipt SHA256".into()],
         lighting_recommendation: "Physically frontlit or side-lit for inspection; preserve backlit stress as a separate pinned recipe".into(), next_action: next.into() }
 }
 pub fn catalog() -> Vec<Recipe> {
     use Capability::*;
-    vec![
+    let mut rows = vec![
         row("CSP",None,"program","Continuum Reference Space Program",Catalog,"Missions generate durable checkpoints and integration evidence","Choose a situation, then supply private pins"),
         row("CSP-STATION",Some("CSP"),"mission","Modular orbital station",Catalog,"Launch, rendezvous, repeated assembly and operation","Record a complete mission and preserve checkpoints at each transition"),
         row("station-vacuum",Some("CSP-STATION"),"situation","Intact station in vacuum",RequiresPrivatePins,"Loaded physical vessel; normal-time ten-simulation-second window","Supply intact Kerbin orbital checkpoint and launch profile"),
@@ -64,13 +64,97 @@ pub fn catalog() -> Vec<Recipe> {
         row("station-loading",Some("CSP-STATION"),"situation","Multi-vessel packing/loading",Planned,"Packed/unpacked range transitions","Implement range driver and loaded-vessel/physics ownership ledger"),
         row("CSP-ENTRY",Some("CSP"),"mission","Intact atmospheric entry",Catalog,"Transfer from orbit through atmosphere; preserve failures","Freeze craft and approach recipe; breakup is invalid for intact measurement"),
         row("entry-normal",Some("CSP-ENTRY"),"situation","Already atmospheric normal-time flight",RequiresPrivatePins,"Kerbin atmospheric checkpoint; normal-time timed capture","Supply physically atmospheric checkpoint; no approach implied"),
+        row("entry-frontlit",Some("CSP-ENTRY"),"micro-situation","Frontlit60km physical inspection",RequiresPrivatePins,"Declared Sunward orbital rotation before loading; intact60km capture,3simseconds","Supply intact entry checkpoint; require physical sun/view/body geometry and cleanup"),
+        row("entry-side-lit",Some("CSP-ENTRY"),"micro-situation","Side-lit60km physical inspection",RequiresPrivatePins,"Same Sunward placement;75degree camera phase and limb composition","Supply same intact checkpoint/profile; inspect pixels, do not claim performance improvement"),
         row("entry-45km",Some("CSP-ENTRY"),"micro-situation","Cross45km before capture",RequiresPrivatePins,"Existing in-memory entry preparation;180s approach and60s capture deadlines","Supply supported checkpoint; intact topology required at admission"),
         row("CSP-0001",Some("CSP"),"mission","Minmus Pathfinder",ExistingMissionMode,"Existing launch-to-landing mission; sideways touchdown is not upright qualification","Use existing mission documentation; add owned-lab adapter before catalog command execution"),
         row("CSP-0002",Some("CSP"),"mission","Minmus Survey1",ExistingMissionMode,"Existing sunny-site targeted landing; historical trials missed100m target","Preserve unchanged target gate and historical failures"),
         row("minmus-orbit",Some("CSP-0002"),"situation","Minmus orbit checkpoint descent",ExistingMissionMode,"Existing checkpoint survey mode rebuilds fresh autopilot state","Bridge existing checkpoint/attempt flags to owned runner; do not pretend generic flight capture supports descent"),
         row("landing-contact",Some("minmus-orbit"),"micro-situation","Touchdown and settle",Planned,"Leg contact, attitude, intact craft, daylight and distance","Implement bounded contact capture and actual acceptance/cleanup"),
         row("scene-save-reload",Some("CSP"),"situation","Scene transition and save/reload",Planned,"Persistence, mod initialization and ownership restoration","Implement transition driver and semantic reload comparison"),
-    ]
+    ];
+    rows.extend([
+        row(
+            "launch-burn-stage",
+            Some("CSP"),
+            "mission",
+            "Launch, finite burn and staging",
+            Planned,
+            "Ascent, engine/resource flow, staging and plume transitions",
+            "Implement launch/control driver with stage/engine/resource witnesses",
+        ),
+        row(
+            "lunar-sortie",
+            Some("CSP"),
+            "mission",
+            "Lunar science sortie and return",
+            Planned,
+            "Transfer, landing, science/EVA and return checkpoints",
+            "Author vehicle/mission and observe each actual handoff",
+        ),
+        row(
+            "lunar-science-eva",
+            Some("lunar-sortie"),
+            "situation",
+            "Science and EVA surface work",
+            Planned,
+            "Crew/experiment state, EVA vessel split and reboarding",
+            "Implement science/EVA driver and inventory/crew persistence proof",
+        ),
+        row(
+            "lunar-return",
+            Some("lunar-sortie"),
+            "situation",
+            "Ascent, transfer and recovery",
+            Planned,
+            "Surface departure, SOI transitions and recovered crew/science",
+            "Implement return and recovery driver; preserve before/after saves",
+        ),
+        row(
+            "map-render",
+            Some("CSP"),
+            "micro-situation",
+            "Map zoom and orbital render inspection",
+            Planned,
+            "Scaled/local camera transition, zoom, labels and orbit geometry",
+            "Implement bounded map camera driver and visual/state restoration",
+        ),
+        row(
+            "dlc-robotics",
+            Some("CSP-STATION"),
+            "micro-situation",
+            "Robotic deployment",
+            Planned,
+            "DLC servo articulation, resource draw and collision/contact",
+            "Supply supported DLC craft; implement actuator driver and structural proof",
+        ),
+    ]);
+    for recipe in &mut rows {
+        let (systems,proof,factors) = match recipe.id.as_str() {
+            "station-vacuum" => ("PhysX joints, FI/modules, render graph and controller scheduling", "Intact pinned part identities; normal-time simulation rate; physical vessel ownership", "Part count and rendering treatment; fixed orbit, settings and control policy"),
+            "station-vacuum-4x" => ("Fixed-step pressure, catch-up budget and thermal/module scheduling", "Actual LOW4x warp and effective timestep; intact topology; no stale step publication", "Warp only against same normal-time checkpoint; record Unity timestep clamp"),
+            "station-pulse" => ("Force publication, joint compliance, angular response and controller reaction", "Applied impulse/duration, selected body identity, flex/rotation response and zero breakup", "Pulse versus quiet with identical witness cadence; frozen force and selected part"),
+            "station-rendezvous" => ("Orbit prediction, maneuver planning/execution and relative velocity control", "Planning is not execution; actual plane/phasing/intercept errors and fuel consumed", "Relative geometry, target and burn policy; fixed two-vessel identities"),
+            "station-docking" => ("Port alignment, joint creation, vessel merge, resource/control ownership", "Actual dock state; conserved parts/resources/crew; one merged owner and restored hooks", "Relative velocity/alignment and RCS policy; fixed paired-craft close-approach checkpoint"),
+            "station-undocking" => ("Joint removal, vessel split and independent scheduling", "Two actual vessel owners; conserved parts/resources/crew; no ghost force/controller owner", "Separation impulse and control assignment; fixed docked source"),
+            "station-loading" => ("Packed ranges, loaded vessels, floating origin and physics construction", "Actual pack/unpack events, preserved orbit/resource state and no duplicate live ownership", "Range/relative speed; fixed vessels, topology and loading thresholds"),
+            "entry-normal"|"entry-45km" => ("FI convection/occlusion, aero forces, heating, effects and structural physics", "Intact admission/capture; actual altitude/density/speed/heating; stock aero/thermal authority", "Entry altitude/vehicle or replacement; freeze atmosphere/velocity and do not conflate warp"),
+            "entry-frontlit"|"entry-side-lit" => ("Physical lighting, material visibility, aero-effect composition and camera publication", "Actual phase/daylight/body geometry, decoded pixels, intact parts and exact camera cleanup", "Camera phase only across same declared Sunward orbit;3simseconds at60km, stock rendering"),
+            "launch-burn-stage" => ("Thrust/resource flow, aero/plume rendering, staging and joint topology", "Executed burn and stage events; impulse/fuel accounting; intended surviving assembly", "Throttle/stage recipe and altitude; fixed vehicle, fuel, engine and atmosphere"),
+            "lunar-sortie"|"lunar-return" => ("Orbital/SOI transitions, landing/ascent, science persistence and recovery", "Actual encounters/contact/recovery; retained crew/science; checkpoints linked to full mission", "Target/body/vehicle; fixed maneuver and mission acceptance criteria"),
+            "lunar-science-eva" => ("Science data, crew inventory and EVA/reboarding ownership", "Actual experiment results and EVA/reboard; conserved crew/items and reload persistence", "Experiment/EVA sequence; fixed surface site, sunlight and craft"),
+            "map-render" => ("Scaled-space rendering, camera/label/trajectory publication", "Actual zoom/scene coverage and unchanged physical state; restore map/camera mode", "Zoom and selected overlays; fixed orbit/time/viewport"),
+            "dlc-robotics" => ("Servo/control updates, articulation/contact, electricity and rendering", "Actual actuator pose, travel limits, resource use and unchanged intended topology", "Deployment schedule/load; fixed DLC version, craft and joint recipe"),
+            "landing-contact" => ("Landing guidance, rigidbody contact, legs and thermal/resource state", "Actual touchdown, upright settling/daylight and unchanged100m target criterion", "Guidance policy/terrain/contact; fixed checkpoint and target"),
+            "scene-save-reload" => ("Serialization, scene teardown and live mod initialization", "Semantic state/resource/crew equality after reload and removed obsolete owners", "Scene/serialization treatment; fixed source and mod graph"),
+            _ => ("Mission integration and durable checkpoint production", "Retain actual mission outcomes; no automatic success from catalog presence", "One declared mission/implementation question; preserve parent lineage"),
+        };
+        recipe.objectives = vec![systems.into()];
+        recipe.behavior_proof.push(proof.into());
+        recipe.varied_inputs = vec![factors.into()];
+        recipe.cost_measurements.push(format!("Named systems: {systems}; full-window wall/frame cost and event latency; nested scopes not summed"));
+    }
+    rows
 }
 pub fn validate_catalog(rows: &[Recipe]) -> Result<()> {
     let ids: BTreeSet<_> = rows.iter().map(|r| r.id.as_str()).collect();
@@ -111,6 +195,7 @@ pub struct Inputs {
     pub expected_parts: u32,
     pub parent_attempt: String,
     pub parent_receipt_sha256: String,
+    pub parent_receipt: PathBuf,
     pub reservation: PathBuf,
     pub output: PathBuf,
     pub derived_profile: PathBuf,
@@ -126,6 +211,7 @@ pub struct Plan {
     pub run_arguments: Vec<String>,
     pub required_action: &'static str,
     pub qualification: &'static str,
+    pub parent_provenance: String,
 }
 fn digest(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
@@ -148,7 +234,44 @@ pub fn resolve(id: &str, inputs: &Inputs) -> Result<Plan> {
     if hash(&checkpoint)? != inputs.checkpoint_sha256 {
         return Err("private checkpoint SHA256 differs".into());
     }
-    compose(id, inputs, frozen.selection)
+    let parent = verify_parent(inputs)?;
+    let mut plan = compose(id, inputs, frozen.selection)?;
+    plan.parent_provenance = parent;
+    Ok(plan)
+}
+fn verify_parent(i: &Inputs) -> Result<String> {
+    if std::fs::metadata(&i.parent_receipt)
+        .map_err(|e| e.to_string())?
+        .len()
+        > 4 * 1024 * 1024
+    {
+        return Err("parent receipt too large".into());
+    }
+    if hash(&i.parent_receipt)? != i.parent_receipt_sha256 {
+        return Err("parent receipt SHA256 differs".into());
+    }
+    let value: serde_json::Value = crate::read(&i.parent_receipt)?;
+    let identity = value.get("runId").or_else(|| value.get("attemptId"));
+    let known =
+        value.get("schema").and_then(|v| v.as_str()) == Some("continuum-lab-process-smoke/v1");
+    if known && value.get("status").and_then(|v| v.as_str()).is_none() {
+        return Err("native parent receipt status missing".into());
+    }
+    let result = match identity {
+        Some(value) if value.as_str() == Some(i.parent_attempt.as_str()) => {
+            if known {
+                "receipt-bytes-and-native-run-identity-verified"
+            } else {
+                "receipt-bytes-verified-lineage-declared-unknown-schema"
+            }
+        }
+        Some(_) => return Err("parent receipt runId/attemptId differs".into()),
+        None => "receipt-bytes-verified-lineage-declared-unknown-schema",
+    };
+    if hash(&i.parent_receipt)? != i.parent_receipt_sha256 {
+        return Err("parent receipt changed during read".into());
+    }
+    Ok(result.into())
 }
 fn validate_inputs(i: &Inputs) -> Result<()> {
     if ![
@@ -157,6 +280,7 @@ fn validate_inputs(i: &Inputs) -> Result<()> {
         &i.reservation,
         &i.output,
         &i.derived_profile,
+        &i.parent_receipt,
     ]
     .iter()
     .all(|p| p.is_absolute() && p.to_str().is_some())
@@ -194,6 +318,7 @@ fn compose(id: &str, i: &Inputs, mut selection: ResolvedLaunch) -> Result<Plan> 
             id, recipe.next_action
         ));
     }
+    selection.diagnostics.flight_lighting = None;
     let mut options = BTreeMap::from([
         ("--flight-save".into(), i.save.clone()),
         ("--flight-checkpoint".into(), i.checkpoint.clone()),
@@ -202,6 +327,10 @@ fn compose(id: &str, i: &Inputs, mut selection: ResolvedLaunch) -> Result<Plan> 
         ("--flight-settle-seconds".into(), "2".into()),
         ("--flight-resolution".into(), "1920x1080".into()),
         ("--flight-screenshot".into(), "true".into()),
+        (
+            "--flight-expected-parts".into(),
+            i.expected_parts.to_string(),
+        ),
     ]);
     match id {
         "station-vacuum" => {}
@@ -214,6 +343,19 @@ fn compose(id: &str, i: &Inputs, mut selection: ResolvedLaunch) -> Result<Plan> 
         "entry-normal" => {
             options.insert("--flight-atmosphere".into(), "true".into());
         }
+        "entry-frontlit" | "entry-side-lit" => {
+            options.insert("--flight-entry-target-altitude".into(), "60000".into());
+            options.insert("--flight-seconds".into(), "3".into());
+            options.insert("--flight-settle-seconds".into(), "0.5".into());
+            selection.diagnostics.flight_lighting = Some(
+                if id == "entry-frontlit" {
+                    "frontlit"
+                } else {
+                    "side-lit"
+                }
+                .into(),
+            );
+        }
         "entry-45km" => {
             options.insert("--flight-entry-target-altitude".into(), "45000".into());
         }
@@ -221,10 +363,17 @@ fn compose(id: &str, i: &Inputs, mut selection: ResolvedLaunch) -> Result<Plan> 
     }
     let request =
         flight::Request::parse(&options)?.ok_or("recipe did not compose a flight request")?;
-    let player_arguments = request.arguments();
+    let mut player_arguments = request.arguments();
+    if let Some(mode) = &selection.diagnostics.flight_lighting {
+        player_arguments.push(format!("--continuum-flight-lighting={mode}"));
+    }
     selection.flight = Some(request);
     selection.live_play = false;
-    selection.timeout_seconds = if id == "entry-45km" { 360 } else { 180 };
+    selection.timeout_seconds = if id.starts_with("entry-") && id != "entry-normal" {
+        360
+    } else {
+        180
+    };
     selection.validate()?;
     let run_arguments = vec![
         "run".into(),
@@ -239,7 +388,7 @@ fn compose(id: &str, i: &Inputs, mut selection: ResolvedLaunch) -> Result<Plan> 
     ];
     Ok(Plan {schema:"continuum-reference-program-plan/v1",recipe,inputs:i.clone(),selection,player_arguments,run_arguments,
         required_action:"Caller must capture/persist a NEW FrozenLaunch from selection, recheck checkpoint/profile pins and parent receipt, then execute existing run argv. No launch or frozen-profile mutation occurs during planning.",
-        qualification:"Observational recipe only. Supplied expectedParts and parent pins are declarations: runner/integration must compare native parts/parent evidence before qualification. Full mission proof and performance claims remain separate."})
+        qualification:"Observational recipe only. Expected parts are forwarded to native admission. Parent receipt bytes/known identity are verified by resolve; unknown schema lineage remains explicitly declared. Full mission proof and performance claims remain separate.",parent_provenance:"not-read-by-composition-only".into()})
 }
 #[cfg(test)]
 mod tests {
@@ -255,6 +404,7 @@ mod tests {
             expected_parts: 256,
             parent_attempt: "CSP-STATION-A001".into(),
             parent_receipt_sha256: "c".repeat(64),
+            parent_receipt: "/private/parent-receipt.json".into(),
             reservation: "/private/reservation.json".into(),
             output: "/private/run-01".into(),
             derived_profile: "/private/derived.json".into(),
@@ -288,6 +438,19 @@ mod tests {
                 "/private/derived.json"
             ]
         );
+        let lit = compose("entry-side-lit", &pins(), base()).unwrap();
+        assert_eq!(
+            lit.selection.diagnostics.flight_lighting.as_deref(),
+            Some("side-lit")
+        );
+        assert_eq!(lit.selection.flight.as_ref().unwrap().seconds, 3.);
+        assert_eq!(
+            lit.selection.flight.as_ref().unwrap().expected_parts,
+            Some(256)
+        );
+        assert!(lit
+            .player_arguments
+            .contains(&"--continuum-scale-parts=256".into()));
         let warp = compose("station-vacuum-4x", &pins(), base()).unwrap();
         assert_eq!(warp.selection.flight.unwrap().warp, 4);
     }
@@ -303,6 +466,21 @@ mod tests {
         i = pins();
         i.parent_receipt_sha256.clear();
         assert!(compose("station-vacuum", &i, base()).is_err());
+        let temp = tempfile::tempdir().unwrap();
+        i = pins();
+        i.parent_receipt = temp.path().join("parent.json");
+        std::fs::write(
+            &i.parent_receipt,
+            br#"{"schema":"continuum-lab-process-smoke/v1","runId":"foreign","status":"passed"}"#,
+        )
+        .unwrap();
+        i.parent_receipt_sha256 = hash(&i.parent_receipt).unwrap();
+        assert!(verify_parent(&i).unwrap_err().contains("differs"));
+        i.parent_attempt = "foreign".into();
+        assert_eq!(
+            verify_parent(&i).unwrap(),
+            "receipt-bytes-and-native-run-identity-verified"
+        );
     }
     #[test]
     fn reference_program_parent_integrity() {

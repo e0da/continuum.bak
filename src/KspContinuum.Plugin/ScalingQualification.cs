@@ -177,9 +177,9 @@ namespace KspContinuum
         {
             if (active && FlightAeroFieldRenderer.FailureReason != null)
             { Fail(new InvalidOperationException("Aero field runtime rejected: " + FlightAeroFieldRenderer.FailureReason)); return; }
-            if (active && FlightCameraFreeze.FailureReason != null)
+            if (active && FlightDiagnosticControls.FailureReason != null)
             {
-                Fail(new InvalidOperationException("Camera freeze rejected: " + FlightCameraFreeze.FailureReason));
+                Fail(new InvalidOperationException("Camera contract rejected: " + FlightDiagnosticControls.FailureReason));
                 return;
             }
             if (active && FlightAeroBatcher.FailureReason != null)
@@ -214,6 +214,8 @@ namespace KspContinuum
                 (expectedParts < 1 || vessel.parts.Count == expectedParts);
             if (!eligible) { eligibleSince = 0; stableWarpFrames = 0; return; }
             FlightDiagnosticControls.SeedCamera();
+            try { FlightDiagnosticControls.PrepareLighting(directory); }
+            catch (Exception error) { Fail(error); return; }
             if (physicsWarp && warpRequested)
             {
                 bool entered = TimeWarp.fetch != null && TimeWarp.WarpMode == TimeWarp.Modes.LOW &&

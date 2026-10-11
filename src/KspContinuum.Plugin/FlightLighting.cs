@@ -25,6 +25,8 @@ namespace KspContinuum
         readonly float oldDistance, oldFov, oldPitch, oldHeading;
         readonly Vector3 offsetDirection, viewUp;
         readonly MethodInfo update = AccessTools.DeclaredMethod(typeof(FlightCamera), "LateUpdate");
+        readonly MethodInfo effectUpdate = AccessTools.DeclaredMethod(typeof(FXCamera), "LateUpdate");
+        readonly MethodInfo depthUpdate = AccessTools.DeclaredMethod(typeof(FXDepthCamera), "LateUpdate");
         bool hooks, sceneHook, disposed, window;
         [Serializable] public sealed class ReportData
         {
@@ -32,7 +34,10 @@ namespace KspContinuum
             public string coordinateConvention = "Sun/body/vessel GetWorldPos3D local floating-origin coordinates; double subtraction before normalized direction; no scaled-space transform";
             public string scope = "physical camera-only preset; unchanged vessel/orbit/UT/lighting; no general illumination equivalence";
             public int processId, parts, observedCallbacks, captureCallbacks, faults;
-            public bool vesselAdjusted, shadowed, frozenDuringCapture, restorationComplete, illuminatedCriterionRequired;
+            public bool vesselAdjusted = false, shadowed, frozenDuringCapture, restorationComplete, illuminatedCriterionRequired;
+            public bool captureShadowed;
+            public int captureGeometryChecks;
+            public double maxCapturePhaseDegrees, maxCapturePhaseErrorDegrees, maxCaptureBodyCenterViewAngleDegrees, maxCaptureLightAgreementDegrees, minCaptureHorizonClearanceMeters;
             public double requestedPhaseDegrees, actualPhaseDegrees, solarIncidenceDegrees, horizonClearanceMeters, bodyCenterViewAngleDegrees;
             public double altitudeMeters, density, surfaceSpeed, universalTime, maxPositionErrorMeters, maxAngleErrorDegrees;
             public double[] toSun, bodyRadial, cameraOffset, lightRayDirection;
@@ -56,8 +61,8 @@ namespace KspContinuum
             pivot = flight == null ? null : flight.transform.parent;
             if (active != null || root == null || pivot == null || body == null || body.bodyName != "Kerbin" ||
                 !vessel.loaded || vessel.packed || MapView.MapIsEnabled || TimeWarp.CurrentRate != 1 ||
-                Planetarium.fetch == null || Planetarium.fetch.Sun == null || Sun.Instance == null || Sun.Instance.sunLight == null || update == null ||
-                Harmony.GetPatchInfo(update)?.Owners.Any() == true)
+                Planetarium.fetch == null || Planetarium.fetch.Sun == null || Sun.Instance == null || Sun.Instance.sunLight == null ||
+                new[] { update, effectUpdate, depthUpdate }.Any(method => method == null || Harmony.GetPatchInfo(method)?.Owners.Any() == true))
                 throw new InvalidOperationException("Physical lighting needs one unpatched active normal-time Kerbin flight camera.");
             cameras = flight.cameras.Where(c => c != null).Distinct().ToArray();
             if (cameras.Length == 0 || !cameras.Contains(flight.mainCamera)) throw new InvalidOperationException("Flight camera identity is incomplete.");
@@ -98,6 +103,8 @@ namespace KspContinuum
             try
             {
                 harmony.Patch(update, prefix: new HarmonyMethod(AccessTools.DeclaredMethod(typeof(FlightLighting), "Prefix")));
+                harmony.Patch(effectUpdate, prefix: new HarmonyMethod(AccessTools.DeclaredMethod(typeof(FlightLighting), "EffectPrefix")));
+                harmony.Patch(depthUpdate, prefix: new HarmonyMethod(AccessTools.DeclaredMethod(typeof(FlightLighting), "EffectPrefix")));
                 Camera.onPreCull += Observe; hooks = true;
                 GameEvents.onGameSceneLoadRequested.Add(Scene); sceneHook = true;
                 Apply();
@@ -111,11 +118,43 @@ namespace KspContinuum
             try { owner.Check(); owner.Apply(); return false; }
             catch (Exception error) { owner.Fail(error.Message); return true; }
         }
+        static void EffectPrefix()
+        {
+            FlightLighting owner = active;
+            if (owner == null || owner.disposed) return;
+            try { owner.Check(); owner.Apply(); }
+            catch (Exception error) { owner.Fail(error.Message); }
+        }
         void Check()
         {
             if (vessel == null || root == null || flight == null || FlightGlobals.ActiveVessel != vessel || vessel.mainBody != body ||
                 !vessel.loaded || vessel.packed || MapView.MapIsEnabled || vessel.parts.Count != Report.parts || TimeWarp.CurrentRate != 1)
                 throw new InvalidOperationException("Physical lighting ownership/context changed.");
+            if (Planetarium.fetch == null || Planetarium.fetch.Sun == null || Sun.Instance == null || Sun.Instance.sunLight == null)
+                throw new InvalidOperationException("Physical sunlight ownership changed.");
+            Vector3d location = vessel.GetWorldPos3D(), radial = location - body.position, solar = Planetarium.fetch.Sun.position - location;
+            if (!Finite(radial.magnitude) || !Finite(solar.magnitude) || radial.magnitude <= body.Radius || solar.magnitude <= 0)
+                throw new InvalidOperationException("Physical celestial geometry changed.");
+            Vector3 sun = (Vector3)solar.normalized;
+            double phase = Angle(sun, offsetDirection), phaseError = Math.Abs(phase - Report.requestedPhaseDegrees);
+            double along = -Vector3d.Dot(radial, solar.normalized);
+            double clearance = (along > 0 ? (radial + along * solar.normalized).magnitude : radial.magnitude) - body.Radius;
+            Vector3 cameraPosition = root.position + offsetDirection * (float)Distance;
+            double bodyAngle = Angle(-offsetDirection, (Vector3)(body.position - (Vector3d)cameraPosition));
+            double lightAgreement = Angle(sun, -Sun.Instance.sunLight.transform.forward);
+            if (window)
+            {
+                if (Report.captureGeometryChecks++ == 0) Report.minCaptureHorizonClearanceMeters = clearance;
+                else Report.minCaptureHorizonClearanceMeters = Math.Min(Report.minCaptureHorizonClearanceMeters, clearance);
+                Report.maxCapturePhaseDegrees = Math.Max(Report.maxCapturePhaseDegrees, phase);
+                Report.maxCapturePhaseErrorDegrees = Math.Max(Report.maxCapturePhaseErrorDegrees, phaseError);
+                Report.maxCaptureBodyCenterViewAngleDegrees = Math.Max(Report.maxCaptureBodyCenterViewAngleDegrees, bodyAngle);
+                Report.maxCaptureLightAgreementDegrees = Math.Max(Report.maxCaptureLightAgreementDegrees, lightAgreement);
+                Report.captureShadowed |= clearance <= 0;
+            }
+            if (phaseError > 1 || lightAgreement > 1 || (Report.illuminatedCriterionRequired && clearance <= 0) ||
+                (Report.mode == "frontlit" && bodyAngle > FieldOfView / 2 - 2))
+                throw new InvalidOperationException("Physical lighting illumination/view criterion changed.");
         }
         void Apply()
         {
@@ -159,7 +198,7 @@ namespace KspContinuum
                 pivot.localPosition = oldPivotPosition; pivot.localRotation = oldPivotRotation;
                 flight.transform.localPosition = oldPosition; flight.transform.localRotation = oldRotation;
                 for (int i = 0; i < cameras.Length; i++) if (cameras[i] != null) cameras[i].fieldOfView = oldFovs[i];
-                Report.restorationComplete = Harmony.GetPatchInfo(update)?.Owners.Contains(Owner) != true &&
+                Report.restorationComplete = new[] { update, effectUpdate, depthUpdate }.All(method => Harmony.GetPatchInfo(method)?.Owners.Contains(Owner) != true) &&
                     flight.transform.localPosition == oldPosition && flight.transform.localRotation == oldRotation &&
                     pivot.localPosition == oldPivotPosition && pivot.localRotation == oldPivotRotation &&
                     cameras.Select((c, i) => c != null && c.fieldOfView == oldFovs[i]).All(x => x);

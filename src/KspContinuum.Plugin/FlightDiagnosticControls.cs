@@ -16,6 +16,29 @@ namespace KspContinuum
         static float originalShadowDistance;
         static readonly List<Renderer> hiddenRenderers = new List<Renderer>();
         static FlightDiagnosticControlReport recorded;
+        static FlightLighting lighting;
+        static string lightingDirectory;
+        public static string FailureReason { get { return lighting == null ? FlightCameraFreeze.FailureReason : lighting.Report.reason; } }
+
+        public static void PrepareLighting(string directory)
+        {
+            if (!applied || lighting != null) return;
+            lighting = FlightLighting.Create(Environment.GetCommandLineArgs(), FlightGlobals.ActiveVessel);
+            if (lighting != null) lightingDirectory = directory;
+        }
+        public static void BeginWindow(long ticks) { if (lighting != null) lighting.BeginWindow(ticks); }
+        public static void EndWindow(long ticks) { if (lighting != null) lighting.EndWindow(ticks); }
+        static void RecordCamera(FlightDiagnosticControlReport report)
+        {
+            if (lighting == null) { FlightCameraFreeze.Record(report); return; }
+            report.cameraContract = "continuum-solar-relative-camera/v1:" + lighting.Report.mode;
+            report.cameraScope = "Frozen world direction relative to the admitted Sun, tracking physical root translation; actual celestial lighting and camera pre-cull observations.";
+            report.cameraFrozen = lighting.Report.faults == 0;
+            report.cameraObservedInvocations = lighting.Report.observedCallbacks;
+            report.cameraMaxPositionErrorMeters = lighting.Report.maxPositionErrorMeters;
+            report.cameraMaxAngleErrorDegrees = lighting.Report.maxAngleErrorDegrees;
+            report.cameraFailure = lighting.Report.reason;
+        }
 
         public static void Apply()
         {
@@ -87,7 +110,8 @@ namespace KspContinuum
             if (!applied) return;
             SeedCamera();
             if (!cameraSeeded) throw new InvalidOperationException("Flight camera was unavailable at capture admission.");
-            FlightCameraFreeze.Start(FlightGlobals.ActiveVessel);
+            PrepareLighting(directory);
+            if (lighting == null) FlightCameraFreeze.Start(FlightGlobals.ActiveVessel);
             if (Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-flight-hide-vessel") >= 0)
             {
                 Vessel vessel = FlightGlobals.ActiveVessel;
@@ -123,7 +147,7 @@ namespace KspContinuum
             report.researchPanelVisible = ResearchPanelPresentation.Visible;
             report.researchPanelComponentPresent = ResearchPanelPresentation.ComponentPresent;
             RecordAeroState(report);
-            FlightCameraFreeze.Record(report);
+            RecordCamera(report);
             recorded = report;
             File.WriteAllText(Path.Combine(directory, "diagnostic-controls.json"), ReportJson.Encode(report));
         }
@@ -144,9 +168,9 @@ namespace KspContinuum
             recorded.researchPanelVisible = ResearchPanelPresentation.Visible;
             recorded.researchPanelComponentPresent = ResearchPanelPresentation.ComponentPresent;
             RecordAeroState(recorded);
-            FlightCameraFreeze.Record(recorded);
+            RecordCamera(recorded);
             File.WriteAllText(Path.Combine(directory, "diagnostic-controls-end.json"), ReportJson.Encode(recorded));
-            if (FlightCameraFreeze.FailureReason != null || recorded.cameraObservedInvocations == 0)
+            if (FailureReason != null || recorded.cameraObservedInvocations == 0)
                 throw new InvalidOperationException("Camera freeze was not observed intact: " + recorded.cameraFailure);
         }
 
@@ -154,6 +178,16 @@ namespace KspContinuum
         {
             if (!applied) return;
             FlightCameraFreeze.Stop();
+            bool lightingFailed = false;
+            FlightLighting.ReportData lightingReport = null;
+            string reportDirectory = lightingDirectory;
+            if (lighting != null)
+            {
+                lighting.Dispose();
+                lightingFailed = lighting.Report.status != "complete-experimental";
+                lightingReport = lighting.Report;
+                lighting = null; lightingDirectory = null;
+            }
             foreach (Renderer renderer in hiddenRenderers) if (renderer != null) renderer.enabled = true;
             hiddenRenderers.Clear();
             QualitySettings.vSyncCount = originalVSync;
@@ -171,6 +205,8 @@ namespace KspContinuum
             applied = false;
             cameraSeeded = false;
             recorded = null;
+            if (lightingReport != null) File.WriteAllText(Path.Combine(reportDirectory, "flight-lighting.json"), ReportJson.Encode(lightingReport));
+            if (lightingFailed) throw new InvalidOperationException("Physical lighting capture or restoration failed; see retained lighting receipt.");
         }
 
         static void RecordAeroState(FlightDiagnosticControlReport report)

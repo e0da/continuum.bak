@@ -179,6 +179,7 @@ namespace KspContinuum
                 report.clockFrequency=Stopwatch.Frequency; report.captureStartClockTimestamp=Stopwatch.GetTimestamp();
                 report.researchPanel = ResearchPanelPresentation.BeginCapture(report.captureStartClockTimestamp);
                 FlightLocalCamera.BeginWindow(report.captureStartClockTimestamp);
+                FlightDiagnosticControls.BeginWindow(report.captureStartClockTimestamp);
                 FlightPartBatcher.CaptureStart(report.captureStartClockTimestamp);
                 captureStartWall=clock.Elapsed.TotalSeconds; previous.boundaryWallSeconds=captureStartWall; capturedFixedCallbacks=fixedCallbacks;
                 Signal("capture-start", null);
@@ -224,6 +225,7 @@ namespace KspContinuum
                 ResearchPanelPresentation.EndCapture(report.researchPanel, report.captureEndClockTimestamp);
                 if (report.researchPanel.status != "complete") { report.status = "invalid"; report.completionReason = "research-panel-visibility-or-callback-invalid"; }
                 FlightLocalCamera.EndWindow(report.captureEndClockTimestamp);
+                FlightDiagnosticControls.EndWindow(report.captureEndClockTimestamp);
                 FlightPartBatcher.CaptureEnd(report.captureEndClockTimestamp);
                 if(simulationSeconds > 0 && completed > 0)
                 {
@@ -436,6 +438,7 @@ namespace KspContinuum
                     ResearchPanelPresentation.EndCapture(report.researchPanel, report.captureEndClockTimestamp);
                     if (report.researchPanel != null && report.researchPanel.status != "complete") { report.status = "invalid"; report.completionReason = "research-panel-visibility-or-callback-invalid"; }
                     FlightLocalCamera.EndWindow(report.captureEndClockTimestamp);
+                    FlightDiagnosticControls.EndWindow(report.captureEndClockTimestamp);
                     FlightPartBatcher.CaptureEnd(report.captureEndClockTimestamp);
                 }
                 if (vesselRuntime != null)

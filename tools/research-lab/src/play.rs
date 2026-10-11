@@ -25,6 +25,7 @@ pub fn validate(selection: &ResolvedLaunch) -> Result<()> {
     let d = &selection.diagnostics;
     let s = &selection.startup;
     if d.convection_capture.is_some()
+        || d.flight_lighting.is_some()
         || d.integrator_update_attribution
         || d.profile
         || d.texture_observe
