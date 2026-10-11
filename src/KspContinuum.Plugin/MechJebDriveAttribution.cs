@@ -53,8 +53,8 @@ namespace KspContinuum
         {
             var assembly = method.Module.Assembly.GetName();
             return timer.Register(new CallbackAttributionRow { category = category, assembly = assembly.Name, assemblyVersion = assembly.Version.ToString(),
-                assemblyMvid = method.Module.ModuleVersionId.ToString("D"), declaringType = runtimeType ?? method.DeclaringType.FullName,
-                method = method.Name, metadataToken = method.MetadataToken });
+                assemblyMvid = method.Module.ModuleVersionId.ToString("D"), declaringType = method.DeclaringType.FullName, runtimeType = runtimeType,
+                method = method.Name, metadataToken = method.MetadataToken, ilSha256 = Hash(method.GetMethodBody().GetILAsByteArray()) });
         }
         void Patch(MethodInfo method, string prefix)
         {
@@ -94,7 +94,7 @@ namespace KspContinuum
                 Require(baseDrive != null && baseDrive.IsVirtual && baseDrive.ReturnType == typeof(void), "Controller virtual dispatch differs.");
                 foreach (Type type in assembly.GetTypes().Where(t => module.IsAssignableFrom(t) && !t.IsAbstract && !t.ContainsGenericParameters).OrderBy(t => t.FullName, StringComparer.Ordinal))
                 {
-                    MethodInfo method = type.GetMethod("Drive", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { typeof(FlightCtrlState) }, null);
+                    MethodInfo method = MechJebDeclaredDrive.Canonical(type.GetMethod("Drive", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new[] { typeof(FlightCtrlState) }, null));
                     Require(controllers.Count < 128 && method != null && method.Module.ModuleVersionId == Mvid && method.ReturnType == typeof(void) && !method.IsAbstract && !method.ContainsGenericParameters && method.GetMethodBody() != null && method.GetBaseDefinition() == baseDrive, "Controller method identity/capacity differs.");
                     controllers.Add(type, Register(method, "controller-drive-runtime-type", type.FullName)); methods.Add(method);
                 }

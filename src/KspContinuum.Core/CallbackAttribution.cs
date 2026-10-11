@@ -52,7 +52,7 @@ namespace KspContinuum
 
     [Serializable] public sealed class CallbackAttributionRow
     {
-        public string category, assembly, assemblyVersion, assemblyMvid, declaringType, method;
+        public string category, assembly, assemblyVersion, assemblyMvid, declaringType, method, runtimeType, ilSha256;
         public int metadataToken, calls, outermostCalls;
         public long inclusiveTicks, maximumTicks, outermostInclusiveTicks, outermostMaximumTicks;
         public double inclusiveMilliseconds, meanMilliseconds, maximumMilliseconds, fractionOfActiveWindow;
