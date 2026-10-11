@@ -1,0 +1,9 @@
+# Original site and terrain readiness experiment
+
+`CONTINUUM_STARTUP_SITE_TERRAIN_READY=1` opts into concrete readiness within the original Force-call epoch, with the existing startup-readiness path enabled. It is disabled by default and excludes the older target-ready/deferred-terrain alternatives. Original Force and stock orientation still execute. Supported admission is a static stock PQSCity2 site on the original body/sphere, with no water/mobile/custom terrain ownership.
+
+Bind the actual nearest site collider and a separate nearest owned built terrain leaf at both temporary-position and PositioningPoint samples. The runway collider need not be a terrain quad. The candidate retains exact site, temporary object, positioning point, collider, mesh, terrain owner, transforms and mesh-content digests across one fixed step. Unchanged ownership/content/pose admits early completion; unsupported or changed ownership falls back to the remaining original wait. The owned iterator decrements pending state on completion and disposal without mutating native terrain.
+
+Private native observations completed through the same-site-and-owned-terrain-generation path with completed1/fallback0/pending0. Desert Airfield latitude, longitude, altitude and body-local coordinates matched the retained stock observation exactly; the frozen 1cm and 1e-8 degree tolerances were unchanged. Radial and repeated-getter errors were zero. Failed subsequent flights remain failed and do not erase this separately completed startup proof.
+
+This qualifies the observed site/terrain epoch, not arbitrary future footprints or mod terrain. Different observer/flight configurations prevent attributing a precise startup-time gain from the retained launches. There is no default promotion, broad site compatibility, mission or whole-game performance claim.
