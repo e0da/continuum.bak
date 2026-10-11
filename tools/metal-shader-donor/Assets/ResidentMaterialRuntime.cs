@@ -34,9 +34,11 @@ public sealed class ResidentMaterialRuntime : IDisposable
     public int LayerMask { get; private set; }
     public Bounds Bounds { get; private set; }
     public Matrix4x4 Root { get; private set; }
+    readonly bool cameraRelativeRoot;
     readonly List<UnityEngine.Object> owned = new List<UnityEngine.Object>();
     Mesh[] meshes; Texture2D[] textures; Material[] referenceMaterials, packetMaterials, originalMaterials;
     ResidentSnapshot snapshot; Matrix4x4[] matrices; MaterialPropertyBlock[] referenceBlocks, singleBlocks; Matrix4x4[][] singleMatrices; Packet[] packets;
+    Matrix4x4[] presentationBaseMatrices; Bounds presentationBaseBounds; Vector3 presentationAnchor; bool presentationAnchorRequested;
     ShaderLease shaderLease, originalShaderLease; GameObject lightObject; Camera activeCamera; int priorCameraMask; bool disposed, activated; int lastFrame = -1;
     ResidentMaterialProperty[] priorShaderGlobals;
     AmbientMode priorAmbient; Color priorSky, priorEquator, priorGround; float priorAmbientIntensity, priorShadowDistance; int priorShadowCascades;
@@ -84,8 +86,9 @@ public sealed class ResidentMaterialRuntime : IDisposable
             else if(p.kind==4) { material.SetTexture(p.name,p.textureIndex<0?null:textures[p.textureIndex]); material.SetTextureScale(p.name,new Vector2(p.scaleOffset[0],p.scaleOffset[1])); material.SetTextureOffset(p.name,new Vector2(p.scaleOffset[2],p.scaleOffset[3])); }
         }
     }
-    public ResidentMaterialRuntime(string path,string partBundlePath,string originalBundlePath=null)
+    public ResidentMaterialRuntime(string path,string partBundlePath,string originalBundlePath=null,bool cameraRelativeRoot=false)
     {
+        this.cameraRelativeRoot=cameraRelativeRoot;
         if(!Path.IsPathRooted(path)||!Path.IsPathRooted(partBundlePath)) throw new InvalidDataException("Absolute fixture and part bundle required.");
         ManifestPath=Path.GetFullPath(path); BundlePath=Path.GetFullPath(partBundlePath); ManifestSha256=Hash(ManifestPath); BundleSha256=Hash(BundlePath);
         if(!string.IsNullOrEmpty(originalBundlePath)) { if(!Path.IsPathRooted(originalBundlePath)) throw new InvalidDataException("Absolute original shader bundle required."); OriginalBundlePath=Path.GetFullPath(originalBundlePath); OriginalBundleSha256=Hash(OriginalBundlePath); }
@@ -188,6 +191,9 @@ public sealed class ResidentMaterialRuntime : IDisposable
     }
     public void SetMode(string value) { if(value!="original"&&value!="reference"&&value!="instanced") throw new InvalidDataException("Material mode original|reference|instanced."); if(value=="original"&&originalMaterials==null) throw new InvalidDataException("Loaded original shader and bindings required."); Mode=value; }
     public void SetDiagnostic(string value) { if(value!="off"&&value!="defaults"&&value!="single") throw new InvalidDataException("Material diagnostic off|defaults|single."); Diagnostic=value; }
+    public void SetTextureMipBias(float bias) { if(float.IsNaN(bias)||float.IsInfinity(bias)||bias < -2||bias>4) throw new InvalidDataException("Texture mip policy bound."); for(int i=0;i<textures.Length;i++) textures[i].mipMapBias=Manifest.textures[i].mipBias+bias; }
+    public void IncludePresentationLightLayer(int layer) { if(layer<0||layer>31) throw new InvalidDataException("Presentation light layer bound."); lightObject.GetComponent<Light>().cullingMask|=1<<layer; }
+    public void DisablePresentationShadows() { lightObject.GetComponent<Light>().shadows=LightShadows.None; }
     public void ValidateLoadedFiles() { if(Hash(ManifestPath)!=ManifestSha256||Hash(StatePath)!=StateSha256||Hash(BundlePath)!=BundleSha256||(OriginalBundlePath!=null&&Hash(OriginalBundlePath)!=OriginalBundleSha256)) throw new InvalidDataException("Resident loaded provenance files changed."); }
     public void ReloadSnapshot(string path)
     {
@@ -198,12 +204,21 @@ public sealed class ResidentMaterialRuntime : IDisposable
     void Publish(ResidentSnapshot next)
     {
         ResidentMaterialFormat.ValidateSnapshot(Manifest,next); var nextMatrices=new Matrix4x4[next.instances.Length]; var blocks=new MaterialPropertyBlock[next.instances.Length]; var oneBlocks=new MaterialPropertyBlock[next.instances.Length]; var oneMatrices=new Matrix4x4[next.instances.Length][];
-        for(int i=0;i<next.instances.Length;i++) { nextMatrices[i]=Root*M(next.instances[i].matrix); blocks[i]=Block(next,new[] {i},false); oneBlocks[i]=Block(next,new[] {i},true); oneMatrices[i]=new[] {nextMatrices[i]}; }
+        Matrix4x4 placementRoot=Root; if(cameraRelativeRoot) { placementRoot.m03=placementRoot.m13=placementRoot.m23=0; }
+        for(int i=0;i<next.instances.Length;i++) { nextMatrices[i]=placementRoot*M(next.instances[i].matrix); blocks[i]=Block(next,new[] {i},false); oneBlocks[i]=Block(next,new[] {i},true); oneMatrices[i]=new[] {nextMatrices[i]}; }
         var packetMatrices=new Matrix4x4[packets.Length][]; var packetBlocks=new MaterialPropertyBlock[packets.Length];
         for(int i=0;i<packets.Length;i++) { var p=packets[i]; packetMatrices[i]=new Matrix4x4[p.Sources.Length]; for(int j=0;j<p.Sources.Length;j++) packetMatrices[i][j]=nextMatrices[p.Sources[j]]; packetBlocks[i]=Block(next,p.Sources,true); }
         Bounds bounds=new Bounds(); bool first=true;
         for(int i=0;i<next.instances.Length;i++) { Bounds b=meshes[Manifest.instances[i].meshIndex].bounds; for(int corner=0;corner<8;corner++) { Vector3 local=b.center+Vector3.Scale(b.extents,new Vector3((corner&1)==0?-1:1,(corner&2)==0?-1:1,(corner&4)==0?-1:1)); Vector3 world=nextMatrices[i].MultiplyPoint3x4(local); if(first) { bounds=new Bounds(world,Vector3.zero); first=false; } else bounds.Encapsulate(world); } }
-        matrices=nextMatrices; referenceBlocks=blocks; singleBlocks=oneBlocks; singleMatrices=oneMatrices; for(int i=0;i<packets.Length;i++) { packets[i].Matrices=packetMatrices[i]; packets[i].Block=packetBlocks[i]; } snapshot=next; Bounds=bounds; SnapshotPublications++;
+        matrices=nextMatrices; presentationBaseMatrices=(Matrix4x4[])nextMatrices.Clone(); presentationBaseBounds=bounds; referenceBlocks=blocks; singleBlocks=oneBlocks; singleMatrices=oneMatrices; for(int i=0;i<packets.Length;i++) { packets[i].Matrices=packetMatrices[i]; packets[i].Block=packetBlocks[i]; } snapshot=next; Bounds=bounds; SnapshotPublications++; if(presentationAnchorRequested) SetPresentationAnchor(presentationAnchor);
+    }
+    public void SetPresentationAnchor(Vector3 anchor)
+    {
+        if(float.IsNaN(anchor.x)||float.IsInfinity(anchor.x)||float.IsNaN(anchor.y)||float.IsInfinity(anchor.y)||float.IsNaN(anchor.z)||float.IsInfinity(anchor.z)) throw new InvalidDataException("Finite camera-relative presentation anchor required.");
+        presentationAnchor=anchor; presentationAnchorRequested=true; Vector3 offset=anchor-(cameraRelativeRoot?Vector3.zero:new Vector3(Root.m03,Root.m13,Root.m23));
+        for(int i=0;i<matrices.Length;i++) { var m=presentationBaseMatrices[i]; m.m03+=offset.x; m.m13+=offset.y; m.m23+=offset.z; matrices[i]=m; singleMatrices[i][0]=m; }
+        foreach(var p in packets) for(int i=0;i<p.Sources.Length;i++) p.Matrices[i]=matrices[p.Sources[i]];
+        Bounds=presentationBaseBounds; var b=Bounds; b.center+=offset; Bounds=b;
     }
     static MaterialPropertyBlock Block(ResidentSnapshot state,int[] ids,bool arrays)
     {
