@@ -2,14 +2,17 @@ using AssetsTools.NET;
 using AssetsTools.NET.Extra;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
 
 if (args.Length == 7 && args[0] == "transplant") return Transplant(args);
 if (args.Length == 4 && args[0] == "inspect-player") return InspectPlayer(args);
+if (args.Length == 4 && args[0] == "recompose-player") return RecomposePlayer(args);
 
 if (!(args.Length == 3 && args[0] == "inspect") &&
     !(args.Length == 6 && (args[0] == "graft" || args[0] == "graft-list")))
 {
-    Console.Error.WriteLine("Usage: inspect <classdata.tpk> <assets-or-bundle> | inspect-player <classdata.tpk> <player-Data-directory> <new-report.json> | graft <classdata.tpk> <target-assets> <donor-bundle> <output-assets> <shader-name> | graft-list <classdata.tpk> <target-assets> <donor-bundle> <output-assets> <names-file> | transplant <classdata.tpk> <original-assets> <original-shader-name> <donor-bundle> <donor-shader-name> <new-output-bundle>");
+    Console.Error.WriteLine("Usage: inspect <classdata.tpk> <assets-or-bundle> | inspect-player <classdata.tpk> <player-Data-directory> <new-report.json> | recompose-player <classdata.tpk> <player-Data-directory> <new-output-globalgamemanagers> | graft <classdata.tpk> <target-assets> <donor-bundle> <output-assets> <shader-name> | graft-list <classdata.tpk> <target-assets> <donor-bundle> <output-assets> <names-file> | transplant <classdata.tpk> <original-assets> <original-shader-name> <donor-bundle> <donor-shader-name> <new-output-bundle>");
     return 2;
 }
 
@@ -250,6 +253,153 @@ static int Transplant(string[] arguments)
 }
 
 static string FileHash(string path) { using var stream = File.OpenRead(path); return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant(); }
+
+static int RecomposePlayer(string[] arguments)
+{
+    string data = Path.GetFullPath(arguments[2]), output = Path.GetFullPath(arguments[3]);
+    string input = Path.Combine(data, "globalgamemanagers"), classData = Path.GetFullPath(arguments[1]);
+    string core = Path.Combine(data, "Managed", "UnityEngine.CoreModule.dll");
+    if (!Path.IsPathRooted(arguments[3]) || output.StartsWith(data + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+        output == classData || File.Exists(output) || Directory.Exists(output) || File.Exists(output + ".receipt.json") || !Directory.Exists(Path.GetDirectoryName(output)))
+        throw new InvalidOperationException("New absolute output and receipt outside input Data and classdata required.");
+    void NoLinks(string path)
+    {
+        for (string? current = path; current != null; current = Path.GetDirectoryName(current))
+        {
+            if (File.Exists(current) || Directory.Exists(current))
+                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidOperationException("Symlink input/output ancestry rejected.");
+        }
+    }
+    foreach (string path in new[] { input, classData, core, output }) NoLinks(path);
+    string sourceHash = FileHash(input), classHash = FileHash(classData), coreHash = FileHash(core);
+    if (coreHash != "cff94227798716105898909c07067a14fcffb23489bba789e73ac9a7e67db4ad")
+        throw new InvalidOperationException("Pinned KSP Unity2019 CoreModule identity required.");
+    var mapping = new Dictionary<string, int>(StringComparer.Ordinal);
+    using (var stream = File.OpenRead(core))
+    using (var pe = new PEReader(stream))
+    {
+        var metadata = pe.GetMetadataReader();
+        var types = metadata.TypeDefinitions.Where(handle =>
+        {
+            var type = metadata.GetTypeDefinition(handle);
+            return metadata.GetString(type.Namespace) == "UnityEngine.Rendering" && metadata.GetString(type.Name) == "GraphicsDeviceType";
+        }).ToArray();
+        if (types.Length != 1) throw new InvalidOperationException("Unique GraphicsDeviceType enum required.");
+        foreach (var handle in metadata.GetTypeDefinition(types[0]).GetFields())
+        {
+            var field = metadata.GetFieldDefinition(handle); string name = metadata.GetString(field.Name);
+            if (name != "Metal" && name != "OpenGLCore") continue;
+            var constant = metadata.GetConstant(field.GetDefaultValue());
+            if (constant.TypeCode != ConstantTypeCode.Int32) throw new InvalidOperationException("Unexpected graphics enum constant type.");
+            mapping.Add(name, metadata.GetBlobReader(constant.Value).ReadInt32());
+        }
+    }
+    if (mapping.Count != 2 || mapping["Metal"] != 16 || mapping["OpenGLCore"] != 17)
+        throw new InvalidOperationException("Pinned graphics enum mapping differs.");
+    var manager = new AssetsManager(); manager.LoadClassPackage(classData);
+    var source = manager.LoadAssetsFile(input, false);
+    if (source.file.Metadata.UnityVersion != "2019.4.18f1" || source.file.Header.Version != 21)
+        throw new InvalidOperationException("Pinned Unity2019.4.18f1 serialized21 input required.");
+    manager.LoadClassDatabaseFromPackage(source.file.Metadata.UnityVersion);
+    var settings = source.file.GetAssetsOfType(141);
+    if (settings.Count != 1) throw new InvalidOperationException("Exactly one class141 BuildSettings required.");
+    var selected = settings[0]; var root = manager.GetBaseField(source, selected);
+    AssetTypeValueField ApiArray(AssetTypeValueField field)
+    {
+        var matches = field.Children.Where(child => child.TemplateField.Name == "m_GraphicsAPIs").ToArray();
+        if (matches.Length != 1 || matches[0].Children.Count != 1 || !matches[0].Children[0].TemplateField.IsArray)
+            throw new InvalidOperationException("Exact root m_GraphicsAPIs/vector/Array schema required.");
+        var array = matches[0].Children[0];
+        if (array.Children.Any(child => child.TemplateField.ValueType != AssetValueType.Int32))
+            throw new InvalidOperationException("Graphics API elements must be Int32.");
+        return array;
+    }
+    byte[] ObjectBytes(AssetsFileInstance file, AssetFileInfo asset)
+    {
+        if (asset.ByteSize > 64 * 1024 * 1024) throw new InvalidDataException("Object exceeds bounded64MiB proof scope.");
+        file.file.Reader.Position = asset.GetAbsoluteByteOffset(file.file);
+        byte[] bytes = file.file.Reader.ReadBytes(checked((int)asset.ByteSize));
+        if (bytes.Length != asset.ByteSize) throw new InvalidDataException("Truncated object payload.");
+        return bytes;
+    }
+    byte[] MetadataBytes(AssetsFileInstance file)
+    {
+        using var stream = new MemoryStream();
+        using var writer = new AssetsFileWriter(stream);
+        writer.BigEndian = file.file.Header.Endianness;
+        file.file.Metadata.Write(writer, file.file.Header.Version);
+        return stream.ToArray();
+    }
+    byte[] original = ObjectBytes(source, selected);
+    if (!root.WriteToByteArray().SequenceEqual(original)) throw new InvalidOperationException("Original BuildSettings serializer roundtrip differs.");
+    var array = ApiArray(root);
+    if (array.Children.Count != 1 || array.Children[0].AsInt != 17)
+        throw new InvalidOperationException("Expected original graphics APIs exactly[17]; no output created.");
+    var originalChildren = array.Children;
+    var inventory = source.file.AssetInfos.Select(asset => new { asset.PathId, asset.ByteOffset, asset.ByteSize,
+        type = asset.GetTypeId(source.file), sha256 = Convert.ToHexString(SHA256.HashData(ObjectBytes(source, asset))).ToLowerInvariant() }).ToArray();
+    byte[] originalMetadata = MetadataBytes(source);
+    array.Children = new List<AssetTypeValueField> {
+        new() { TemplateField = originalChildren[0].TemplateField, Value = new AssetTypeValue(16), Children = new() }, originalChildren[0] };
+    byte[] expected = root.WriteToByteArray();
+    array.Children = originalChildren;
+    if (!root.WriteToByteArray().SequenceEqual(original) || expected.Length != original.Length + 4)
+        throw new InvalidOperationException("Unexpected graphics array rewrite extent.");
+    selected.SetNewData(expected);
+    string temporary = output + ".staging-" + Guid.NewGuid().ToString("N");
+    try
+    {
+        using (var writer = new AssetsFileWriter(temporary)) source.file.Write(writer);
+        var verify = new AssetsManager(); verify.LoadClassPackage(classData);
+        var check = verify.LoadAssetsFile(temporary, false); verify.LoadClassDatabaseFromPackage(check.file.Metadata.UnityVersion);
+        if (check.file.Header.Version != source.file.Header.Version || check.file.Header.Endianness != source.file.Header.Endianness ||
+            check.file.AssetInfos.Count != inventory.Length || !check.file.AssetInfos.Select(a => a.PathId).SequenceEqual(inventory.Select(a => a.PathId)))
+            throw new InvalidOperationException("Serialized header/object identity changed.");
+        foreach (var item in inventory)
+        {
+            var asset = check.file.GetAssetInfo(item.PathId);
+            if (asset.GetTypeId(check.file) != item.type) throw new InvalidOperationException("Object type changed.");
+            byte[] bytes = ObjectBytes(check, asset);
+            if (item.PathId == selected.PathId ? !bytes.SequenceEqual(expected) :
+                asset.ByteSize != item.ByteSize || Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() != item.sha256)
+                throw new InvalidOperationException("Object payload preservation failed at pathId=" + item.PathId);
+        }
+        var readback = verify.GetBaseField(check, check.file.GetAssetInfo(selected.PathId)); var readbackArray = ApiArray(readback);
+        if (!readbackArray.Children.Select(child => child.AsInt).SequenceEqual(new[] { 16, 17 }))
+            throw new InvalidOperationException("Derived graphics API readback differs.");
+        readbackArray.Children = originalChildren;
+        if (!readback.WriteToByteArray().SequenceEqual(original))
+            throw new InvalidOperationException("Non-graphics BuildSettings fields changed.");
+        // Data relocation changes object offsets and the selected size; normalize only those layout fields for metadata proof.
+        foreach (var item in inventory)
+        {
+            var asset = check.file.GetAssetInfo(item.PathId); asset.ByteOffset = item.ByteOffset; asset.ByteSize = item.ByteSize;
+        }
+        if (!MetadataBytes(check).SequenceEqual(originalMetadata)) throw new InvalidOperationException("Non-layout serialized metadata/dependencies changed.");
+        if (FileHash(input) != sourceHash || FileHash(classData) != classHash || FileHash(core) != coreHash)
+            throw new InvalidOperationException("Recomposition input changed.");
+        var receipt = new { schema = "continuum-private-player-backend/v1", source = input, sourceSha256 = sourceHash,
+            classDataSha256 = classHash, coreModule = core, coreModuleSha256 = coreHash,
+            enumType = "UnityEngine.Rendering.GraphicsDeviceType", enumMapping = mapping,
+            unity = source.file.Metadata.UnityVersion, serializedVersion = source.file.Header.Version,
+            output, outputSha256 = FileHash(temporary), classId = 141, pathId = selected.PathId,
+            field = "BuildSettings/m_GraphicsAPIs/Array", before = new[] { 17 }, after = new[] { 16, 17 },
+            originalObjectSha256 = Convert.ToHexString(SHA256.HashData(original)).ToLowerInvariant(),
+            derivedObjectSha256 = Convert.ToHexString(SHA256.HashData(expected)).ToLowerInvariant(),
+            unchangedOtherObjects = inventory.Length - 1, nonGraphicsFieldsRestorationProof = true,
+            nonLayoutMetadataPreserved = true, inputUnchanged = true,
+            proofScope = "All other object payloads/types/path IDs/order exact; BuildSettings restoration exact; serialized metadata exact after normalizing only object offsets/sizes. Header file/data sizes and data padding may relocate. No build-token values emitted.",
+            remainingGate = "Serialized backend admission only; actual Metal initialization, stock shader closure and visible rendering remain unqualified." };
+        string receiptText = JsonSerializer.Serialize(receipt, new JsonSerializerOptions { WriteIndented = true });
+        File.Move(temporary, output);
+        using (var stream = new FileStream(output + ".receipt.json", FileMode.CreateNew, FileAccess.Write))
+        using (var writer = new StreamWriter(stream)) writer.Write(receiptText);
+        Console.WriteLine("Recomposed only class141 graphics APIs [17] -> [16,17]; preservation proof passed.");
+        return 0;
+    }
+    finally { if (File.Exists(temporary)) File.Delete(temporary); }
+}
 
 static int InspectPlayer(string[] arguments)
 {

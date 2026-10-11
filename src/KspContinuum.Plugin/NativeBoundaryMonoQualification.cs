@@ -19,10 +19,12 @@ namespace KspContinuum
         {
             if (Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-startup-build-cache") >= 0) return;
             bool benchmark = Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-native-boundary-bench") >= 0;
-            if (!benchmark && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-scale-profile") < 0) return;
+            bool pixels = Environment.GetCommandLineArgs().Any(arg => arg.StartsWith("--continuum-backend-pixel-proof-bundle=", StringComparison.Ordinal));
+            if (!benchmark && !pixels && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-scale-profile") < 0) return;
             try
             {
                 StartupAssetGeneration.ObserveMenu();
+                if (pixels) { StartCoroutine(BackendAdmissionPixelProof.Run()); return; }
                 if (!benchmark) return;
                 NativeBoundaryMonoReport report = Run();
                 string directory = Path.Combine(KSPUtil.ApplicationRootPath, "GameData", "KspContinuum", "PluginData");
