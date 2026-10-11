@@ -16,6 +16,7 @@ namespace KspContinuum
         sealed class ControlLease { public FlightInputCallback[] callbacks; public ControlRow[] rows; }
         readonly Dictionary<Vessel, ControlLease> controls = new Dictionary<Vessel, ControlLease>();
         readonly List<ControlRow> controlRows = new List<ControlRow>();
+        static readonly System.Reflection.FieldInfo TransmitterQueue = typeof(ModuleDataTransmitter).GetField("transmissionQueue", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
         readonly Dictionary<string, double> resources;
         readonly string[] crew;
         readonly double ecRate;
@@ -44,8 +45,8 @@ namespace KspContinuum
         {
             public string schema = "continuum-docking-roundtrip/v1", status = "running", cleanupStatus = "owned", reason, runId, sourceSha256;
             public string activeVesselId, targetVesselId, mergedVesselId, splitActiveVesselId, splitTargetVesselId;
-            public string scope = "Already aligned paired checkpoint; bounded distributed diagnostic translation forces; actual stock capture/docking/undocking. Not RCS, rendezvous, fuel controller or complete mission qualification.";
-            public int processId, initialActiveParts, initialTargetParts, faults, mergeCount, undockCalls, splitCount, controlledBodies, controlCallbacks, ticks;
+            public string scope = "Paired checkpoint with optional declared alignment; suspended input providers and exclusive quiet-control lease; bounded distributed diagnostic translation forces; actual stock capture/docking/undocking. Not RCS, rendezvous, fuel controller or complete mission qualification.";
+            public int processId, initialActiveParts, initialTargetParts, faults, mergeCount, undockCalls, splitCount, controlledBodies, controlCallbacks, ticks, idleStockDataTransmitters;
             public uint activePortId, targetPortId;
             public bool preparationRequested, collisionsRestored, zeroCrewScope, initialSeparate, actualJointObserved, exactPartPartitionsRestored, crewConserved, resourcesConserved, sourceUnchanged, hooksRemoved, controlLockRemoved;
             public bool schedulingRestored;
@@ -114,9 +115,10 @@ namespace KspContinuum
                 foreach (ModuleResource input in module.resHandler.inputResources)
                 {
                     if (module is ModuleReactionWheel && ((ModuleReactionWheel)module).wheelState == ModuleReactionWheel.WheelState.Disabled) continue;
+                    if (module.GetType() == typeof(ModuleDataTransmitter) && IdleTransmitter((ModuleDataTransmitter)module)) continue;
                     if (input.rate < 0 || double.IsNaN(input.rate) || double.IsInfinity(input.rate) ||
                         (input.rate != 0 && (input.name != "ElectricCharge" || (!(module is ModuleCommand) && !(module is ModuleDockingNode)))))
-                        throw new InvalidOperationException("Only declared stock command and docking-motor EC rates are supported; seed reaction wheels must be Disabled.");
+                        throw new InvalidOperationException("Unsupported resource activity: part=" + part.flightID + ", module=" + module.GetType().FullName + ", resource=" + input.name + ", rate=" + input.rate.ToString("R", CultureInfo.InvariantCulture));
                     if (module is ModuleCommand) commandEcRate += input.rate;
                     if (module is ModuleDockingNode) dockingEcRate += input.rate;
                     ecRate += input.rate;
@@ -137,6 +139,8 @@ namespace KspContinuum
                 initialResources = Rows(resources), minimumGapMeters = distance, preparationRequested = prepared, collisionsRestored = true,
                 zeroCrewScope = crew.Length == 0, initialUniversalTime = Planetarium.GetUniversalTime(), electricChargeRateBudget = ecRate,
                 electricChargeCommandRateBudget = commandEcRate, electricChargeDockingMotorRateBudget = dockingEcRate };
+            ValidateIdleModules();
+            Report.idleStockDataTransmitters = parts.Sum(p => p.Modules.OfType<ModuleDataTransmitter>().Count());
             Report.maximumDeltaTime = Time.maximumDeltaTime; Report.physicsFrameLimit = GameSettings.PHYSICS_FRAME_DT_LIMIT;
             Report.fixedDeltaTime = Time.fixedDeltaTime; Report.screenWidth = Screen.width; Report.screenHeight = Screen.height;
             startedWall = Time.realtimeSinceStartup; phaseUt = Planetarium.GetUniversalTime();
@@ -183,6 +187,18 @@ namespace KspContinuum
         }
         static bool Ready(Vessel v) { return v != null && v.loaded && !v.packed && !v.HoldPhysics && v.rootPart != null ; }
         static bool Zero(FlightCtrlState c) { return c != null && c.mainThrottle == 0 && c.X == 0 && c.Y == 0 && c.Z == 0 && c.pitch == 0 && c.yaw == 0 && c.roll == 0 && c.pitchTrim == 0 && c.yawTrim == 0 && c.rollTrim == 0; }
+        static bool IdleTransmitter(ModuleDataTransmitter transmitter)
+        {
+            if (TransmitterQueue == null) throw new InvalidOperationException("Stock transmitter queue binding missing.");
+            var queue = TransmitterQueue.GetValue(transmitter) as List<ScienceData>;
+            return queue != null && queue.Count == 0 && !transmitter.IsBusy();
+        }
+        void ValidateIdleModules()
+        {
+            if (parts.Any(p => p.Modules.OfType<ModuleReactionWheel>().Any(w => w.wheelState != ModuleReactionWheel.WheelState.Disabled) ||
+                p.Modules.OfType<ModuleDataTransmitter>().Any(t => t.GetType() != typeof(ModuleDataTransmitter) || !IdleTransmitter(t))))
+                throw new InvalidOperationException("An idle wheel or stock data transmitter became active.");
+        }
         void ValidateCallbacks(Vessel v)
         {
             if (!controls.ContainsKey(v) || Chains(v).Any(chain => chain != (FlightInputCallback)Quiet))
@@ -252,6 +268,7 @@ namespace KspContinuum
             if (Time.realtimeSinceStartup - startedWall > 90) throw new InvalidOperationException("Docking roundtrip wall timeout.");
             if (Planetarium.GetUniversalTime() - phaseUt > 65) throw new InvalidOperationException("Docking phase simulation timeout.");
             Attach(a.vessel); Attach(b.vessel); ValidateCallbacks(a.vessel); ValidateCallbacks(b.vessel);
+            ValidateIdleModules();
             if (a.IsRotating || b.IsRotating || activeMotorTargetBits != BitConverter.ToInt32(BitConverter.GetBytes(a.targetAngle), 0) ||
                 targetMotorTargetBits != BitConverter.ToInt32(BitConverter.GetBytes(b.targetAngle), 0))
                 throw new InvalidOperationException("An unowned docking motor command changed the quiet workload.");
@@ -364,9 +381,17 @@ namespace KspContinuum
             if (disposed) return; disposed = true;
             foreach (var lease in controls)
             {
-                SetChains(lease.Key, lease.Value.callbacks);
+                FlightInputCallback[] current = Chains(lease.Key);
+                bool exclusive = current.All(chain => chain == (FlightInputCallback)Quiet);
+                if (exclusive) SetChains(lease.Key, lease.Value.callbacks);
+                else
+                {
+                    for (int index = 0; index < current.Length; index++)
+                        while (current[index] != null && current[index].GetInvocationList().Contains((Delegate)(FlightInputCallback)Quiet)) current[index] -= Quiet;
+                    SetChains(lease.Key, current);
+                }
                 FlightInputCallback[] restored = Chains(lease.Key);
-                for (int index = 0; index < restored.Length; index++) lease.Value.rows[index].restored = restored[index] == lease.Value.callbacks[index];
+                for (int index = 0; index < restored.Length; index++) lease.Value.rows[index].restored = exclusive && restored[index] == lease.Value.callbacks[index];
             }
             Report.controlCallbacksRestored = controlRows.All(row => row.restored);
             Report.hooksRemoved = controls.Keys.All(v => Chains(v).All(chain => chain == null || !chain.GetInvocationList().Contains((Delegate)(FlightInputCallback)Quiet)));
