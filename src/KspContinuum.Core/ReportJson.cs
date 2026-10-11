@@ -104,6 +104,9 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.AeroIntegrationAttribution+MethodRow" ||
                  type.FullName == "KspContinuum.AeroIntegrationAttribution+Window" ||
                  type.FullName == "KspContinuum.AeroIntegrationAttribution+CurveReuseRow" ||
+                 type.FullName == "KspContinuum.ReloadMassInitialization+ReportData" ||
+                 type.FullName == "KspContinuum.ReloadMassInitialization+BodyRow" ||
+                 type.FullName == "KspContinuum.ReloadMassInitialization+StateRow" ||
                  type.FullName == "KspContinuum.FlightIntegratorUpdateAttribution+ReportData" ||
                  type.FullName == "KspContinuum.FlightIntegratorUpdateAttribution+Window" ||
                  type.FullName == "KspContinuum.FlightAeroFieldRenderer+Report" ||
