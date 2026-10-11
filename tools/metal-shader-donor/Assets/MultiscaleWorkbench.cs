@@ -102,7 +102,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     }
     void Reload(string path,bool initial)
     {
-        var next=Prepare(path); try { next.Craft.Activate(craftCamera,false); if(generation!=null) generation.Craft.TransferActivationTo(next.Craft); }
+        var next=Prepare(path); try { if(generation!=null) generation.Craft.ValidateActivationTransferTo(next.Craft); next.Craft.Activate(craftCamera,false); if(generation!=null) generation.Craft.TransferActivationTo(next.Craft); }
         catch { next.Dispose(); throw; }
         var previous=generation; generation=next; policyDirty=true; if(previous!=null) previous.Dispose(); state.scenePath=path; state.sceneSha256=seen=next.Hash; state.vesselFixtureSha256=next.Scene.vesselFixtureSha256; state.bodyGeometrySha256=next.Scene.bodyGeometrySha256; state.bodyTextureSha256=next.Scene.bodyTexture.payloadSha256; state.bodyRecipe=next.Scene.bodyMaterialRecipe; state.bodyTextureCapture=next.Scene.bodyTextureCapture; state.partBundleSha256=next.Craft.BundleSha256; state.originalBundleSha256=next.Craft.OriginalBundleSha256; state.sceneReloads++;
         if(initial) { state.focus=next.Scene.initialCameraTarget; var o=next.Scene.initialCameraOffsetMeters; distance=Math.Sqrt(o[0]*o[0]+o[1]*o[1]+o[2]*o[2]); yaw=(float)(Math.Atan2(-o[0],-o[2])*180/Math.PI); pitch=(float)(Math.Asin(o[1]/distance)*180/Math.PI); }
@@ -112,7 +112,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         if(generation==null||state.status=="failed") return;
         Command cmd; while(queue.TryDequeue(out cmd)) { Interlocked.Decrement(ref queued); try { Execute(cmd.Text); cmd.Reply=JsonUtility.ToJson(state); } catch(Exception e) { cmd.Reply="{\"error\":\""+e.Message.Replace("\"","'")+"\"}"; } cmd.Done=true; }
         if(!capturing&&Time.realtimeSinceStartup>=pollAt) { pollAt=Time.realtimeSinceStartup+1; try { if(Hash(state.scenePath)!=seen) Reload(state.scenePath,false); } catch(Exception e) { state.error="Rejected reload: "+e.Message; Write(); } }
-        if(Input.mouseScrollDelta.y!=0) distance=Math.Max(.25,Math.Min(1e10,distance*Math.Exp(-Input.mouseScrollDelta.y*.15)));
+        if(!capturing&&Input.mouseScrollDelta.y!=0) distance=Math.Max(.25,Math.Min(1e10,distance*Math.Exp(-Input.mouseScrollDelta.y*.15)));
     }
     void LateUpdate()
     {
@@ -147,7 +147,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     void Resize(ref Target target,Camera camera,float scale)
     {
         int w=Math.Max(1,(int)Math.Ceiling(Screen.width*scale)),h=Math.Max(1,(int)Math.Ceiling(Screen.height*scale)); if(target!=null&&target.Color.width==w&&target.Color.height==h) return;
-        if(target!=null) target.Dispose(); target=new Target {Camera=camera,Color=new RenderTexture(w,h,24,RenderTextureFormat.ARGB32) {antiAliasing=1},Depth=new RenderTexture(w,h,0,RenderTextureFormat.RFloat) {filterMode=FilterMode.Point}};
+        if(target!=null) target.Dispose(); target=new Target {Camera=camera,Color=new RenderTexture(w,h,24,RenderTextureFormat.ARGB32) {antiAliasing=1,filterMode=FilterMode.Point},Depth=new RenderTexture(w,h,0,RenderTextureFormat.RFloat) {filterMode=FilterMode.Point}};
         if(!target.Color.Create()||!target.Depth.Create()) throw new InvalidDataException("World target allocation failed."); camera.targetTexture=target.Color;
         target.Copy=new CommandBuffer {name="Multiscale positive linear depth"}; target.Copy.Blit(BuiltinRenderTextureType.CameraTarget,target.Depth,depthCopy); camera.AddCommandBuffer(CameraEvent.AfterEverything,target.Copy);
     }

@@ -180,8 +180,16 @@ public sealed class ResidentMaterialRuntime : IDisposable
         lightObject.SetActive(true);
         if(applyCamera) { camera.transform.SetPositionAndRotation(Root.MultiplyPoint3x4(new Vector3(Manifest.cameraPosition[0],Manifest.cameraPosition[1],Manifest.cameraPosition[2])),Quaternion.LookRotation(Root.GetColumn(2),Root.GetColumn(1))*Q(Manifest.cameraRotation)); camera.fieldOfView=Manifest.fov; camera.nearClipPlane=Manifest.near; camera.farClipPlane=Manifest.far; }
     }
+    public void ValidateActivationTransferTo(ResidentMaterialRuntime next)
+    {
+        if(next==null||disposed||next.disposed||!activated) throw new InvalidOperationException("Live activation owners required.");
+        var current=Manifest.shaderGlobals; var candidate=next.Manifest.shaderGlobals;
+        if((current==null)!=(candidate==null)||(current!=null&&current.Length!=candidate.Length)) throw new InvalidOperationException("Shader global ownership differs between fixture generations.");
+        if(current!=null) for(int i=0;i<current.Length;i++) if(current[i].name!=candidate[i].name||current[i].kind!=candidate[i].kind) throw new InvalidOperationException("Ordered shader global names/types differ between fixture generations.");
+    }
     public void TransferActivationTo(ResidentMaterialRuntime next)
     {
+        ValidateActivationTransferTo(next);
         if(!activated||!next.activated||activeCamera!=next.activeCamera) throw new InvalidOperationException("Activation transfer requires the same admitted camera.");
         if((priorShaderGlobals==null)!=(next.priorShaderGlobals==null)) throw new InvalidOperationException("Shader global ownership differs between fixture generations.");
         next.priorShaderGlobals=priorShaderGlobals;

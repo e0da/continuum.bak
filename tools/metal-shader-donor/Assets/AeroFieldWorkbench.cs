@@ -360,7 +360,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             var nextResident=new ResidentMaterialRuntime(path,Absolute(bundlePath),string.IsNullOrEmpty(originalBundlePath)?null:Absolute(originalBundlePath));
             try
             {
-                if(resident!=null) { nextResident.SetMode(resident.Mode); nextResident.SetDiagnostic(resident.Diagnostic); }
+                if(resident!=null) { resident.ValidateActivationTransferTo(nextResident); nextResident.SetMode(resident.Mode); nextResident.SetDiagnostic(resident.Diagnostic); }
                 // Candidate activation can roll back to the still-live owner's camera and settings.
                 nextResident.Activate(view,initial);
                 if(resident!=null) { resident.TransferActivationTo(nextResident); resident.Dispose(); }
