@@ -13,7 +13,9 @@ namespace KspContinuum
         const string Lock = "continuum.docking.roundtrip";
         readonly ModuleDockingNode a, b;
         readonly Part[] groupA, groupB, parts;
-        readonly HashSet<Vessel> hooked = new HashSet<Vessel>();
+        sealed class ControlLease { public FlightInputCallback[] callbacks; public ControlRow[] rows; }
+        readonly Dictionary<Vessel, ControlLease> controls = new Dictionary<Vessel, ControlLease>();
+        readonly List<ControlRow> controlRows = new List<ControlRow>();
         readonly Dictionary<string, double> resources;
         readonly string[] crew;
         readonly double ecRate;
@@ -30,6 +32,7 @@ namespace KspContinuum
         readonly List<string> images = new List<string>();
         [Serializable] public sealed class SetupRow { public string phase, vesselId; public double[] position, velocity, rotation; }
         [Serializable] public sealed class ResourceRow { public string name; public double amount; }
+        [Serializable] public sealed class ControlRow { public string vesselId, chain; public int vesselInstanceId; public string[] suspendedCallbacks; public bool restored; }
         [Serializable] public sealed class EventRow
         {
             public uint activeLinkedPortId, targetLinkedPortId;
@@ -46,6 +49,7 @@ namespace KspContinuum
             public uint activePortId, targetPortId;
             public bool preparationRequested, collisionsRestored, zeroCrewScope, initialSeparate, actualJointObserved, exactPartPartitionsRestored, crewConserved, resourcesConserved, sourceUnchanged, hooksRemoved, controlLockRemoved;
             public bool schedulingRestored;
+            public bool controlCallbacksRestored;
             public double maximumDeltaTime, physicsFrameLimit, fixedDeltaTime;
             public int screenWidth, screenHeight;
             public double initialUniversalTime, electricChargeRateBudget, electricChargeCommandRateBudget, electricChargeDockingMotorRateBudget, electricChargeConsumed, minimumGapMeters, finalGapMeters, finalSeparationSpeedMetersPerSecond, maxAccelerationMetersPerSecondSquared = .01;
@@ -56,6 +60,7 @@ namespace KspContinuum
             public string[] crewNames, screenshots;
             public EventRow[] events;
             public SetupRow[] setup;
+            public ControlRow[] controlLeases;
         }
         public ReportData Report { get; private set; }
         public static bool Requested(string[] args) { return args.Any(arg => arg.StartsWith("--continuum-docking=", StringComparison.Ordinal)); }
@@ -105,7 +110,6 @@ namespace KspContinuum
             if (va.Autopilot.Enabled || vb.Autopilot.Enabled || va.GroupOverride != 0 || vb.GroupOverride != 0 || va.ActionGroups[KSPActionGroup.SAS] || vb.ActionGroups[KSPActionGroup.SAS] || va.ActionGroups[KSPActionGroup.RCS] || vb.ActionGroups[KSPActionGroup.RCS] ||
                 parts.Any(p => p.Modules.OfType<ModuleEngines>().Any(e => e.EngineIgnited)) || !Zero(va.ctrlState) || !Zero(vb.ctrlState))
                 throw new InvalidOperationException("Seed must have idle controls, SAS/RCS off and no ignited engines.");
-            ValidateCallbacks(va); ValidateCallbacks(vb);
             foreach (Part part in parts) foreach (PartModule module in part.Modules)
                 foreach (ModuleResource input in module.resHandler.inputResources)
                 {
@@ -181,22 +185,30 @@ namespace KspContinuum
         static bool Zero(FlightCtrlState c) { return c != null && c.mainThrottle == 0 && c.X == 0 && c.Y == 0 && c.Z == 0 && c.pitch == 0 && c.yaw == 0 && c.roll == 0 && c.pitchTrim == 0 && c.yawTrim == 0 && c.rollTrim == 0; }
         void ValidateCallbacks(Vessel v)
         {
-            FlightInputCallback[] chains = { v.OnPreAutopilotUpdate, v.OnAutopilotUpdate, v.OnPostAutopilotUpdate, v.OnFlyByWire };
-            for (int index = 0; index < chains.Length; index++)
-            {
-                FlightInputCallback chain = chains[index]; if (chain == null) continue;
-                foreach (Delegate callback in chain.GetInvocationList())
-                    if (callback != (Delegate)(FlightInputCallback)Quiet &&
-                        (callback.Method.MetadataToken != 0x0600aa76 + index || callback.Method.Module.ModuleVersionId != new Guid("10657063-2fc3-43a7-84fa-d39e75e877bf")))
-                        throw new InvalidOperationException("Unowned control provider in docking seed.");
-                if (hooked.Contains(v) && index == 3 && !chain.GetInvocationList().Last().Equals((Delegate)(FlightInputCallback)Quiet))
-                    throw new InvalidOperationException("Docking control callback lost tail ownership.");
-            }
+            if (!controls.ContainsKey(v) || Chains(v).Any(chain => chain != (FlightInputCallback)Quiet))
+                throw new InvalidOperationException("Docking lost its exclusive input-control lease.");
+        }
+        static FlightInputCallback[] Chains(Vessel v) { return new[] { v.OnPreAutopilotUpdate, v.OnAutopilotUpdate, v.OnPostAutopilotUpdate, v.OnFlyByWire }; }
+        static void SetChains(Vessel v, FlightInputCallback[] chains)
+        {
+            v.OnPreAutopilotUpdate = chains[0]; v.OnAutopilotUpdate = chains[1];
+            v.OnPostAutopilotUpdate = chains[2]; v.OnFlyByWire = chains[3];
         }
         void Attach(Vessel v)
         {
-            if (hooked.Contains(v)) return;
-            ValidateCallbacks(v); v.OnFlyByWire += Quiet; hooked.Add(v);
+            if (controls.ContainsKey(v)) return;
+            FlightInputCallback[] prior = Chains(v);
+            var rows = new ControlRow[prior.Length];
+            string[] names = { "pre-autopilot", "autopilot", "post-autopilot", "fly-by-wire" };
+            for (int index = 0; index < prior.Length; index++)
+                rows[index] = new ControlRow { vesselId = v.id.ToString("D"), vesselInstanceId = v.GetInstanceID(), chain = names[index],
+                    suspendedCallbacks = prior[index] == null ? new string[0] : prior[index].GetInvocationList().Select(callback =>
+                        callback.Method.DeclaringType.FullName + "." + callback.Method.Name + ":" + callback.Method.Module.ModuleVersionId.ToString("D") + ":" +
+                        callback.Method.MetadataToken.ToString("X8", CultureInfo.InvariantCulture) + ":target=" + (callback.Target == null ? "static" : callback.Target.GetType().FullName)).ToArray() };
+            controlRows.AddRange(rows);
+            controls.Add(v, new ControlLease { callbacks = prior, rows = rows });
+            SetChains(v, new FlightInputCallback[] { Quiet, Quiet, Quiet, Quiet });
+            ValidateCallbacks(v);
         }
         void Quiet(FlightCtrlState c)
         {
@@ -341,7 +353,7 @@ namespace KspContinuum
         void Fail(Exception error) { Report.faults++; Report.reason = error.GetType().Name + ": " + error.Message; Dispose(); Report.status = "invalid"; Export(); }
         public void Export()
         {
-            Report.setup = setup.ToArray(); Report.events = events.ToArray(); Report.screenshots = images.ToArray();
+            Report.setup = setup.ToArray(); Report.events = events.ToArray(); Report.screenshots = images.ToArray(); Report.controlLeases = controlRows.ToArray();
             if (parts.All(p => p != null)) Report.finalResources = Rows(Totals());
             Report.sourceUnchanged = ScaleCheckpointLoadState.SourceUnchanged();
             if (!Report.sourceUnchanged) { Report.faults++; Report.status = "invalid"; }
@@ -350,11 +362,17 @@ namespace KspContinuum
         public void Dispose()
         {
             if (disposed) return; disposed = true;
-            foreach (Vessel vessel in hooked) if (!ReferenceEquals(vessel, null)) vessel.OnFlyByWire -= Quiet;
-            Report.hooksRemoved = hooked.All(v => ReferenceEquals(v, null) || v.OnFlyByWire == null || !v.OnFlyByWire.GetInvocationList().Contains((Delegate)(FlightInputCallback)Quiet));
+            foreach (var lease in controls)
+            {
+                SetChains(lease.Key, lease.Value.callbacks);
+                FlightInputCallback[] restored = Chains(lease.Key);
+                for (int index = 0; index < restored.Length; index++) lease.Value.rows[index].restored = restored[index] == lease.Value.callbacks[index];
+            }
+            Report.controlCallbacksRestored = controlRows.All(row => row.restored);
+            Report.hooksRemoved = controls.Keys.All(v => Chains(v).All(chain => chain == null || !chain.GetInvocationList().Contains((Delegate)(FlightInputCallback)Quiet)));
             if (lockOwned) { InputLockManager.RemoveControlLock(Lock); lockOwned = false; }
             Report.controlLockRemoved = !lockOwned;
-            Report.cleanupStatus = Report.hooksRemoved && Report.controlLockRemoved ? "removed-owned-controls" : "cleanup-error";
+            Report.cleanupStatus = Report.hooksRemoved && Report.controlLockRemoved && Report.controlCallbacksRestored ? "removed-owned-controls" : "cleanup-error";
             if (Report.cleanupStatus == "cleanup-error") Report.faults++;
         }
     }

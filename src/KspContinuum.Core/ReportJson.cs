@@ -64,6 +64,7 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.DockingQualification+EventRow" ||
                  type.FullName == "KspContinuum.DockingQualification+ResourceRow" ||
                  type.FullName == "KspContinuum.DockingQualification+SetupRow" ||
+                 type.FullName == "KspContinuum.DockingQualification+ControlRow" ||
                  type.FullName == "KspContinuum.AssetGenerationReport" ||
                  type.FullName == "KspContinuum.AssetGenerationCapability" ||
                  type.FullName == "KspContinuum.VesselRuntimeCapture+CaptureReport" ||

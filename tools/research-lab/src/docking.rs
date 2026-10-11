@@ -99,9 +99,25 @@ pub fn validate(s: &Selection, r: &Value, run: &str, pid: u32, expected_parts: u
         || r["activePortId"] != s.active_port || r["targetPortId"] != s.target_port
         || r["preparationRequested"] != s.prepare_pair || r["status"] != "complete-experimental"
         || r["faults"] != 0 || !r["reason"].is_null() || r["cleanupStatus"] != "removed-owned-controls"
-        || ["sourceUnchanged", "initialSeparate", "actualJointObserved", "exactPartPartitionsRestored", "crewConserved", "resourcesConserved", "hooksRemoved", "controlLockRemoved", "collisionsRestored", "schedulingRestored"].iter().any(|k| r[*k] != true)
+        || ["sourceUnchanged", "initialSeparate", "actualJointObserved", "exactPartPartitionsRestored", "crewConserved", "resourcesConserved", "hooksRemoved", "controlLockRemoved", "controlCallbacksRestored", "collisionsRestored", "schedulingRestored"].iter().any(|k| r[*k] != true)
         || ["mergeCount", "undockCalls", "splitCount"].iter().any(|k| r[*k] != 1)
     { return Err("docking ownership, stock event or cleanup contract failed; raw evidence retained".into()); }
+    let controls = r["controlLeases"].as_array().filter(|rows| !rows.is_empty() && rows.len() % 4 == 0 && rows.len() <= 64).ok_or("docking input-control lease census missing")?;
+    let mut leased = BTreeSet::new();
+    for rows in controls.chunks_exact(4) {
+        let vessel = rows[0]["vesselId"].as_str().ok_or("docking control vessel missing")?;
+        guid(vessel)?;
+        let instance = rows[0]["vesselInstanceId"].as_i64().filter(|id| *id != 0).ok_or("docking control instance missing")?;
+        for (row, chain) in rows.iter().zip(["pre-autopilot", "autopilot", "post-autopilot", "fly-by-wire"]) {
+            if row["vesselId"] != vessel || row["vesselInstanceId"] != instance || row["chain"] != chain || row["restored"] != true
+                || row["suspendedCallbacks"].as_array().is_none_or(|v| v.iter().any(|v| v.as_str().is_none_or(|s| s.is_empty())))
+            { return Err("docking input-control restoration witness failed".into()); }
+        }
+        if !leased.insert((vessel, instance)) { return Err("duplicate docking input-control lease".into()); }
+    }
+    if !leased.iter().any(|(v, _)| *v == s.active_vessel) || !leased.iter().any(|(v, _)| *v == s.target_vessel) {
+        return Err("docking seed lacks both input-control leases".into());
+    }
     let a = ids(&r["activePartIds"])?; let b = ids(&r["targetPartIds"])?;
     if !a.is_disjoint(&b) || !a.contains(&(s.active_port as u64)) || !b.contains(&(s.target_port as u64))
         || r["initialActiveParts"].as_u64() != Some(expected_parts as u64) || a.len() != expected_parts as usize
