@@ -23,3 +23,13 @@ The overall result is **invalid**, with exactly the physical-orbit gate failed. 
 The images show the portrait transition overlay and a changed stage delta-V display despite exact resource equality. Stock starts a portrait with `NO_SIGNAL`, then switches to its avatar after a default three-second timer, independently of asset readiness. The avatar is a 3D camera updated at a randomized 0.10–0.15 Unity game-time interval; interior sunlight follows vessel orientation. A noisy snapshot alone is expected transition behavior, not a rendering defect. The actual overlay/avatar state and the delta-V producer's readiness were not retained, so visual equivalence remains unqualified.
 
 Event coordinates provide lifecycle latency; this driver does not collect exclusive serialization cost or a flight FPS distribution. No unchanged roundtrip replay is needed before observing physical placement/center-of-mass reconstruction.
+
+## Construction-order experiments
+
+`CONTINUUM_RELOAD_PHYSICAL_WITNESS=1` records saved/live/canonical centers and the first original `OrbitDriver.TrackRigidbody` call. It preserves the original call and all numerical gates. Its geometry and timestamps diagnose ownership; they are not deterministic replay or performance qualification.
+
+`CONTINUUM_RELOAD_MASS_BARRIER=1` advances the complete original `FlightIntegrator.UpdateMassStats` after stock unpack/module initialization, before physical orbit mode. The observed invocation corrected native body masses and centers but left the 10.7 cm orbital error. Moving this work before physical tracking was too late for that fixture.
+
+`CONTINUUM_RELOAD_MASS_BARRIER=packed` instead invokes that original method immediately before the fresh vessel's first mass-bearing packed statistics calculation. A scoped predicate permits its body-publication branch for the admitted still-kinematic bodies; the original packed fields remain unchanged. The exact original branch and assembly are pinned. All parts and FI dependencies must already be ready; otherwise the experiment fails rather than delaying stock statistics or inventing readiness. Original resource, thermal and mass calculations still run. No pose, orbit or velocity repair is performed.
+
+The report retains the mode, per-body mass/center/kinematic state, live and weighted centers, epoch, original invocation clocks, reached body-publication count and actual hook removal. Constructor failures retain inner exceptions and observed cleanup. Neither experimental mode is enabled by ordinary launches; a successful selected checkpoint would still leave other vessels, mods and ordinary reload paths unqualified.
