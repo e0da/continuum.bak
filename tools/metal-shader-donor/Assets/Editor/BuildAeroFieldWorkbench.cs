@@ -30,6 +30,7 @@ public static class BuildAeroFieldWorkbench
         PlayerSettings.defaultScreenWidth=960; PlayerSettings.defaultScreenHeight=540; PlayerSettings.fullScreenMode=FullScreenMode.Windowed; PlayerSettings.runInBackground=true;
         string scenePath="Assets/ContinuumWorkbenchScene-"+Guid.NewGuid().ToString("N")+".unity";
         string materialPath=scenePath+".mat";
+        string[] multiscaleShaders={"BodyDiffuse","DepthCopy","Composite","DebugGeometry","DebugDepth"};
         var scene=EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);
         try
         {
@@ -40,7 +41,7 @@ public static class BuildAeroFieldWorkbench
             var material=new Material(fixtureShader); AssetDatabase.CreateAsset(material,materialPath); placeholder.GetComponent<Renderer>().sharedMaterial=material;
             placeholder.SetActive(false);
             if(Environment.GetEnvironmentVariable("CONTINUUM_MULTISCALE_WORKBENCH_BUILD")=="1")
-                foreach(string name in new[] {"BodyDiffuse","DepthCopy","Composite","DebugGeometry","DebugDepth"})
+                foreach(string name in multiscaleShaders)
                 {
                     Shader shader=AssetDatabase.LoadAssetAtPath<Shader>("Assets/ContinuumMultiscale/"+name+".shader");
                     if(shader==null||ShaderUtil.ShaderHasError(shader)) throw new InvalidOperationException("Multiscale shader import failed: "+name);
@@ -57,6 +58,6 @@ public static class BuildAeroFieldWorkbench
                 toolAssemblySha256=Hash(typeof(BuildAeroFieldWorkbench).Assembly.Location),playerAssemblySha256=Hash(Path.Combine(output,"Contents/Resources/Data/Managed/Assembly-CSharp.dll")),packagesSha256=Hash("Packages/manifest.json") };
             using(var writer=new StreamWriter(new FileStream(output+".build.json",FileMode.CreateNew,FileAccess.Write))) writer.Write(JsonUtility.ToJson(receipt,true));
         }
-        finally { AssetDatabase.DeleteAsset(scenePath); AssetDatabase.DeleteAsset(materialPath); foreach(string name in new[] {"BodyDiffuse","DepthCopy","Composite"}) AssetDatabase.DeleteAsset(scenePath+"-"+name+".mat"); }
+        finally { AssetDatabase.DeleteAsset(scenePath); AssetDatabase.DeleteAsset(materialPath); foreach(string name in multiscaleShaders) AssetDatabase.DeleteAsset(scenePath+"-"+name+".mat"); }
     }
 }
