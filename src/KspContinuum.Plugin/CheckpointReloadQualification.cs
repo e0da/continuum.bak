@@ -163,11 +163,13 @@ namespace KspContinuum
             yield return new WaitForFixedUpdate();
             if (!Try(Reload)) yield break;
             float loadStart = Time.realtimeSinceStartup;
-            while (!PhysicalReady() || ReferenceEquals(FlightGlobals.ActiveVessel, vessel))
+            while (!PhysicalReady() || ReferenceEquals(FlightGlobals.ActiveVessel, vessel) || (report.physicalWitnessRequested&&(report.firstTrack==null||report.firstTrack.output==null)))
             {
                 if(finished)yield break;
                 if(stockReload!=null&&stockReload.Error!=null){Fail(stockReload.Error);yield break;}
-                if (Time.realtimeSinceStartup - loadStart > 90) { Fail(new TimeoutException("Reload physical readiness timeout.")); yield break; }
+                if(physicalErrors.Count!=0){Fail(new InvalidOperationException("Reload physical witness observation failed: "+string.Join("; ",physicalErrors)));yield break;}
+                if(FlightGlobals.ActiveVessel!=null&&!ReferenceEquals(FlightGlobals.ActiveVessel,vessel)&&Planetarium.GetUniversalTime()-before.universalTime>report.maximumReloadSimulationSeconds){Fail(new InvalidOperationException("Reload readiness/first original physical transition exceeded frozen simulation-time gate."));yield break;}
+                if (Time.realtimeSinceStartup - loadStart > 90) { Fail(new TimeoutException("Reload physical readiness/first original TrackRigidbody timeout; stock pause state was left unchanged.")); yield break; }
                 yield return null;
             }
             if (!Try(() => { vessel = FlightGlobals.ActiveVessel; Verify(); BeginCamera(); Record("reloaded"); })) yield break;
