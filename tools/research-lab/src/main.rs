@@ -1205,6 +1205,7 @@ fn smoke(
                 &run_id,
                 child.id(),
             )?;
+            summary["processCapture"] = continuum_research_lab::process_capture::summarize(&report, &run_id, child.id())?;
             if let Some(library) = &request.gpu_timing_library {
                 summary["gpuTiming"] = continuum_research_lab::gpu_timing::retain_summary(
                     output,
@@ -1481,7 +1482,7 @@ fn smoke(
         "assetGenerationSha256":asset_generation_sha,"assetGenerationEvidence":generation_evidence,"assetGenerationError":generation_error,
         "flightRequest":flight,"flightCapture":flight_summary,"flightCaptureError":flight_error,"flightEntry":flight_entry,
         "flightNativeSample":native_sample_receipt,"flightFailureEvidence":flight_failure_evidence,"flightRecoveryError":flight_recovery_error,
-        "captureCpuRss":"not-collected-by-runner; external-owned-process-sampling-required","wallSeconds":started.elapsed().as_secs_f64(),"exitCode":status.code(),
+        "captureCpuRss":flight_summary.as_ref().map(|summary| &summary["processCapture"]),"wallSeconds":started.elapsed().as_secs_f64(),"exitCode":status.code(),
         "runId":run_id,"mainMenuStartObservedWallSeconds":menu_elapsed,"startupBoundary":"first-owned-addon-Start-in-main-menu","startupPollingResolutionSeconds":0.1,
         "admissionWallSeconds":admission_seconds,"admissionPlusMenuSeconds":menu_elapsed.map(|seconds| seconds+admission_seconds),
         "startupUnlimitedRequested":startup_unlimited,
