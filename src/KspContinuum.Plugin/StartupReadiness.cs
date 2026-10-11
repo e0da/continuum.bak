@@ -24,6 +24,7 @@ namespace KspContinuum
         bool quitting;
         bool stockTargetReadiness;
         bool generationWitness;
+        bool siteGenerationReadiness;
         MethodInfo generationCityOrientate, generationCity2Orientate;
         public sealed class Frame
         {
@@ -36,6 +37,7 @@ namespace KspContinuum
             public bool ForceCompleted;
             public bool CallerObserved;
             internal StartupTerrainGenerationWitness.Context Generation;
+            internal StartupSiteTerrainGeneration.Token SiteGeneration;
         }
         public struct MoveState { public Frame Previous; }
 
@@ -43,6 +45,9 @@ namespace KspContinuum
         {
             stockTargetReadiness = Environment.GetCommandLineArgs().Contains("--continuum-startup-stock-terrain-ready");
             generationWitness = Environment.GetCommandLineArgs().Contains("--continuum-startup-terrain-generation-witness") || Environment.GetEnvironmentVariable("CONTINUUM_STARTUP_TERRAIN_GENERATION_WITNESS") == "1";
+            siteGenerationReadiness = Environment.GetCommandLineArgs().Contains("--continuum-startup-site-terrain-ready") || Environment.GetEnvironmentVariable("CONTINUUM_STARTUP_SITE_TERRAIN_READY") == "1";
+            if (siteGenerationReadiness && (!Environment.GetCommandLineArgs().Contains("--continuum-startup-readiness") || stockTargetReadiness || Environment.GetCommandLineArgs().Contains("--continuum-startup-deferred-terrain")))
+            { Debug.LogError(Marker + "status=rejected reason=site-generation-requires-readiness-and-distinct-treatment"); Application.Quit(2); return; }
             if (generationWitness && !Environment.GetCommandLineArgs().Contains("--continuum-startup-readiness"))
             { Debug.LogError(Marker + "status=rejected reason=generation-witness-requires-startup-readiness"); Application.Quit(2); return; }
             if (stockTargetReadiness && !Environment.GetCommandLineArgs().Contains("--continuum-startup-readiness"))
@@ -70,7 +75,7 @@ namespace KspContinuum
                 siteField = AccessTools.DeclaredField(iterator, "<launchSite>5__4");
                 if (sphereField?.FieldType != typeof(PQS) || temporaryField?.FieldType != typeof(GameObject) || siteField?.FieldType != typeof(LaunchSite))
                     throw new InvalidOperationException("Launch-site state differs.");
-                if (generationWitness)
+                if (generationWitness || siteGenerationReadiness)
                 {
                     generationCityOrientate = AccessTools.DeclaredMethod(typeof(PQSCity), "Orientate", new[] { typeof(bool) });
                     generationCity2Orientate = AccessTools.DeclaredMethod(typeof(PQSCity2), "Orientate", Type.EmptyTypes);
@@ -105,7 +110,7 @@ namespace KspContinuum
             LaunchSite site = active.siteField.GetValue(iterator) as LaunchSite;
             if (StartupDeferredTerrain.Defer(setup, sphere, target, site)) return;
             StartupDeferredTerrain.BeforeStockForce(sphere);
-            if (active.generationWitness) frame.Generation = StartupTerrainGenerationWitness.Begin(sphere, target, site);
+            if (active.generationWitness || active.siteGenerationReadiness) frame.Generation = StartupTerrainGenerationWitness.Begin(sphere, target, site);
             originalForce(setup, sphere, target);
             frame.StockReturnedTarget = sphere == null ? null : sphere.target;
             frame.StockTargetCaptured = sphere != null;
@@ -113,6 +118,7 @@ namespace KspContinuum
             frame.StockTargetLiveAtReturn = frame.StockReturnedTarget != null;
             frame.StockTargetIdAtReturn = frame.StockTargetLiveAtReturn ? frame.StockReturnedTarget.GetInstanceID() : 0;
             frame.ForceCompleted = true;
+            if (active.siteGenerationReadiness) frame.SiteGeneration = StartupSiteTerrainGeneration.Capture(frame.Generation);
             if (active.generationWitness)
             {
                 StartupTerrainGenerationWitness.Observe(frame.Generation, "force-return");
@@ -182,6 +188,9 @@ namespace KspContinuum
             if (StartupDeferredTerrain.IsPending(site)) return null;
             Frame frame;
             bool framePresent = active.frames.TryGetValue(iterator, out frame);
+            if (active.siteGenerationReadiness && framePresent && frame.SiteGeneration != null && frame.ForceCompleted &&
+                ReferenceEquals(frame.SiteGeneration.Context.Site, site) && ReferenceEquals(frame.Sphere, sphere) && temporary != null && ReferenceEquals(frame.Target, temporary.transform))
+                return StartupSiteTerrainGeneration.Wait(frame.SiteGeneration, seconds);
             bool sitePresent = site != null, spherePresent = sphere != null, temporaryPresent = temporary != null;
             bool callerObserved = framePresent && frame.CallerObserved;
             bool forceCompleted = framePresent && frame.ForceCompleted;
@@ -244,6 +253,7 @@ namespace KspContinuum
         {
             if (exported) return; exported = true;
             StartupDeferredTerrain.Observe(phase);
+            if (siteGenerationReadiness) StartupSiteTerrainGeneration.ObserveMenu();
             Debug.Log(Marker + "status=observed shortenedPlacementWaits=" + shortened + " stockPlacementWaits=" + stockFallbacks + " presentationWaits=" + presentationWaits + " terrainWaits=" + terrainWaits + " terrainPolls=" + terrainPolls + " terrainRays=" + terrainRays + " fixedBarriers=" + fixedBarriers);
         }
         void Cleanup() { harmony?.UnpatchAll(Owner); harmony = null; frames.Clear(); }

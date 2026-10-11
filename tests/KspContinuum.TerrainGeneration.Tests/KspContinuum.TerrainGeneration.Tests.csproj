@@ -1,4 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><TreatWarningsAsErrors>true</TreatWarningsAsErrors></PropertyGroup>
   <ItemGroup><Compile Include="../../src/KspContinuum.Core/TerrainGeometryFingerprint.cs" Link="TerrainGeometryFingerprint.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../src/KspContinuum.Core/TerrainGenerationAgreement.cs" Link="TerrainGenerationAgreement.cs" /></ItemGroup>
 </Project>
