@@ -54,9 +54,31 @@ namespace KspContinuum
             public StateRow before, after;
         }
 
-        internal ReloadMassInitialization(Guid selected, int priorInstance, uint[] selectedParts, bool earlyPacked = false)
+        internal static ReloadMassInitialization Create(Guid selected,int priorInstance,uint[] selectedParts,bool earlyPacked,ReportData report)
         {
-            Report = new ReportData { requested = true, status = "requested", vesselId = selected.ToString("D") };
+            try{return new ReloadMassInitialization(selected,priorInstance,selectedParts,earlyPacked,report);}
+            catch(Exception error)
+            {
+                report.status="invalid";report.faults++;report.error=ExceptionText(error);
+                try
+                {
+                    MethodInfo statistics=AccessTools.DeclaredMethod(typeof(VesselPrecalculate),"CalculatePhysicsStats",Type.EmptyTypes),rails=AccessTools.DeclaredMethod(typeof(Vessel),"GoOffRails",Type.EmptyTypes),mass=AccessTools.DeclaredMethod(typeof(FlightIntegrator),"UpdateMassStats",Type.EmptyTypes);
+                    report.hooksRemoved=new[]{statistics,rails,mass}.All(m=>m!=null&&Harmony.GetPatchInfo(m)?.Owners.Contains(Owner)!=true);
+                    report.cleanupStatus=report.hooksRemoved?"installation-failed-no-owned-hooks-observed":"installation-failed-owned-hook-present";
+                }
+                catch(Exception cleanup){report.hooksRemoved=false;report.cleanupStatus="installation-cleanup-observation-error";report.error+=" | cleanup: "+ExceptionText(cleanup);}
+                throw;
+            }
+        }
+        internal static string ExceptionText(Exception error)
+        {
+            var messages=new List<string>();
+            for(int i=0;error!=null&&i<8;i++,error=error.InnerException)messages.Add(error.GetType().FullName+": "+error.Message);
+            return string.Join(" -> ",messages);
+        }
+        ReloadMassInitialization(Guid selected, int priorInstance, uint[] selectedParts, bool earlyPacked,ReportData suppliedReport)
+        {
+            Report = suppliedReport; Report.requested=true;Report.status="requested";Report.vesselId=selected.ToString("D");
             vesselId = selected; oldInstance = priorInstance; parts = new HashSet<uint>(selectedParts); expectedParts = selectedParts.Length;
             thread = System.Threading.Thread.CurrentThread.ManagedThreadId;
             packedMode=earlyPacked; Report.mode=packedMode?"packed":"unpacked";
@@ -94,7 +116,7 @@ namespace KspContinuum
         {
             var codes=source.ToList();
             int index=codes.FindIndex(c=>c.opcode==OpCodes.Ldfld&&Equals(c.operand,Packed));
-            if(index<0||codes.Count(c=>c.opcode==OpCodes.Ldfld&&Equals(c.operand,Packed))!=1||index+1>=codes.Count||(codes[index+1].opcode!=OpCodes.Brfalse&&codes[index+1].opcode!=OpCodes.Brfalse_S))
+            if(index<0||codes.Count(c=>c.opcode==OpCodes.Ldfld&&Equals(c.operand,Packed))!=1||index+1>=codes.Count||codes[index+1].opcode!=OpCodes.Brtrue)
                 throw new InvalidOperationException("Original sole packed mass-publication guard differs.");
             codes[index].opcode=OpCodes.Call;codes[index].operand=AccessTools.DeclaredMethod(typeof(ReloadMassInitialization),"PackedForPublication");
             return codes;

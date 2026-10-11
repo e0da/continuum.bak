@@ -267,7 +267,7 @@ namespace KspContinuum
             if(HighLogic.SaveFolder!=ScaleCheckpointLoadState.Save)throw new InvalidOperationException("Selected save folder changed before reload.");
             if(report.massInitialization!=null)
             {
-                massInitialization=new ReloadMassInitialization(Guid.Parse(before.vesselId),before.instanceId,before.parts.Select(p=>p.flightId).ToArray(),report.massInitialization.mode=="packed");
+                massInitialization=ReloadMassInitialization.Create(Guid.Parse(before.vesselId),before.instanceId,before.parts.Select(p=>p.flightId).ToArray(),report.massInitialization.mode=="packed",report.massInitialization);
                 report.massInitialization=massInitialization.Report;
             }
             FlightDriver.StartAndFocusVessel(reloadedGame, reloadedGame.flightState.activeVesselIdx);
@@ -418,7 +418,7 @@ namespace KspContinuum
         }
         void Fail(Exception error)
         {
-            if(finished)return;finished=true;report.status="invalid";report.reason=error.GetType().Name+": "+error.Message;report.faults++;
+            if(finished)return;finished=true;report.status="invalid";report.reason=ReloadMassInitialization.ExceptionText(error);report.faults++;
             try{Cleanup();Export();}catch(Exception cleanup){Debug.LogException(cleanup);}Application.Quit(2);
         }
         void OnDestroy(){if(owner!=this)return;if(!finished&&report!=null)Fail(new InvalidOperationException("Persistent reload coordinator destroyed before completion."));owner=null;}
