@@ -164,7 +164,7 @@ namespace KspContinuum
         static void LoadMenu(GameScenes scene) { active.Mark("before-highlogic-load-" + scene); HighLogic.LoadScene(scene); active.Mark("after-highlogic-load-invocation-" + scene); }
         void Mark(string name) { points.Add(new Point { name = name, ticks = Stopwatch.GetTimestamp() - epoch, engineSeconds = Time.realtimeSinceStartup }); }
         void SceneLoaded(Scene scene, LoadSceneMode mode) { Mark("scene-loaded-" + scene.buildIndex + "-" + mode); }
-        public static void ObserveForMenu() { StartupPinnedGameIdentity.ObserveForMenu(); StartupModelTiming.ObserveForMenu(); if (active != null && !active.exported) { active.Mark("owned-mainmenu-observation"); active.Export("menu-observed"); active.Cleanup(); } }
+        public static void ObserveForMenu() { StartupPinnedGameIdentity.ObserveForMenu(); StartupModelTiming.ObserveForMenu(); StartupConstructionTiming.ObserveForMenu(); if (active != null && !active.exported) { active.Mark("owned-mainmenu-observation"); active.Export("menu-observed"); active.Cleanup(); } }
         public void Update() { if (active == this && !exported && HighLogic.LoadedScene == GameScenes.MAINMENU) ObserveForMenu(); }
         void Export(string status)
         {

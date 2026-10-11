@@ -121,3 +121,9 @@ Keep proprietary source/assets/saves/distributions and detailed receipts in priv
 - [Strangler fig](https://martinfowler.com/bliki/StranglerFigApplication.html): incremental boundary replacement, alongside whole-game migration.
 - [REA](https://github.com/morluto/rea) and its [reconstruction obligations](https://github.com/morluto/rea/blob/main/docs/reconstruction-obligation-ledgers.md): traceable evidence and explicit unknowns; no MCP dependency.
 - [Unity architecture API](https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Build.OSArchitecture.html): verify architecture support against the actual pinned editor before build qualification.
+
+## Startup construction attribution
+
+`--startup-construction-timing true` requires the existing work scheduler and world timing in a startup-only run. It observes exact pinned loading callsites, synchronous child priming, loading-system construction, readiness polls and iterator resumption gaps without changing original calls or ordering. Inclusive scopes overlap. Wait and wake envelopes include scheduling and child work, not exclusive CPU. Initial database work can precede addon installation; state-zero coverage must remain explicitly unobserved when absent. An early owned native sample supplies complementary evidence, with unresolved translated managed stacks retained.
+
+The runner retains the nonce/PID-owned report before validation and requires zero measured errors and observed owner-specific hook removal. Missing or rejected evidence fails the requested diagnostic. Instrumented startup time cannot establish a clean performance gain. Use the resulting owner ranking to replace avoidable work, then measure without these observers.

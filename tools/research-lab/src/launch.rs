@@ -86,7 +86,39 @@ pub struct Diagnostics {
     pub profile: bool,
     pub texture_observe: bool,
     pub world_timing: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub construction_timing: bool,
     pub site_proof: Option<String>,
+}
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+pub fn validate_construction_closure(report: &serde_json::Value) -> Result<()> {
+    let failure = || {
+        "construction observer did not close ownership or recorded a measured failure".to_string()
+    };
+    if report["cleanupStatus"] != "removed-owned-hooks"
+        || report["hooksRemoved"].as_bool() != Some(true)
+    {
+        return Err(failure());
+    }
+    for row in report["scopes"].as_array().ok_or_else(failure)? {
+        if row["errors"].as_u64() != Some(0) {
+            return Err(failure());
+        }
+    }
+    for row in report["children"].as_array().ok_or_else(failure)? {
+        if row["errors"].as_u64() != Some(0) || row["synchronous"]["errors"].as_u64() != Some(0) {
+            return Err(failure());
+        }
+    }
+    for row in report["readiness"].as_array().ok_or_else(failure)? {
+        if row["errors"].as_u64() != Some(0) || row["construction"]["errors"].as_u64() != Some(0) {
+            return Err(failure());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -172,6 +204,7 @@ impl ResolvedLaunch {
                 profile: boolean("--startup-profile")?,
                 texture_observe: boolean("--startup-texture-observe")?,
                 world_timing: boolean("--startup-world-timing")?,
+                construction_timing: boolean("--startup-construction-timing")?,
                 site_proof: options.get("--startup-site-proof").cloned(),
             },
             native_asset_installation: path("--native-asset-installation"),
@@ -189,6 +222,11 @@ impl ResolvedLaunch {
             return Err("timeout must be 1..1800 seconds".into());
         }
         let s = &self.startup;
+        if self.diagnostics.construction_timing
+            && (!s.work_scheduler || !self.diagnostics.world_timing || self.flight.is_some())
+        {
+            return Err("startup construction timing requires work-scheduler, world-timing and a startup-only run".into());
+        }
         if s.deferred_terrain && !s.readiness {
             return Err("deferred terrain requires startup-readiness".into());
         }
@@ -339,6 +377,59 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+    #[test]
+    fn construction_requires_owned_startup_and_preserves_legacy_identity() {
+        let legacy = ResolvedLaunch::parse(&BTreeMap::new()).unwrap();
+        assert!(!legacy
+            .identity_json()
+            .unwrap()
+            .contains("constructionTiming"));
+        assert_eq!(
+            legacy.identity_json().unwrap(),
+            ResolvedLaunch::parse_from_json(&legacy.identity_json().unwrap())
+                .unwrap()
+                .identity_json()
+                .unwrap()
+        );
+        let mut input = options(&[("--startup-construction-timing", "true")]);
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        let closed = serde_json::json!({"cleanupStatus":"removed-owned-hooks", "hooksRemoved":true,
+            "scopes":[{"errors":0}], "children":[{"errors":0,"synchronous":{"errors":0}}],
+            "readiness":[{"errors":0,"construction":{"errors":0}}]});
+        assert!(validate_construction_closure(&closed).is_ok());
+        for path in [
+            "/hooksRemoved",
+            "/scopes/0/errors",
+            "/children/0/errors",
+            "/children/0/synchronous/errors",
+            "/readiness/0/errors",
+            "/readiness/0/construction/errors",
+        ] {
+            let mut corrupt = closed.clone();
+            *corrupt.pointer_mut(path).unwrap() = if path == "/hooksRemoved" {
+                serde_json::json!(false)
+            } else {
+                serde_json::json!(1)
+            };
+            assert!(
+                validate_construction_closure(&corrupt).is_err(),
+                "accepted corrupt closure {path}"
+            );
+        }
+        input.insert("--startup-work-scheduler".into(), "true".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input.insert("--startup-world-timing".into(), "true".into());
+        let launch = ResolvedLaunch::parse(&input).unwrap();
+        assert!(
+            ResolvedLaunch::parse_from_json(&launch.identity_json().unwrap())
+                .unwrap()
+                .diagnostics
+                .construction_timing
+        );
+        input.insert("--flight-save".into(), "Research".into());
+        input.insert("--flight-checkpoint".into(), "station".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
     }
     #[test]
     fn preparation_cannot_capture_or_compete_for_process_exit() {

@@ -91,6 +91,11 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.AtmosphericEntryPreparation+Report" ||
                  type.FullName == "KspContinuum.AtmosphericEntryPreparation+Sample" ||
                  type.FullName == "KspContinuum.StartupModelTiming+Report" ||
+                 type.FullName == "KspContinuum.StartupConstructionTiming+Report" ||
+                 type.FullName == "KspContinuum.StartupConstructionTiming+Scope" ||
+                 type.FullName == "KspContinuum.StartupConstructionTiming+Resume" ||
+                 type.FullName == "KspContinuum.StartupConstructionTiming+Child" ||
+                 type.FullName == "KspContinuum.StartupConstructionTiming+Readiness" ||
                  type.FullName == "KspContinuum.FlightGpuTiming+Report" ||
                  type.FullName == "KspContinuum.FlightGpuTiming+CameraRow" ||
                  type.FullName == "KspContinuum.StartupModelTiming+Metric" ||
