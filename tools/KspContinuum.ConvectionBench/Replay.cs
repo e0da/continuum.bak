@@ -2,12 +2,13 @@ using System;
 using System.Collections.Generic;
 using KspContinuum;
 
-enum Treatment { Stock, CandidateIndex, CachedTan, StockDelegate, CachedTanTwoSlot }
+enum Treatment { Stock, CandidateIndex, CachedTan, StockDelegate, CachedTanTwoSlot, ResetStock, ResetCandidate }
 sealed class ReplayResult
 {
     public double[] multipliers;
     public ConvectionCone[] cones;
     public long scalarPairs, possiblePairs, candidatePairs, indexNodeVisits, tanHits, tanMisses, tanUncached;
+    public long resetRectangleCalls, resetGeometryCalls, resetAnchorProbes, resetAnchors, resetBoundSteps, resetRows, resetNoResetRows, resetSkippedScalarPairs, resetAttemptedScalarPairs;
     public string fallbackReason;
 }
 static class Replay
@@ -15,6 +16,8 @@ static class Replay
     sealed class Fallback : Exception { public Fallback(string reason) : base(reason) { } }
     public static ReplayResult Evaluate(ConvectionFrame frame, Treatment treatment)
     {
+        if (treatment == Treatment.ResetCandidate) return ResetKernel.Evaluate(frame);
+        if (treatment == Treatment.ResetStock) return ResetKernel.EvaluateStock(frame);
         try { return Run(frame, treatment); }
         catch (Fallback error)
         {

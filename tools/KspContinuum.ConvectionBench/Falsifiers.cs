@@ -4,6 +4,66 @@ using KspContinuum;
 
 static class Falsifiers
 {
+    public static object RunReset()
+    {
+        Stock.Admit(); double[] globals = Stock.Globals(); bool logging = GameSettings.FI_LOG_TEMP_ERROR; var witnesses = new List<object>();
+        try
+        {
+            GameSettings.FI_LOG_TEMP_ERROR = false;
+            using (var kernel = new ResetKernel())
+            {
+                ReplayResult MatchReset(ConvectionFrame frame, bool fallback)
+                {
+                    ReplayResult original = Replay.Evaluate(frame, Treatment.ResetStock), candidate = Replay.Evaluate(frame, Treatment.ResetCandidate);
+                    Require(Replay.Compare(candidate, original) == null, "Reset fixture differs from original bits.");
+                    Require((candidate.fallbackReason != null) == fallback, "Reset fixture fallback coverage differs."); return candidate;
+                }
+                var poison = Frame(2, globals); poison.globals[11] = double.NaN;
+                var result = MatchReset(poison, true); Require(double.IsNaN(result.multipliers[4]), "Poison fixture did not reach stock zero-times-NaN.");
+                witnesses.Add(new { name = "reset-nonfinite-stock-fallback-bitwise", result.fallbackReason });
+
+                var direct = Stock.Input(Frame(1, globals).rows[0]); direct.projectedCenter = new UnityEngine.Vector3(30, 0, 0);
+                direct.minExtents = new UnityEngine.Vector2(29, -1); direct.maxExtents = new UnityEngine.Vector2(31, 1);
+                var cone = new OcclusionCone { radius = 100, extents = new UnityEngine.Vector2(1, 1), shockConvectionTempMult = .75, shockConvectionCoeffMult = 1,
+                    occludeConvectionTempMult = .55, occludeConvectionCoeffMult = 1, occludeConvectionAreaMult = 1 };
+                foreach (double old in new[] { double.NaN, double.PositiveInfinity, double.NegativeInfinity })
+                {
+                    double temp = old, coeff = 1; ResetKernel.Original(direct, cone, ref temp, ref coeff);
+                    Require(double.IsNaN(temp), "Full shock incorrectly erased nonfinite prefix poison.");
+                }
+                witnesses.Add(new { name = "full-shock-still-multiplies-prefix-poison", nonfiniteInputs = 3 });
+
+                var cutoff = Frame(3, globals); cutoff.rows[0].invFineness = 1;
+                cutoff.rows[1].projectedCenter[0] = cutoff.rows[1].center[0] = 10; cutoff.rows[1].minExtents[0] = 9; cutoff.rows[1].maxExtents[0] = 11;
+                cutoff.rows[1].centroidDot = -100; cutoff.rows[1].minimumDot = -102; cutoff.rows[1].maximumDot = -98;
+                cutoff.rows[2].projectedCenter[0] = cutoff.rows[2].center[0] = 0; cutoff.rows[2].minExtents[0] = -1; cutoff.rows[2].maxExtents[0] = 1;
+                cutoff.rows[2].centroidDot = -200; cutoff.rows[2].minimumDot = -202; cutoff.rows[2].maximumDot = -198;
+                result = MatchReset(cutoff, false);
+                Require(result.cones.Length == 2 && result.multipliers[8] == 0 && result.candidatePairs == 2 && result.resetRectangleCalls == 2, "Cutoff did not exclude the later accepted cone.");
+                var later = Stock.Input(cutoff.rows[1]); later.convCone.Setup(later, 2, Math.Asin(.5), .7957 * (1 - 1.0 / 8));
+                var receiver = Stock.Input(cutoff.rows[2]); double testTemp = result.multipliers[6], testCoeff = result.multipliers[7];
+                ResetKernel.Original(receiver, later.convCone, ref testTemp, ref testCoeff);
+                Require(BitConverter.DoubleToInt64Bits(testTemp) != BitConverter.DoubleToInt64Bits(result.multipliers[6]), "Excluded later full shock was not an independent thermal counterexample.");
+                witnesses.Add(new { name = "area-cutoff-before-later-shock", result.candidatePairs, result.resetRectangleCalls, actualTemp = result.multipliers[6], unreachedResetTemp = testTemp });
+
+                var threshold = Frame(2, globals); threshold.rows[0].invFineness = 1;
+                threshold.rows[1].center = new[] { 0f, 0f }; threshold.rows[1].minExtents = new[] { -1f, -1f }; threshold.rows[1].maxExtents = new[] { 1f, 1f };
+                result = MatchReset(threshold, false);
+                Require(result.multipliers[5] == 0 && result.multipliers[3] == 0 && result.resetRows == 1, "Original cylinder threshold did not force full reset despite disjoint shock circle.");
+                witnesses.Add(new { name = "original-cylinder-threshold-precedes-circle", result.resetRows, actualTemp = result.multipliers[3] });
+
+                var signed = Frame(2, globals); signed.globals[11] = BitConverter.Int64BitsToDouble(long.MinValue); result = MatchReset(signed, true);
+                witnesses.Add(new { name = "reset-negative-zero-stock-fallback-bitwise", result.fallbackReason });
+
+                var overflow = Frame(2, globals); overflow.rows[1].projectedCenter[0] = 1e30f; result = MatchReset(overflow, true);
+                witnesses.Add(new { name = "reset-float-overflow-domain-stock-fallback", result.fallbackReason });
+                GameSettings.FI_LOG_TEMP_ERROR = true; result = MatchReset(Frame(2, globals), true);
+                witnesses.Add(new { name = "reset-logging-domain-stock-fallback", result.fallbackReason });
+            }
+            return new { status = "reset-focused-falsifiers-passed", witnesses };
+        }
+        finally { Stock.Globals(globals); GameSettings.FI_LOG_TEMP_ERROR = logging; }
+    }
     static void Require(bool condition, string reason) { if (!condition) throw new InvalidOperationException(reason); }
     static ConvectionFrame Frame(int count, double[] globals)
     {
