@@ -2,6 +2,8 @@
 
 This opt-in consumer loads a `continuum-multiscale-scene/v1` produced from an actual vessel and its actual scaled celestial-body mesh. It does not substitute procedural planet/craft geometry. Body texture bytes, sampler metadata, source transform and the unchanged resident vessel subfixture are digest-bound. The body shader is an explicitly approximate diffuse recipe, not stock atmospheric appearance.
 
+The resident v2 geometry wire omits vertex colors: its producer admits only absent or exactly white source colors. The consumer therefore uploads explicit RGBA white vertex colors once, preserving that semantic for shaders that multiply albedo by `COLOR`. It does not rely on a backend's value for a missing vertex attribute. Nonwhite source colors require a richer admitted representation rather than this normalization.
+
 Copy the canonical `ResidentMaterialFormat.cs` and `MultiscaleSceneFormat.cs` from Core into the private project's `Assets`, along with this tool's updated workbench/runtime/editor files and `ContinuumMultiscale` shaders. Build with the existing `BuildAeroFieldWorkbench.Build` method, declaring `CONTINUUM_MULTISCALE_WORKBENCH_BUILD=1`, `CONTINUUM_SHADER_GRAPHICS_API=Metal,OpenGLCore`, and `CONTINUUM_AERO_WORKBENCH_PLAYER=<new absolute .app>`. The build serializes references to all three original presentation shaders and binds the actual player assembly and both copied Core files.
 
 Launch that player with `-force-metal` and:

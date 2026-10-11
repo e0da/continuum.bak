@@ -109,9 +109,9 @@ public sealed class ResidentMaterialRuntime : IDisposable
             meshes=new Mesh[geometry.meshes.Length];
             for(int j=0;j<meshes.Length;j++)
             {
-                var g=geometry.meshes[j]; int n=g.positions.Length/3; var vertices=new Vector3[n]; var normals=new Vector3[n]; var uv=new Vector2[n]; var tangents=new Vector4[n];
-                for(int i=0;i<n;i++) { vertices[i]=new Vector3(g.positions[i*3],g.positions[i*3+1],g.positions[i*3+2]); normals[i]=new Vector3(g.normals[i*3],g.normals[i*3+1],g.normals[i*3+2]); uv[i]=new Vector2(g.uv[i*2],g.uv[i*2+1]); tangents[i]=new Vector4(g.tangents[i*4],g.tangents[i*4+1],g.tangents[i*4+2],g.tangents[i*4+3]); }
-                var mesh=new Mesh {name="Resident immutable mesh",indexFormat=IndexFormat.UInt32}; owned.Add(mesh); mesh.vertices=vertices; mesh.normals=normals; mesh.uv=uv; mesh.tangents=tangents; mesh.triangles=g.indices; mesh.RecalculateBounds(); meshes[j]=mesh; VertexCount+=n; TriangleCount+=g.indices.Length/3;
+                var g=geometry.meshes[j]; int n=g.positions.Length/3; var vertices=new Vector3[n]; var normals=new Vector3[n]; var uv=new Vector2[n]; var tangents=new Vector4[n]; var colors=new Color32[n];
+                for(int i=0;i<n;i++) { vertices[i]=new Vector3(g.positions[i*3],g.positions[i*3+1],g.positions[i*3+2]); normals[i]=new Vector3(g.normals[i*3],g.normals[i*3+1],g.normals[i*3+2]); uv[i]=new Vector2(g.uv[i*2],g.uv[i*2+1]); tangents[i]=new Vector4(g.tangents[i*4],g.tangents[i*4+1],g.tangents[i*4+2],g.tangents[i*4+3]); colors[i]=new Color32(255,255,255,255); }
+                var mesh=new Mesh {name="Resident immutable mesh",indexFormat=IndexFormat.UInt32}; owned.Add(mesh); mesh.vertices=vertices; mesh.normals=normals; mesh.uv=uv; mesh.tangents=tangents; mesh.colors32=colors; mesh.triangles=g.indices; mesh.RecalculateBounds(); meshes[j]=mesh; VertexCount+=n; TriangleCount+=g.indices.Length/3;
             }
             textures=new Texture2D[Manifest.textures.Length];
             for(int i=0;i<textures.Length;i++)
