@@ -94,8 +94,6 @@ The observed 0.408 ms (2.12%) mean-frame reduction does not select PQS drawing a
 
 The admitted mapped material family now preserves original tangents, published texture content, sampler/mip/color semantics, separate stock/prepared bindings, visual state and selected shader globals. Its native stock oracle proves the selected surface states; the full-game observation charges capture and publication. Broader reflection, underwater and shadow coverage remains open. Extend the resident contract toward a meaningful vessel/scene consumer rather than repeating the small-family pair. Neither gray-fixture timings nor callback envelopes can rank missing GPU owners by subtraction. Resident terrain/ocean LOD, depth and shadow ownership stays available when a different view or world-cost observation justifies it.
 
-## Computation and engine ownership
-
 ## Continuous whole-runtime redesign
 
 Continuously redesign while replacing coherent owners. Maintain a broad map of actual execution, authoritative state, readers/writers, readiness dependencies and cost. Deepen reconstruction where it can resolve an implementation choice. The private searchable assembly/asset index is a shared reference; full source reconstruction is not a prerequisite for every useful change. Conversely, replacing isolated functions without understanding their dependency chain can preserve the architectural cause.
