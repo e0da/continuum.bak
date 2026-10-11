@@ -250,7 +250,7 @@ namespace KspContinuum
                 captureActive=false;
                 processEndBoundary = processCapture == null ? null : processCapture.MarkBoundary();
                 report.captureEndClockTimestamp = processEndBoundary == null ? Stopwatch.GetTimestamp() : processEndBoundary.clockTimestamp;
-                if (processCapture != null) processCapture.End(processEndBoundary, report.status == "complete");
+                if (processCapture != null) processCapture.End(processEndBoundary, simulationSeconds <= 0 || report.status == "complete");
                 ResearchPanelPresentation.EndCapture(report.researchPanel, report.captureEndClockTimestamp);
                 if (report.researchPanel.status != "complete") { report.status = "invalid"; report.completionReason = "research-panel-visibility-or-callback-invalid"; }
                 FlightLocalCamera.EndWindow(report.captureEndClockTimestamp);
@@ -484,7 +484,11 @@ namespace KspContinuum
             clock.Stop();
             Action<ProbeReport> callback = completion;
             completion = null;
-            if (report == null || callback == null) return;
+            if (report == null || callback == null)
+            {
+                if (processCapture != null) { processCapture.Dispose(); processCapture = null; }
+                return;
+            }
             try
             {
                 report.cleanupErrors = errors.ToArray();
@@ -517,7 +521,6 @@ namespace KspContinuum
                     { report.status = "invalid"; report.completionReason = "vessel-runtime-" + vesselRuntime.Report.status; }
                 }
                 if (report.captureStartClockTimestamp > 0) Signal("capture-end", report.completionReason);
-                if (processCapture != null) { processCapture.Dispose(); processCapture = null; }
                 callback(report);
             }
             catch (Exception error)
@@ -527,6 +530,7 @@ namespace KspContinuum
                 UnityEngine.Debug.LogError("[Continuum] Partial profiling report export failed: " + error.GetType().Name);
                 UnityEngine.Debug.LogException(error);
             }
+            finally { if (processCapture != null) { processCapture.Dispose(); processCapture = null; } }
         }
 
         public void Dispose() { Finish(true); }

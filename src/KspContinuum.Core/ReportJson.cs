@@ -107,6 +107,9 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.AeroStepContext+ReportData" ||
                  type.FullName == "KspContinuum.AeroStepContext+MethodRow" ||
                  type.FullName == "KspContinuum.AeroStepContext+Window" ||
+                 type.FullName == "KspContinuum.ProcessCaptureDiagnostics+ReportData" ||
+                 type.FullName == "KspContinuum.ProcessCaptureDiagnostics+Boundary" ||
+                 type.FullName == "KspContinuum.ProcessCaptureDiagnostics+Snapshot" ||
                  type.FullName == "KspContinuum.ReloadMassInitialization+ReportData" ||
                  type.FullName == "KspContinuum.ReloadMassInitialization+BodyRow" ||
                  type.FullName == "KspContinuum.ReloadMassInitialization+StateRow" ||
