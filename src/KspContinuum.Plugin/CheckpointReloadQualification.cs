@@ -65,6 +65,10 @@ namespace KspContinuum
             public string savedStartScene, loadedStartScene;
             public bool loadedCompatible, aboutToQuicksaveNotified;
             public MembershipRow[] loadedMemberships;
+            public double[] loadedOrbitPosition, loadedOrbitVelocity;
+            public double loadedPositionErrorMeters, loadedVelocityErrorMetersPerSecond;
+            public bool loadedOrbitRestored;
+            public string[] restorationFailures;
             public SnapshotRow before, after; public MembershipRow[] memberships; public EventRow[] events; public string[] screenshots;
         }
         sealed class CameraPose { public Camera camera; public Vector3 position; public Quaternion rotation; }
@@ -173,9 +177,8 @@ namespace KspContinuum
             GameScenes returnScene = state.startScene;
             state.startScene = GameScenes.FLIGHT;
             report.savedStartScene = state.startScene.ToString();
-            report.memberships = Memberships(state);
             string result;
-            try { result = GamePersistence.SaveGame(state, saveName, ScaleCheckpointLoadState.Save, SaveMode.ABORT); }
+            try { report.memberships = Memberships(state); result = GamePersistence.SaveGame(state, saveName, ScaleCheckpointLoadState.Save, SaveMode.ABORT); }
             finally { state.startScene = returnScene; }
             if (result != saveName || !File.Exists(savePath)) throw new InvalidOperationException("Stock save did not publish the owned checkpoint.");
             report.savedPath = savePath; report.savedSha256 = ScaleCheckpointLoadState.HashFile(savePath); Record("saved"); Export();
@@ -200,6 +203,13 @@ namespace KspContinuum
             report.loadedMemberships = reloadedGame == null || reloadedGame.flightState == null ? null : Memberships(reloadedGame);
             if (reloadedGame == null || !reloadedGame.compatible || reloadedGame.flightState == null || reloadedGame.startScene != GameScenes.FLIGHT || !SameMemberships(report.memberships, Memberships(reloadedGame)))
                 throw new InvalidOperationException("Reloaded game is incompatible or whole-game partition differs.");
+            Orbit loaded = reloadedGame.flightState.protoVessels[reloadedGame.flightState.activeVesselIdx].orbitSnapShot.Load();
+            Vector3d loadedPosition, loadedVelocity;
+            loaded.GetOrbitalStateVectorsAtUT(before.universalTime, out loadedPosition, out loadedVelocity);
+            report.loadedOrbitPosition = V(loadedPosition); report.loadedOrbitVelocity = V(loadedVelocity);
+            report.loadedPositionErrorMeters = (loadedPosition - V(before.orbitPosition)).magnitude;
+            report.loadedVelocityErrorMetersPerSecond = (loadedVelocity - V(before.orbitVelocity)).magnitude;
+            report.loadedOrbitRestored = report.loadedPositionErrorMeters <= report.positionToleranceMeters && report.loadedVelocityErrorMetersPerSecond <= report.velocityToleranceMetersPerSecond;
             Record("reload-requested"); Export();
             GamePersistence.UpdateScenarioModules(reloadedGame); report.scenarioModulesUpdated = true;
             ConfigNode node = ConfigNode.Load(savePath); if (node == null) throw new InvalidOperationException("Owned saved ConfigNode is unavailable.");
@@ -260,7 +270,18 @@ namespace KspContinuum
             report.resourcesRestored = before.resources.Length == after.resources.Length && before.resources.Zip(after.resources, (a,b) => a.partId == b.partId && a.name == b.name && !double.IsNaN(b.amount) && !double.IsInfinity(b.amount) && b.amount >= 0 && (a.name == "ElectricCharge" ? a.amount-b.amount >= -report.resourceTolerance && a.amount-b.amount <= report.electricChargeRateBudget*Math.Max(0,report.reloadSimulationSeconds)+.0001 : Math.Abs(a.amount-b.amount)<=report.resourceTolerance)).All(ok => ok);
             report.positionErrorMeters = (V(after.orbitPosition)-V(before.orbitPosition)).magnitude; report.velocityErrorMetersPerSecond = (V(after.orbitVelocity)-V(before.orbitVelocity)).magnitude;
             report.orbitRestored = report.positionErrorMeters <= report.positionToleranceMeters && report.velocityErrorMetersPerSecond <= report.velocityToleranceMetersPerSecond;
-            if (!report.timeRestored || !report.newVesselObject || !report.identityRestored || !report.newPartObjects || !report.crewRestored || !report.modulesRestored || !report.fieldsRestored || !report.resourcesRestored || !report.orbitRestored) throw new InvalidOperationException("Saved gameplay state did not satisfy frozen reload gates.");
+            var failures = new List<string>();
+            if (!report.timeRestored) failures.Add("time");
+            if (!report.newVesselObject || !report.newPartObjects) failures.Add("fresh-objects");
+            if (!report.identityRestored) failures.Add("identity");
+            if (!report.crewRestored) failures.Add("crew");
+            if (!report.modulesRestored) failures.Add("modules");
+            if (!report.fieldsRestored) failures.Add("persistent-fields");
+            if (!report.resourcesRestored) failures.Add("resources");
+            if (!report.loadedOrbitRestored) failures.Add("serialized-orbit");
+            if (!report.orbitRestored) failures.Add("physical-orbit");
+            report.restorationFailures = failures.ToArray();
+            if (failures.Count != 0) { report.reason = "Saved gameplay state failed frozen gates: " + string.Join(",", failures); report.faults++; }
             InputLockManager.SetControlLock(ControlTypes.ALL_SHIP_CONTROLS | ControlTypes.TIMEWARP, Lock); lockOwned = true;
         }
         static readonly MethodInfo[] CameraMethods = { AccessTools.DeclaredMethod(typeof(FlightCamera), "LateUpdate"), AccessTools.DeclaredMethod(typeof(FXCamera), "LateUpdate"), AccessTools.DeclaredMethod(typeof(FXDepthCamera), "LateUpdate") };

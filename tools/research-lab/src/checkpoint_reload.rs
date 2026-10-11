@@ -38,6 +38,11 @@ pub fn validate(r: &Value, run: &str, pid: u32, expected: u32, source: &str) -> 
         || rows(r,"memberships")?.is_empty() || r["memberships"]!=r["loadedMemberships"] {
         return Err("reload saved scene or whole-game partition differs".into());
     }
+    if !rows(r,"restorationFailures")?.is_empty() || r["loadedOrbitRestored"]!=true
+        || vector_error(&r["before"]["orbitPosition"],&r["loadedOrbitPosition"])? > 0.01
+        || vector_error(&r["before"]["orbitVelocity"],&r["loadedOrbitVelocity"])? > 0.00001 {
+        return Err("reload serialized orbit reconstruction failed".into());
+    }
     let a = &r["before"]; let b = &r["after"];
     if a["vesselId"] != b["vesselId"] || a["bodyName"] != b["bodyName"] || a["bodyName"].as_str().is_none()
         || a["vesselId"].as_str().is_none_or(|s| s.len()!=36)
