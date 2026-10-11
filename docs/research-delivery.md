@@ -121,3 +121,9 @@ Keep proprietary source/assets/saves/distributions and detailed receipts in priv
 - [Strangler fig](https://martinfowler.com/bliki/StranglerFigApplication.html): incremental boundary replacement, alongside whole-game migration.
 - [REA](https://github.com/morluto/rea) and its [reconstruction obligations](https://github.com/morluto/rea/blob/main/docs/reconstruction-obligation-ledgers.md): traceable evidence and explicit unknowns; no MCP dependency.
 - [Unity architecture API](https://docs.unity3d.com/6000.3/Documentation/ScriptReference/Build.OSArchitecture.html): verify architecture support against the actual pinned editor before build qualification.
+
+## Matching-player backend admission
+
+The bounded `recompose-player` tool adds Metal to the pinned player's serialized graphics API array while preserving all other object payloads and non-layout metadata. Keep the derivative outside the original installation. `--graphics-api metal --backend-pixel-proof-bundle /absolute/proof-bundle` binds the boot configuration and same-version shader bundle, then requires actual Metal execution, full analytic pixel readback and owned resource cleanup. This is an offscreen primitive proof; a black game window fails visible rendering even when the primitive passes. Stock UI/world/vessel shader dependencies need separate reconstruction and captured native-window evidence.
+
+`verify-backend-proof --receipt /absolute/native-run/receipt.json --output /new/absolute/directory` revalidates a preserved native proof after the bounded lexical PNG-path rejection. It checks original launch/runtime/report provenance and retains a separate offline receipt; it cannot qualify current installed files or repair the original failed receipt. No new launch occurs.

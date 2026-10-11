@@ -148,6 +148,10 @@ impl FrozenLaunch {
                 bind(path, &mut inputs)?;
             }
         }
+        if let Some(path) = &selection.diagnostics.backend_pixel_proof_bundle {
+            bind(path, &mut inputs)?;
+            bind(&instance.join("KSP.app/Contents/Resources/Data/globalgamemanagers"), &mut inputs)?;
+        }
         if let Some(path) = &selection.native_asset_installation {
             bind(path, &mut inputs)?;
         }

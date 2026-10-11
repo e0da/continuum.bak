@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 mod native_assets;
+mod backend_pixel;
 use continuum_research_lab::{
     compare, hash, inventory, matrix, metrics, read, source_tree_hash, write_new, FlightReceipt,
     Result, VariantManifest,
@@ -67,6 +68,7 @@ fn run() -> Result<()> {
             "--startup-cached-bundles",
             "--startup-native-admission",
             "--graphics-api",
+            "--backend-pixel-proof-bundle",
             "--startup-prepared-bundles",
             "--startup-catalog-mode",
             "--startup-catalog",
@@ -124,6 +126,7 @@ fn run() -> Result<()> {
             "--startup-screen",
         ],
         "qualify" => &["--receipt", "--output"],
+        "verify-backend-proof" => &["--receipt", "--output"],
         "recovery" => &[
             "--catalog",
             "--state",
@@ -145,6 +148,7 @@ fn run() -> Result<()> {
     };
     let output = Path::new(get("--output")?);
     match operation.as_str() {
+        "verify-backend-proof" => backend_pixel::verify_offline(Path::new(get("--receipt")?), output)?,
         "recovery" => continuum_research_lab::recovery::advance(
             Path::new(get("--catalog")?),
             options.get("--state").map(|v| Path::new(v)),
@@ -565,6 +569,8 @@ fn smoke(
     let admission_started = Instant::now();
     selection.validate()?;
     let selection_sha = selection.identity_sha256()?;
+    let pixel_bundle = selection.diagnostics.backend_pixel_proof_bundle.as_deref();
+    let pixel_bundle_hash = pixel_bundle.map(hash).transpose()?;
     let s = &selection.startup;
     let timeout = selection.timeout_seconds;
     let startup_unlimited = s.unlimited;
@@ -737,6 +743,7 @@ fn smoke(
         ])
         .arg(&log_path)
         .arg(format!("--continuum-research-run={run_id}"))
+        .args(pixel_bundle.map(|path| vec![format!("--continuum-backend-pixel-proof-bundle={}", path.display())]).unwrap_or_default())
         .arg(format!(
             "--continuum-launch-profile-sha256={resolved_profile_sha}"
         ))
@@ -1161,6 +1168,18 @@ fn smoke(
             }
             Err(error) => (None, Some(error)),
         };
+    let pixel_bundle_after_hash = pixel_bundle.map(hash).transpose();
+    let (pixel_evidence, mut pixel_error) = if let Some(bundle) = pixel_bundle {
+        match backend_pixel::retain(&observer_directory, output, &run_id, child.id(), bundle, pixel_bundle_hash.as_deref().unwrap()) {
+            Ok(evidence) => (Some(evidence), None),
+            Err(error) => (None, Some(error)),
+        }
+    } else { (None, None) };
+    match &pixel_bundle_after_hash {
+        Ok(value) if value == &pixel_bundle_hash => {},
+        Ok(_) => { pixel_error.get_or_insert("backend pixel bundle changed during owned run".into()); },
+        Err(error) => { pixel_error.get_or_insert(format!("backend pixel bundle post-run hash failed: {error}")); },
+    }
     write_new(
         &output.join("receipt.json"),
         &json!({"schema":"continuum-lab-process-smoke/v1","scope":if flight.is_some() {"timed-diagnostic-flight"} else if catalog_preparation {"asset-catalog-preparation-process"} else {"menu-native-boundary-process-smoke"},
@@ -1175,6 +1194,7 @@ fn smoke(
         "admissionWallSeconds":admission_seconds,"admissionPlusMenuSeconds":menu_elapsed.map(|seconds| seconds+admission_seconds),
         "startupUnlimitedRequested":startup_unlimited,
         "graphicsApiRequested":graphics_api,
+        "backendPixelProofBundle":pixel_bundle,"backendPixelProofBundleSha256":pixel_bundle_hash,"backendPixelProofBundleAfterSha256":pixel_bundle_after_hash.as_ref().ok().and_then(|v|v.as_ref()),"backendPixelProofEvidence":pixel_evidence,"backendPixelProofError":pixel_error,
         "startupPreparedBundlesRequested":startup_prepared_bundles,
         "startupTexturePrefetchRequested":startup_texture_prefetch,
         "startupTextureObserveRequested":startup_texture_observe,
@@ -1196,7 +1216,7 @@ fn smoke(
         "startupBuildCacheRequested":startup_build_cache,"startupCache":startup_cache,"bundleSha256":bundle_hashes,
         "startupCachedBundlesRequested":startup_cached_bundles,
         "startupNativeAdmissionRequested":startup_native_admission,"cacheAdmissionSha256":proof_hash,"cacheAdmissionFiles":admission.as_ref().map(|value|&value.files),
-        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none()&&deferred_terrain_error.is_none()&&site_proof_error.is_none()&&generation_error.is_none() {"passed"} else {"failed"},
+        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none()&&deferred_terrain_error.is_none()&&site_proof_error.is_none()&&generation_error.is_none()&&pixel_error.is_none() {"passed"} else {"failed"},
         "qualification":if flight.is_some() {"diagnostic-window-only; behavior-and-gameplay-not-qualified"} else if catalog_preparation {"catalog-content-and-fresh-process-reuse-proof-required"} else {"process-exit-only-native-receipt-review-and-flight-proof-required"}}),
     )?;
     if timed_out
@@ -1207,6 +1227,7 @@ fn smoke(
         || deferred_terrain_error.is_some()
         || site_proof_error.is_some()
         || generation_error.is_some()
+        || pixel_error.is_some()
     {
         return Err("owned process smoke failed; retained logs and receipt".into());
     }

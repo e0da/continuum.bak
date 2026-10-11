@@ -83,6 +83,8 @@ pub struct Startup {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Diagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_pixel_proof_bundle: Option<PathBuf>,
     pub profile: bool,
     pub texture_observe: bool,
     pub world_timing: bool,
@@ -169,6 +171,7 @@ impl ResolvedLaunch {
                 work_scheduler: boolean("--startup-work-scheduler")?,
             },
             diagnostics: Diagnostics {
+                backend_pixel_proof_bundle: path("--backend-pixel-proof-bundle"),
                 profile: boolean("--startup-profile")?,
                 texture_observe: boolean("--startup-texture-observe")?,
                 world_timing: boolean("--startup-world-timing")?,
@@ -189,6 +192,16 @@ impl ResolvedLaunch {
             return Err("timeout must be 1..1800 seconds".into());
         }
         let s = &self.startup;
+        if let Some(path) = &self.diagnostics.backend_pixel_proof_bundle {
+            if self.flight.is_some() || self.graphics_api != GraphicsApi::Metal ||
+                matches!(s.catalog_mode, CatalogMode::Prepare | CatalogMode::PrepareMinimal) ||
+                s.resource_image_mode == ResourceImageMode::Prepare || s.build_cache {
+                return Err("backend pixel proof requires a Metal menu-only launch without preparation".into());
+            }
+            if !path.is_absolute() || !path.is_file() || path.canonicalize().map_err(|e| e.to_string())? != *path {
+                return Err("backend pixel proof bundle requires a canonical absolute existing file".into());
+            }
+        }
         if s.deferred_terrain && !s.readiness {
             return Err("deferred terrain requires startup-readiness".into());
         }
