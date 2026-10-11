@@ -104,8 +104,16 @@ public sealed class WholeCraftRuntime : IDisposable
     {
         if(mode!="reference"&&mode!="grouped"&&!Retained(mode)) throw new InvalidDataException("Whole render mode reference|grouped|retained-scalar|retained-grouped required.");
         if(mode!="reference"&&!SystemInfo.supportsInstancing) throw new InvalidDataException("Native instancing unavailable."); if(mode==RenderMode) return;
-        CommandBuffer next=null; int calls=0; if(Retained(mode)) { EnsureRetainedState(); if(retainedColor!=null) next=PrepareCommands(materials,mode,out calls); }
+        CommandBuffer next=null; int calls=0; if(Retained(mode)) { ValidateRetainedMaterials(materials); if(SystemInfo.supportedRenderTargetCount<2) throw new InvalidDataException("Native two-target rendering unavailable."); EnsureRetainedState(); if(retainedColor!=null) next=PrepareCommands(materials,mode,out calls); }
         try { ReplaceCommands(next,calls); } catch { if(next!=null) next.Release(); throw; } RenderMode=mode;
+    }
+    void ValidateRetainedMaterials(Material[] table)
+    {
+        for(int i=Manifest.materials.Length;i<table.Length;i++)
+        {
+            var m=table[i]; foreach(string property in new[] {"_ContinuumRetainedContract","_ContinuumRetained","_ContinuumState","_ContinuumStateShape","_ContinuumStateBase","_ContinuumRetainedAnchor"}) if(m==null||!m.HasProperty(property)) throw new InvalidDataException("Retained diagnostic shader interface absent: "+property);
+            if(m.GetFloat("_ContinuumRetainedContract")!=1) throw new InvalidDataException("Retained diagnostic shader contract differs.");
+        }
     }
     public void ConfigureRetainedTargets(RenderTexture color,RenderTexture positiveDepth)
     {
@@ -179,7 +187,7 @@ public sealed class WholeCraftRuntime : IDisposable
     {
         if(disposed||next==null||next.Length!=Manifest.materials.Length+recipes.Length) throw new InvalidDataException("Staged whole debug material table differs.");
         var stage=new DebugShaderCommit {Owner=this,Table=next,Mode=RenderMode};
-        try { if(Retained(RenderMode)) stage.Commands=PrepareCommands(next,RenderMode,out stage.Calls); return stage; }
+        try { if(Retained(RenderMode)) { ValidateRetainedMaterials(next); stage.Commands=PrepareCommands(next,RenderMode,out stage.Calls); } return stage; }
         catch { stage.Dispose(); throw; }
     }
     public void CommitDebugShader(DebugShaderCommit stage)
