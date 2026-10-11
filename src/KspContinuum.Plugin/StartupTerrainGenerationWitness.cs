@@ -76,25 +76,38 @@ namespace KspContinuum
                 bool leaf = selected != null && !selected.isSubdivided;
                 bool exact = selected != null && selected.meshCollider == collider && mesh != null && selected.mesh == mesh;
                 bool live = collider != null && collider.enabled && collider.gameObject.activeInHierarchy;
-                string digest = mesh == null ? "none" : MeshDigest(mesh);
-                bool eligible = member && leaf && exact && live && selected.isBuilt && selected.isActive && !selected.isCached && policies > 0 && selected.subdivision >= minimum && foreign == 0;
+                string geometryReason; string digest = SafeMeshDigest(mesh, out geometryReason);
+                bool geometryComplete = geometryReason == "complete";
+                bool eligible = geometryComplete && member && leaf && exact && live && selected.isBuilt && selected.isActive && !selected.isCached && policies > 0 && selected.subdivision >= minimum && foreign == 0;
                 CelestialBody body = sphere.PQSModCBTransform == null ? null : sphere.PQSModCBTransform.body;
-                DescribeHit(context, phase, "nearest-actual", collider, selected, nearest < 0 ? -1 : hits[nearest].distance);
+                DescribeHit(context, phase, "nearest-actual", collider, selected, nearest < 0 ? -1 : hits[nearest].distance, digest, geometryReason);
                 int terrainHit = -1;
                 for (int i = 0; i < count; i++) if (hits[i].collider != null && association.ContainsKey(hits[i].collider) &&
                     (terrainHit < 0 || hits[i].distance < hits[terrainHit].distance)) terrainHit = i;
-                if (terrainHit >= 0) DescribeHit(context, phase, "nearest-owned-terrain-separate", hits[terrainHit].collider, association[hits[terrainHit].collider], hits[terrainHit].distance);
+                if (terrainHit >= 0)
+                {
+                    MeshCollider terrainCollider = hits[terrainHit].collider as MeshCollider;
+                    string terrainReason = geometryReason; string terrainDigest = terrainHit == nearest ? digest : SafeMeshDigest(terrainCollider == null ? null : terrainCollider.sharedMesh, out terrainReason);
+                    DescribeHit(context, phase, "nearest-owned-terrain-separate", hits[terrainHit].collider, association[hits[terrainHit].collider], hits[terrainHit].distance, terrainDigest, terrainReason);
+                }
                 Debug.Log("[Continuum terrain generation] serial=" + context.Serial + " phase=" + phase + " status=observed sphere=" + Id(sphere) +
                     " body=" + Id(body) + " site=" + Uri.EscapeDataString(context.Site.name ?? "") + " siteOwner=" + Id(context.Site.isPQSCity ? (UnityEngine.Object)context.Site.pqsCity : context.Site.pqsCity2) +
                     " temporary=" + Id(context.Temporary) + " target=" + Id(sphere.target) + " tree=" + tree.Count + " built=" + built + " leaves=" + leaves + " foreign=" + foreign +
                     " collider=" + Id(collider) + " quad=" + Id(selected) + " mesh=" + Id(mesh) + " member=" + member + " leaf=" + leaf + " exactMesh=" + exact + " live=" + live +
                     " selectedBuilt=" + (selected != null && selected.isBuilt) + " selectedActive=" + (selected != null && selected.isActive) + " selectedCached=" + (selected != null && selected.isCached) + " subdivision=" + (selected == null ? -1 : selected.subdivision) +
                     " hitDistance=" + (nearest < 0 ? "none" : hits[nearest].distance.ToString("R", System.Globalization.CultureInfo.InvariantCulture)) +
-                    " minimumColliderLevel=" + minimum + " policies=" + policies + " eligible=" + eligible + " geometrySha256=" + digest + " ticks=" + (System.Diagnostics.Stopwatch.GetTimestamp() - start) + " clockFrequency=" + System.Diagnostics.Stopwatch.Frequency);
+                    " minimumColliderLevel=" + minimum + " policies=" + policies + " eligible=" + eligible + " geometryProofComplete=" + geometryComplete + " geometryReason=" + geometryReason + " geometrySha256=" + digest + " ticks=" + (System.Diagnostics.Stopwatch.GetTimestamp() - start) + " clockFrequency=" + System.Diagnostics.Stopwatch.Frequency);
             }
             catch (Exception error) { Debug.LogError("[Continuum terrain generation] serial=" + (context == null ? 0 : context.Serial) + " phase=" + phase + " status=invalid reason=" + Uri.EscapeDataString(error.Message)); }
         }
-        static void DescribeHit(Context context, string phase, string role, Collider collider, PQ associated, float distance)
+        static string SafeMeshDigest(Mesh mesh, out string reason)
+        {
+            if (mesh == null) { reason = "mesh-absent"; return "unavailable"; }
+            if (!mesh.isReadable) { reason = "mesh-not-readable"; return "unavailable"; }
+            try { string digest = MeshDigest(mesh); reason = "complete"; return digest; }
+            catch (Exception error) { reason = Uri.EscapeDataString(error.GetType().Name + ":" + error.Message); return "unavailable"; }
+        }
+        static void DescribeHit(Context context, string phase, string role, Collider collider, PQ associated, float distance, string digest, string geometryReason)
         {
             var ancestry = new List<string>();
             Transform cursor = collider == null ? null : collider.transform;
@@ -113,7 +126,7 @@ namespace KspContinuum
                 " associationByReference=" + (associated != null) + " associatedPQ=" + Id(associated) + " componentPQ=" + Id(collider == null ? null : collider.GetComponent<PQ>()) +
                 " nativeMesh=" + Id(mc == null ? null : mc.sharedMesh) + " convex=" + (mc != null && mc.convex) + " trigger=" + (collider != null && collider.isTrigger) +
                 " built=" + (associated != null && associated.isBuilt) + " active=" + (associated != null && associated.isActive) + " cached=" + (associated != null && associated.isCached) + " subdivision=" + (associated == null ? -1 : associated.subdivision) +
-                " geometrySha256=" + (mc == null || mc.sharedMesh == null ? "none" : MeshDigest(mc.sharedMesh)) +
+                " meshReadable=" + (mc != null && mc.sharedMesh != null && mc.sharedMesh.isReadable) + " geometryProofComplete=" + (geometryReason == "complete") + " geometryReason=" + geometryReason + " geometrySha256=" + digest +
                 " material=" + Id(material) + " dynamicFriction=" + (material == null ? "none" : material.dynamicFriction.ToString("R", System.Globalization.CultureInfo.InvariantCulture)) +
                 " staticFriction=" + (material == null ? "none" : material.staticFriction.ToString("R", System.Globalization.CultureInfo.InvariantCulture)) +
                 " bounciness=" + (material == null ? "none" : material.bounciness.ToString("R", System.Globalization.CultureInfo.InvariantCulture)) +
