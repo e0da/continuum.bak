@@ -233,7 +233,10 @@ namespace KspContinuum
                 Require(method.Module.ModuleVersionId == ConvectionSparseKernel.Mvid && body != null && body.ExceptionHandlingClauses.Count == 0,
                     "Original reachable managed method identity/exception shape differs.");
                 ILGenerator generator;
-                foreach (CodeInstruction instruction in PatchProcessor.GetOriginalInstructions(method, out generator))
+                IEnumerable<CodeInstruction> instructions;
+                if (checkOwnership) instructions = PatchProcessor.GetOriginalInstructions(method, out generator);
+                else instructions = PatchProcessor.ReadMethodBody(method).Select(pair => new CodeInstruction(pair.Key, pair.Value));
+                foreach (CodeInstruction instruction in instructions)
                 {
                     Require(instruction.opcode != OpCodes.Calli && instruction.opcode != OpCodes.Ldftn && instruction.opcode != OpCodes.Ldvirtftn,
                         "Unknown indirect managed callback in aero root.");
