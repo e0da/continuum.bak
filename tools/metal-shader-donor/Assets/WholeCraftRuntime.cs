@@ -166,8 +166,8 @@ public sealed class WholeCraftRuntime : IDisposable
     }
     void ReplaceCommands(CommandBuffer next,int calls)
     {
-        if(retainedCamera!=null&&next!=null) retainedCamera.AddCommandBuffer(CameraEvent.BeforeForwardOpaque,next);
-        if(retainedCamera!=null&&retainedCommands!=null) retainedCamera.RemoveCommandBuffer(CameraEvent.BeforeForwardOpaque,retainedCommands);
+        if(retainedCamera!=null&&next!=null) retainedCamera.AddCommandBuffer(CameraEvent.AfterForwardOpaque,next);
+        if(retainedCamera!=null&&retainedCommands!=null) retainedCamera.RemoveCommandBuffer(CameraEvent.AfterForwardOpaque,retainedCommands);
         if(retainedCommands!=null) retainedCommands.Release(); retainedCommands=next; retainedCalls=calls;
     }
     public Material[] PrepareDebugShader(Shader shader)
@@ -215,7 +215,7 @@ public sealed class WholeCraftRuntime : IDisposable
         if(Retained(RenderMode))
         {
             if(camera==null||retainedCommands==null||camera.targetTexture!=retainedColor||(camera.cullingMask&LayerMask)!=LayerMask||camera.renderingPath!=RenderingPath.Forward) throw new InvalidDataException("Retained owner requires configured MRT and explicit Forward camera covering every admitted layer.");
-            if(retainedCamera!=camera) { camera.AddCommandBuffer(CameraEvent.BeforeForwardOpaque,retainedCommands); if(retainedCamera!=null) retainedCamera.RemoveCommandBuffer(CameraEvent.BeforeForwardOpaque,retainedCommands); retainedCamera=camera; }
+            if(retainedCamera!=camera) { camera.AddCommandBuffer(CameraEvent.AfterForwardOpaque,retainedCommands); if(retainedCamera!=null) retainedCamera.RemoveCommandBuffer(CameraEvent.AfterForwardOpaque,retainedCommands); retainedCamera=camera; }
             LastSubmissionCalls=retainedCalls;
         }
         else if(RenderMode=="grouped") foreach(var packet in packets) { Graphics.DrawMeshInstanced(meshes[packet.Mesh],packet.Submesh,materials[Manifest.materials.Length+packet.Recipe],packet.Matrices,packet.Matrices.Length,packet.Block,ShadowCastingMode.On,false,packet.Layer,camera,LightProbeUsage.Off,null); LastSubmissionCalls++; }
