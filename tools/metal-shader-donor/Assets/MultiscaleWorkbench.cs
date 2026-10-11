@@ -59,6 +59,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     readonly double[] focusAnchor=new double[3];
     Vector4 priorCameraPosition,priorCameraDirection;
     Material debugDepth; Shader debugShader; AssetBundle debugBundle; bool bodyGeometryDebug;
+    string donorMaterialMode="instanced";
     static readonly string[] debugViews={"composed","craft-color","body-color","craft-flat","body-flat","craft-world-normals","body-world-normals","craft-view-normals","body-view-normals","craft-albedo","body-albedo","craft-vertex-colors","craft-uv","body-uv","craft-material-id","body-material-id","craft-linear-depth","body-linear-depth","craft-log-depth","body-log-depth"};
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)] static void Bootstrap()
     { if(!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_MULTISCALE_SCENE"))) new GameObject("Continuum Multiscale Workbench").AddComponent<MultiscaleWorkbench>(); }
@@ -103,7 +104,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
             if(generation!=null&&(generation.Scene.vesselId!=scene.vesselId||generation.Scene.bodyId!=scene.bodyId)) throw new InvalidDataException("Scene HMR retains logical object identities.");
             string vessel=Under(root,scene.vesselFixture),geometry=Under(root,scene.bodyGeometry),texture=Under(root,scene.bodyTexture.payload);
             if(Hash(vessel)!=scene.vesselFixtureSha256||Hash(geometry)!=scene.bodyGeometrySha256) throw new InvalidDataException("Scene asset hash mismatch.");
-            next.Craft=new ResidentMaterialRuntime(vessel,partBundle,string.IsNullOrEmpty(originalBundle)?null:Absolute(originalBundle),true); next.Craft.SetMode(state.materialMode); next.Craft.IncludePresentationLightLayer(29); next.Craft.DisablePresentationShadows();
+            next.Craft=new ResidentMaterialRuntime(vessel,partBundle,string.IsNullOrEmpty(originalBundle)?null:Absolute(originalBundle),true); next.Craft.SetMode(donorMaterialMode); next.Craft.IncludePresentationLightLayer(29); next.Craft.DisablePresentationShadows();
             if((next.Craft.LayerMask&(1<<29))!=0) throw new InvalidDataException("Craft layer overlaps owned body domain.");
             var snapshot=ResidentMaterialFormat.ReadSnapshot(next.Craft.StatePath); if(snapshot.instances.Any(i=>i.opacityEffective!=1)) throw new InvalidDataException("Opaque-only composition rejects translucent craft state.");
             ResidentGeometry body=ResidentMaterialFormat.ReadGeometry(geometry); if(body.meshes.Length!=1) throw new InvalidDataException("One captured scaled body mesh required."); var g=body.meshes[0]; int count=g.positions.Length/3; var p=new Vector3[count]; var n=new Vector3[count]; var uv=new Vector2[count];
@@ -127,6 +128,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         if(initial) { state.focus=next.Scene.initialCameraTarget; var o=next.Scene.initialCameraOffsetMeters; distance=Math.Sqrt(o[0]*o[0]+o[1]*o[1]+o[2]*o[2]); yaw=(float)(Math.Atan2(-o[0],-o[2])*180/Math.PI); pitch=(float)(Math.Asin(o[1]/distance)*180/Math.PI); }
         SelectView(state.view);
         state.fixtureInstances=generation.Craft.InstanceCount; state.fixtureMeshes=generation.Craft.MeshCount; state.fixtureTextures=generation.Craft.Manifest.textures.Length; state.fixtureFamily=generation.Craft.Manifest.family;
+        state.materialMode=generation.Whole==null?generation.Craft.Mode:"ordinary-diagnostic";
         if(generation.Whole!=null) { var w=generation.Whole; state.craftConsumer="whole-craft-diagnostic"; state.wholeCraftSha256=w.ManifestSha256; state.wholeGeometrySha256=w.GeometrySha256; state.fixtureInstances=w.Manifest.draws.Length; state.fixtureMeshes=w.MeshCount; state.fixtureTextures=w.Manifest.textures.Length; state.fixtureFamily="multiple original families, approximate diagnostic"; state.fixtureScope="Whole captured triangle fixture; explicit omissions, not faithful whole craft"; state.wholeAppearance="two-sided opaque approximate MainTex/ST*tint*actual vertexRGB; no normal-map/specular/transparency parity"; state.wholeDependency="Mapped subset retained only for captured camera/light/global lease; no subset draws"; state.wholeRendererInventory=w.Manifest.rendererInventory; state.wholeCapturedRenderers=w.Manifest.capturedRenderers; state.wholeOmittedRenderers=w.Manifest.omittedRenderers; state.wholeDrawSlots=w.Manifest.drawSlots; state.wholeMissingNormals=w.MissingNormals; state.wholeMissingUV=w.MissingUV; state.wholeDefaultWhiteColors=w.DefaultWhiteColors; state.wholeUnknownCull=w.UnknownCull; state.wholeApproximateTransparency=w.ApproximateTransparency; state.wholeNoAlbedoTexture=w.NoAlbedoTexture; state.wholeNonvisibleDraws=w.NonvisibleDraws; state.wholeRawTexturePayloadBudgetBytes=WholeCraftRuntime.RawTexturePayloadBudgetBytes; state.wholeRawTexturePayloadBytes=w.RawTexturePayloadBytes; state.wholeForceRenderingOffObserved=w.ForceRenderingOffObserved; state.wholePropertyBlockObserved=w.PropertyBlockObserved; state.wholeFrozenSkinObserved=w.FrozenSkinObserved; state.debugInputs="Whole actual geometry/colors/poses; captured material properties and MainTex/ST; property blocks are observed but not reproduced"; state.wholeCoverage="Captured geometry draws only; omissions/nonvisible rows retained in immutable manifest"; } else { state.craftConsumer="mapped-subset"; state.fixtureScope="Captured material-family subset; not whole craft"; }
     }
     void Update()
@@ -192,7 +194,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         if(words[0]=="quit"&&words.Length==1) { quitRequested=true; state.status="stopping"; Write(); return; }
         if(words[0]=="status") { Write(); return; }
         if(words[0]=="captureframe") { StartCoroutine(Capture()); return; }
-        if(words[0]=="materialmode"&&words.Length==2&&(words[1]=="reference"||words[1]=="instanced")) { if(generation.Whole!=null) throw new InvalidDataException("Whole-craft diagnostic uses ordinary draws only; subset materialmode unsupported."); generation.Craft.SetMode(words[1]); state.materialMode=words[1]; }
+        if(words[0]=="materialmode"&&words.Length==2&&(words[1]=="reference"||words[1]=="instanced")) { if(generation.Whole!=null) throw new InvalidDataException("Whole-craft diagnostic uses ordinary draws only; subset materialmode unsupported."); generation.Craft.SetMode(words[1]); state.materialMode=donorMaterialMode=words[1]; }
         else if(words[0]=="view"&&words.Length==2) SelectView(words[1]);
         else if(words[0]=="debugshaderreload") ReloadDebugShader(Absolute(text.Substring(words[0].Length).Trim()));
         else if(words[0]=="zoom"&&words.Length==2) distance=Math.Max(.25,Math.Min(1e10,Math.Pow(10,Number(words[1]))));
@@ -254,10 +256,10 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     }
     void OnGUI()
     {
-        GUI.Box(new Rect(10,10,430,150),"Continuous multiscale scene — captured assets"); GUI.Label(new Rect(20,35,410,20),state.preset+" / "+state.distance.ToString("G5")+" metres / "+state.materialMode+" / "+state.view);
+        GUI.Box(new Rect(10,10,430,150),generation!=null&&generation.Whole!=null?"Whole craft snapshot":"Captured material-family subset"); GUI.Label(new Rect(20,35,410,20),state.preset+" / "+state.distance.ToString("G5")+" m / "+state.view);
         float log=GUI.HorizontalSlider(new Rect(20,65,400,20),(float)Math.Log10(Math.Max(.25,distance)),-.6f,10); if(!capturing) distance=Math.Pow(10,log);
         if(GUI.Button(new Rect(20,90,100,22),"low")&&!capturing) { state.preset="low"; policyDirty=true; } if(GUI.Button(new Rect(130,90,100,22),"balanced")&&!capturing) { state.preset="balanced"; policyDirty=true; } if(GUI.Button(new Rect(240,90,100,22),"high")&&!capturing) { state.preset="high"; policyDirty=true; }
-        GUI.Label(new Rect(20,120,410,30),state.fixtureScope+" / "+state.fixtureInstances+" rows / "+state.fixtureMeshes+" meshes");
+        GUI.Label(new Rect(20,120,410,30),generation!=null&&generation.Whole!=null?state.wholeCapturedRenderers+" captured / "+state.wholeOmittedRenderers+" omitted / "+state.fixtureInstances+" slots":state.fixtureInstances+" rows / "+state.fixtureMeshes+" meshes / "+state.materialMode);
         GUI.Label(new Rect(450,10,Screen.width-460,70),state.debugLegend);
         for(int i=0;i<debugViews.Length;i++) if(GUI.Button(new Rect(10+(i%2)*215,170+(i/2)*23,210,22),debugViews[i])&&!capturing&&!quitRequested) { SelectView(debugViews[i]); Write(); }
     }
