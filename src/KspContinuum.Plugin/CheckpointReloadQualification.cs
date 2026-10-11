@@ -121,7 +121,7 @@ namespace KspContinuum
             before = Snapshot(vessel, Planetarium.GetUniversalTime()); report.before = before;
             report.electricChargeRateBudget = vessel.parts.Sum(p => p.Modules.OfType<ModuleCommand>().Sum(m => m.resHandler.inputResources.Where(r => r.name == "ElectricCharge").Sum(r => r.rate)));
             saveName = "continuum-reload-" + Guid.NewGuid().ToString("N");
-            savePath = Path.Combine(KSPUtil.ApplicationRootPath, "saves", ScaleCheckpointLoadState.Save, saveName + ".sfs");
+            savePath = Path.GetFullPath(Path.Combine(KSPUtil.ApplicationRootPath, "saves", ScaleCheckpointLoadState.Save, saveName + ".sfs"));
             if (File.Exists(savePath)) throw new InvalidOperationException("Disposable checkpoint already exists.");
             Game state = HighLogic.CurrentGame.Updated(GameScenes.FLIGHT);
             report.memberships = Memberships(state);
@@ -262,7 +262,7 @@ namespace KspContinuum
         void Cleanup()
         {
             EndCamera();if(lockOwned){InputLockManager.RemoveControlLock(Lock);lockOwned=false;}
-            report.hooksRemoved=CameraMethods.All(m=>m!=null&&Harmony.GetPatchInfo(m)?.Owners.Contains(Hook)!=true);report.controlLockRemoved=!lockOwned;
+            report.hooksRemoved=CameraMethods.All(m=>m!=null&&Harmony.GetPatchInfo(m)?.Owners.Contains(Hook)!=true);report.controlLockRemoved=!lockOwned&&InputLockManager.GetControlLock(Lock)==ControlTypes.None;
             report.cleanupStatus=report.hooksRemoved&&report.controlLockRemoved&&report.cameraRestored?"removed-owned-hooks-locks-restored-camera":"cleanup-error";
             if(report.cleanupStatus=="cleanup-error")report.faults++;
         }

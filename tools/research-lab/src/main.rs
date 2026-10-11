@@ -57,6 +57,8 @@ fn run() -> Result<()> {
             "--project-sha256",
         ],
         "run" | "resolve" => &[
+            "--flight-checkpoint-reload",
+            "--flight-convection-replacement",
             "--flight-docking",
             "--flight-docking-prepare-pair",
             "--flight-lighting",
@@ -826,6 +828,8 @@ fn smoke(
         ])
         .arg(&log_path)
         .arg(format!("--continuum-research-run={run_id}"))
+        .args(if selection.diagnostics.checkpoint_reload { vec!["--continuum-checkpoint-reload"] } else { vec![] })
+        .args(selection.diagnostics.convection_replacement.as_ref().map(|mode| vec![format!("--continuum-convection-replacement={mode}")]).unwrap_or_default())
         .args(selection.diagnostics.docking.as_ref().map(|d| d.arguments()).unwrap_or_default())
         .args(selection.diagnostics.flight_lighting.as_ref().map(|mode| vec![format!("--continuum-flight-lighting={mode}")]).unwrap_or_default())
         .args(
@@ -1120,7 +1124,15 @@ fn smoke(
     let mut flight_error = None;
     let mut flight_summary = None;
     let mut flight_entry = None;
-    if let Some(docking) = selection.diagnostics.docking.as_ref() {
+    if selection.diagnostics.checkpoint_reload {
+        let result = (|| -> Result<Value> {
+            let request = flight.as_ref().ok_or("reload flight selection absent")?;
+            let path = instance.join("saves").join(&request.save).join(format!("{}.sfs", request.checkpoint));
+            let source = flight_inputs.as_ref().and_then(|v| v["files"][path.to_string_lossy().as_ref()].as_str()).ok_or("reload source pin absent")?;
+            continuum_research_lab::checkpoint_reload::retain(&observer_directory, output, &run_id, child.id(), request.expected_parts.ok_or("reload part pin absent")?, source, path.parent().unwrap())
+        })();
+        match result { Ok(value) => flight_summary = Some(value), Err(error) => flight_error = Some(error) }
+    } else if let Some(docking) = selection.diagnostics.docking.as_ref() {
         let result = (|| -> Result<Value> {
             let request = flight.as_ref().ok_or("docking flight selection absent")?;
             let path = instance.join("saves").join(&request.save).join(format!("{}.sfs", request.checkpoint));
@@ -1157,6 +1169,11 @@ fn smoke(
                 &start,
                 &end,
             )?;
+            if let Some(mode) = selection.diagnostics.convection_replacement.as_deref() {
+                summary["convectionReplacement"] = continuum_research_lab::convection_replacement::summarize(
+                    mode, &report["convectionReplacement"], &run_id, child.id(),
+                )?;
+            }
             continuum_research_lab::flight::validate_entry(
                 request,
                 &run_id,

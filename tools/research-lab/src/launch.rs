@@ -87,6 +87,10 @@ pub struct Startup {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Diagnostics {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub checkpoint_reload: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub convection_replacement: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docking: Option<crate::docking::Selection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -228,6 +232,8 @@ impl ResolvedLaunch {
                 work_scheduler: boolean("--startup-work-scheduler")?,
             },
             diagnostics: Diagnostics {
+                checkpoint_reload: boolean("--flight-checkpoint-reload")?,
+                convection_replacement: options.get("--flight-convection-replacement").cloned(),
                 docking: options.get("--flight-docking").map(|value|
                     crate::docking::Selection::parse(value, boolean("--flight-docking-prepare-pair")?)
                 ).transpose()?,
@@ -264,6 +270,31 @@ impl ResolvedLaunch {
             return Err("timeout must be 1..1800 seconds".into());
         }
         let s = &self.startup;
+        if self.diagnostics.checkpoint_reload {
+            let f = self.flight.as_ref().ok_or("checkpoint reload requires a pinned flight")?;
+            if self.live_play || f.warp != 1 || f.atmosphere || f.entry_target_altitude.is_some()
+                || f.perturbation != "quiet" || f.expected_parts.is_none()
+                || f.native_sample || f.callback_attribution || f.camera_chain || f.world_draw.is_some()
+                || f.gpu_timing_library.is_some() || f.aero_batch || f.aero_field || f.part_batch
+                || f.hide_vessel || f.no_aero_fx || f.part_reference || f.part_retained
+                || f.aero_field_bundle.is_some() || f.part_shader_bundle.is_some() || f.mechjeb_provider_plan
+                || self.diagnostics.docking.is_some() || self.diagnostics.flight_lighting.is_some()
+                || self.diagnostics.convection_capture.is_some() || self.diagnostics.convection_replacement.is_some()
+                || self.diagnostics.integrator_update_attribution || self.diagnostics.multiscale_scene.is_some()
+            {
+                return Err("checkpoint reload requires an exclusive normal-time stock orbital flight and explicit part count".into());
+            }
+        }
+        if let Some(mode) = &self.diagnostics.convection_replacement {
+            let f = self.flight.as_ref().ok_or("convection replacement requires flight")?;
+            if !["query", "verify"].contains(&mode.as_str()) || !f.atmosphere || f.warp != 1
+                || self.diagnostics.checkpoint_reload || self.diagnostics.docking.is_some()
+                || self.diagnostics.convection_capture.is_some() || self.diagnostics.integrator_update_attribution
+                || f.callback_attribution || self.live_play
+            {
+                return Err("convection replacement requires query or verify, exclusive normal-time atmospheric flight".into());
+            }
+        }
         if let Some(docking) = &self.diagnostics.docking {
             docking.validate()?;
             let f = self.flight.as_ref().ok_or("docking requires a pinned flight checkpoint")?;
@@ -275,6 +306,7 @@ impl ResolvedLaunch {
                 || f.aero_field_bundle.is_some() || f.part_shader_bundle.is_some() || f.mechjeb_provider_plan
                 || self.diagnostics.flight_lighting.is_some() || self.diagnostics.convection_capture.is_some()
                 || self.diagnostics.integrator_update_attribution || self.diagnostics.multiscale_scene.is_some()
+                || self.diagnostics.convection_replacement.is_some() || self.diagnostics.checkpoint_reload
             {
                 return Err("docking is an exclusive normal-time stock-rendered diagnostic with explicit initial part count".into());
             }
@@ -539,6 +571,30 @@ const FLIGHT_KEYS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn replacement_and_reload_admit_only_their_owned_flight_boundary() {
+        let mut input = BTreeMap::from([
+            ("--flight-save".into(), "lab".into()),
+            ("--flight-checkpoint".into(), "checkpoint".into()),
+            ("--flight-expected-parts".into(), "512".into()),
+            ("--flight-convection-replacement".into(), "verify".into()),
+        ]);
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input.insert("--flight-atmosphere".into(), "true".into());
+        assert!(ResolvedLaunch::parse(&input).is_ok());
+        input.insert("--flight-convection-replacement".into(), "other".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input.remove("--flight-convection-replacement");
+        input.insert("--flight-checkpoint-reload".into(), "true".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input.remove("--flight-atmosphere");
+        assert!(ResolvedLaunch::parse(&input).is_ok());
+        input.insert("--flight-warp".into(), "4".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input.remove("--flight-warp");
+        input.insert("--flight-part-batch".into(), "true".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+    }
     fn options(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
             .iter()

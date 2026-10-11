@@ -71,7 +71,7 @@ pub fn catalog() -> Vec<Recipe> {
         row("CSP-0002",Some("CSP"),"mission","Minmus Survey1",ExistingMissionMode,"Existing sunny-site targeted landing; historical trials missed100m target","Preserve unchanged target gate and historical failures"),
         row("minmus-orbit",Some("CSP-0002"),"situation","Minmus orbit checkpoint descent",ExistingMissionMode,"Existing checkpoint survey mode rebuilds fresh autopilot state","Bridge existing checkpoint/attempt flags to owned runner; do not pretend generic flight capture supports descent"),
         row("landing-contact",Some("minmus-orbit"),"micro-situation","Touchdown and settle",Planned,"Leg contact, attitude, intact craft, daylight and distance","Implement bounded contact capture and actual acceptance/cleanup"),
-        row("scene-save-reload",Some("CSP"),"situation","Scene transition and save/reload",Planned,"Persistence, mod initialization and ownership restoration","Implement transition driver and semantic reload comparison"),
+        row("scene-save-reload",Some("CSP"),"situation","Scene transition and save/reload",RequiresPrivatePins,"Stock checkpoint save, changed live state, scene teardown and semantic reload","Supply an intact orbital checkpoint and explicit part count; native behavior and images qualify each run"),
     ];
     rows.extend([
         row(
@@ -322,6 +322,8 @@ fn compose(id: &str, i: &Inputs, mut selection: ResolvedLaunch) -> Result<Plan> 
     }
     selection.diagnostics.flight_lighting = None;
     selection.diagnostics.docking = None;
+    selection.diagnostics.checkpoint_reload = false;
+    selection.diagnostics.convection_replacement = None;
     let mut options = BTreeMap::from([
         ("--flight-save".into(), i.save.clone()),
         ("--flight-checkpoint".into(), i.checkpoint.clone()),
@@ -336,6 +338,10 @@ fn compose(id: &str, i: &Inputs, mut selection: ResolvedLaunch) -> Result<Plan> 
         ),
     ]);
     match id {
+        "scene-save-reload" => {
+            selection.diagnostics.checkpoint_reload = true;
+            options.insert("--flight-research-panel".into(), "hidden".into());
+        }
         "station-docking" => {
             let docking = i.docking.clone().ok_or("docking recipe requires an explicit pair selection")?;
             docking.validate()?;
@@ -374,6 +380,9 @@ fn compose(id: &str, i: &Inputs, mut selection: ResolvedLaunch) -> Result<Plan> 
     let request =
         flight::Request::parse(&options)?.ok_or("recipe did not compose a flight request")?;
     let mut player_arguments = request.arguments();
+    if selection.diagnostics.checkpoint_reload {
+        player_arguments.push("--continuum-checkpoint-reload".into());
+    }
     if let Some(mode) = &selection.diagnostics.flight_lighting {
         player_arguments.push(format!("--continuum-flight-lighting={mode}"));
     }
@@ -430,6 +439,9 @@ mod tests {
     #[test]
     fn reference_program_exact_composed_invocation() {
         let p = compose("entry-45km", &pins(), base()).unwrap();
+        let reload = compose("scene-save-reload", &pins(), base()).unwrap();
+        assert!(reload.selection.diagnostics.checkpoint_reload);
+        assert!(reload.player_arguments.contains(&"--continuum-checkpoint-reload".into()));
         assert_eq!(p.selection.timeout_seconds, 360);
         assert_eq!(
             p.selection.flight.as_ref().unwrap().entry_target_altitude,
