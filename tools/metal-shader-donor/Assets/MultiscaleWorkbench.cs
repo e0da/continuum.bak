@@ -29,6 +29,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         public string wholeTextureBudgetScope="1 GiB aggregate CPU raw/encoded texture payload admission; same bytes are GPU encoded estimate, excludes decoded/native/driver allocations";
         public string wholeRenderMode="reference",lastBenchmark,lastBenchmarkStatus,lastBenchmarkReason,debugBundlePath;
         public int wholeRecipes,wholePackets,wholeLastSubmissionCalls; public long wholePreparationTicks,wholeSubmissionTicks,clockFrequency;
+        public int wholeStateUploadCount,wholeStateTextureId,wholeCommandBuildCount,wholeRetainedCommandCount;
+        public long wholeStateUploadBytes; public string wholeSubmissionScope;
         public bool benchmarkActive;
         public string focusInstance; public double[] focusTargetMeters;
         public int debugShaderGeneration,craftDrawCalls; public float depthDisplayNear,depthDisplayFar; public int actualBodyMipCount; public string bodyMipPolicySatisfaction;
@@ -50,8 +52,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     sealed class Command { public string Text,Reply; public volatile bool Done,ReplyWritten; }
     sealed class Target : IDisposable
     {
-        public Camera Camera; public RenderTexture Color,Depth; public CommandBuffer Copy;
-        public void Dispose() { if(Camera!=null) { Camera.targetTexture=null; if(Copy!=null) Camera.RemoveCommandBuffer(CameraEvent.AfterEverything,Copy); } if(Copy!=null) Copy.Release(); if(Color!=null) { Color.Release(); UnityEngine.Object.Destroy(Color); } if(Depth!=null) { Depth.Release(); UnityEngine.Object.Destroy(Depth); } }
+        public Camera Camera; public RenderTexture Color,Depth; public CommandBuffer Copy; public bool CopyAttached;
+        public void Dispose() { if(Camera!=null) { Camera.targetTexture=null; if(Copy!=null&&CopyAttached) Camera.RemoveCommandBuffer(CameraEvent.AfterEverything,Copy); } if(Copy!=null) Copy.Release(); if(Color!=null) { Color.Release(); UnityEngine.Object.Destroy(Color); } if(Depth!=null) { Depth.Release(); UnityEngine.Object.Destroy(Depth); } }
     }
     readonly State state=new State(); readonly ConcurrentQueue<Command> queue=new ConcurrentQueue<Command>();
     PresentationQualityOverride[] overrides=new PresentationQualityOverride[0]; Generation generation; Camera present,craftCamera,bodyCamera; Target craftTarget,bodyTarget; Material composite,depthCopy;
@@ -72,6 +74,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         public string processResourceStatus,processResourceError,processResourceScope="Whole-process CPU/RSS sampled outside retained frame intervals; may include final omitted deadline straddler; not GPU or exclusive submission cost";
         public long processResourceStartTicks,processResourceEndTicks,workingSetStartBytes,workingSetEndBytes;
         public double processCpuSeconds;
+        public int processResourceStartFrame,processResourceEndFrame,stateUploadsStart,stateUploadsEnd,commandBuildsStart,commandBuildsEnd;
+        public long stateUploadBytesStart,stateUploadBytesEnd; public string submissionScope;
         public long frequency,windowStartTicks,windowEndTicks,preparationTicks; public double[] frameMilliseconds,submissionMilliseconds; public long[] frameStartedTicks,frameEndedTicks; public int[] renderedFrames,submissionCalls;
     }
     Benchmark benchmark; long warmupEnd,deadline,previousTick,previousSubmission; int previousFrame,benchmarkPriorVsync,benchmarkPriorCap,lastPresentedFrame=-1,presentedInFrame; bool benchmarkCapturing;
@@ -173,6 +177,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
             state.craftWorldScale=cq.worldScale; state.bodyWorldScale=bq.worldScale; state.craftMipBias=cq.textureMipBias; state.bodyMipBias=bq.textureMipBias; state.craftGeometryErrorPixels=cq.geometryErrorPixels; state.bodyGeometryErrorPixels=bq.geometryErrorPixels;
             if(generation.Whole==null) generation.Craft.SetTextureMipBias(cq.textureMipBias); else generation.Whole.SetTextureMipBias(cq.textureMipBias); generation.Texture.mipMapBias=s.bodyTexture.mipBias+bq.textureMipBias;
             Resize(ref craftTarget,craftCamera,cq.worldScale); Resize(ref bodyTarget,bodyCamera,bq.worldScale); craftCamera.cullingMask=generation.Whole==null?generation.Craft.LayerMask:generation.Whole.LayerMask; bodyCamera.cullingMask=1<<29;
+            ConfigureCraftDepth();
             Vector3 center=generation.CraftBounds.center; float radius=Math.Max(.01f,generation.CraftBounds.extents.magnitude); double d=center.magnitude; craftCamera.nearClipPlane=(float)Math.Max(.001,(d-radius)*.5); craftCamera.farClipPlane=(float)Math.Max(craftCamera.nearClipPlane*2,d+radius*2);
             for(int i=0;i<3;i++) bodyGeometryAnchor[i]=s.bodyAnchorMeters[i]+s.bodyLocalToMeters[i*4+3];
             MultiscaleSceneFormat.RelativePosition(bodyGeometryAnchor,cameraAnchor,out x,out y,out z); Matrix4x4 bodyMatrix=Matrix(s.bodyLocalToMeters); bodyMatrix.m03=x; bodyMatrix.m13=y; bodyMatrix.m23=z;
@@ -181,7 +186,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
             Shader.SetGlobalVector("_LocalCameraPos",new Vector4(0,0,0,priorCameraPosition.w)); Vector3 forward=rotation*Vector3.forward; Shader.SetGlobalVector("_LocalCameraDir",new Vector4(forward.x,forward.y,forward.z,priorCameraDirection.w));
             Graphics.DrawMesh(generation.Body,bodyMatrix,bodyGeometryDebug?generation.DebugMaterial:generation.Material,29,bodyCamera,0,null,ShadowCastingMode.On,false); bodyCamera.Render(); craftCamera.Render();
             state.craftDrawCalls=generation.Whole==null?generation.Craft.DrawCalls:generation.Whole.DrawCalls; state.actualBodyMipCount=generation.Texture.mipmapCount; state.bodyMipPolicySatisfaction=state.actualBodyMipCount==1?"unsupported-single-level":"bias-applied-unqualified";
-            if(generation.Whole!=null) { state.wholeRecipes=generation.Whole.RecipeCount; state.wholePackets=generation.Whole.PacketCount; state.wholeLastSubmissionCalls=generation.Whole.LastSubmissionCalls; state.wholePreparationTicks=generation.Whole.PreparationTicks; state.wholeSubmissionTicks=generation.Whole.SubmissionTicks; state.clockFrequency=System.Diagnostics.Stopwatch.Frequency; }
+            if(generation.Whole!=null) { state.wholeRecipes=generation.Whole.RecipeCount; state.wholePackets=generation.Whole.PacketCount; state.wholeLastSubmissionCalls=generation.Whole.LastSubmissionCalls; state.wholePreparationTicks=generation.Whole.PreparationTicks; state.wholeSubmissionTicks=generation.Whole.SubmissionTicks; state.clockFrequency=System.Diagnostics.Stopwatch.Frequency; state.wholeStateUploadCount=generation.Whole.StateUploadCount; state.wholeStateTextureId=generation.Whole.StateTextureId; state.wholeStateUploadBytes=generation.Whole.StateUploadBytes; state.wholeCommandBuildCount=generation.Whole.CommandBuildCount; state.wholeRetainedCommandCount=generation.Whole.RetainedCommandCount; state.wholeSubmissionScope=generation.Whole.RetainedScope; }
             composite.SetTexture("_BodyColor",bodyTarget.Color); composite.SetTexture("_BodyDepth",bodyTarget.Depth); composite.SetTexture("_CraftColor",craftTarget.Color); composite.SetTexture("_CraftDepth",craftTarget.Depth);
             state.frames++; state.bodyDraws++; state.craftFrames=generation.Whole==null?generation.Craft.SubmittedFrames:generation.Whole.SubmittedFrames; state.width=Screen.width; state.height=Screen.height; state.bodyWidth=bodyTarget.Color.width; state.bodyHeight=bodyTarget.Color.height; state.craftWidth=craftTarget.Color.width; state.craftHeight=craftTarget.Color.height; state.distance=distance; state.logDistance=Math.Log10(distance); state.yaw=yaw; state.pitch=pitch; state.fov=s.fov; state.cameraAnchorMeters=cameraAnchor; state.vesselGeneration=generation.Craft.Generation; state.bodyNear=bodyCamera.nearClipPlane; state.bodyFar=bodyCamera.farClipPlane; state.craftNear=craftCamera.nearClipPlane; state.craftFar=craftCamera.farClipPlane;
             if(!state.benchmarkActive&&state.frames%30==0) Write();
@@ -189,12 +194,23 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         catch(Exception e) { Fail(e); }
     }
     void BeforeCamera(Camera camera) { if(generation!=null&&camera==craftCamera) { if(generation.Whole==null) generation.Craft.Submit(camera); else generation.Whole.Submit(camera); } }
+    void ConfigureCraftDepth()
+    {
+        bool retained=generation.Whole!=null&&generation.Whole.RenderMode.StartsWith("retained-",StringComparison.Ordinal);
+        craftCamera.depthTextureMode=retained?DepthTextureMode.None:DepthTextureMode.Depth;
+        if(retained)
+        {
+            generation.Whole.ConfigureRetainedTargets(craftTarget.Color,craftTarget.Depth);
+            if(craftTarget.CopyAttached) { craftCamera.RemoveCommandBuffer(CameraEvent.AfterEverything,craftTarget.Copy); craftTarget.CopyAttached=false; }
+        }
+        else if(!craftTarget.CopyAttached) { craftCamera.AddCommandBuffer(CameraEvent.AfterEverything,craftTarget.Copy); craftTarget.CopyAttached=true; }
+    }
     void Resize(ref Target target,Camera camera,float scale)
     {
         int w=Math.Max(1,(int)Math.Ceiling(Screen.width*scale)),h=Math.Max(1,(int)Math.Ceiling(Screen.height*scale)); if(target!=null&&target.Color.width==w&&target.Color.height==h) return;
         if(target!=null) target.Dispose(); target=new Target {Camera=camera,Color=new RenderTexture(w,h,24,RenderTextureFormat.ARGB32) {antiAliasing=1,filterMode=FilterMode.Point},Depth=new RenderTexture(w,h,0,RenderTextureFormat.RFloat) {filterMode=FilterMode.Point}};
         if(!target.Color.Create()||!target.Depth.Create()) throw new InvalidDataException("World target allocation failed."); camera.targetTexture=target.Color;
-        target.Copy=new CommandBuffer {name="Multiscale positive linear depth"}; target.Copy.Blit(BuiltinRenderTextureType.CameraTarget,target.Depth,depthCopy); camera.AddCommandBuffer(CameraEvent.AfterEverything,target.Copy);
+        target.Copy=new CommandBuffer {name="Multiscale positive linear depth"}; target.Copy.Blit(BuiltinRenderTextureType.CameraTarget,target.Depth,depthCopy); camera.AddCommandBuffer(CameraEvent.AfterEverything,target.Copy); target.CopyAttached=true;
     }
     void OnRenderImage(RenderTexture source,RenderTexture destination)
     {
@@ -215,7 +231,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         if(words[0]=="benchmark"&&words.Length==3) { BeginBenchmark(Number(words[1]),Number(words[2])); return; }
         if(words[0]=="cancelbenchmark"&&words.Length==1) { if(!state.benchmarkActive) throw new InvalidDataException("No active benchmark."); EndBenchmark("interrupted","operator-cancelled"); return; }
         if(words[0]=="captureframe") { StartCoroutine(Capture()); return; }
-        if(words[0]=="materialmode"&&words.Length==2&&(words[1]=="reference"||words[1]=="instanced"||words[1]=="grouped")) { if(generation.Whole!=null) { generation.Whole.SetRenderMode(words[1]); state.wholeRenderMode=words[1]; state.materialMode=words[1]+"-diagnostic"; } else { generation.Craft.SetMode(words[1]); state.materialMode=donorMaterialMode=words[1]; } }
+        if(words[0]=="materialmode"&&words.Length==2&&(words[1]=="reference"||words[1]=="instanced"||words[1]=="grouped"||words[1]=="retained-scalar"||words[1]=="retained-grouped")) { if(generation.Whole!=null) { generation.Whole.SetRenderMode(words[1]); state.wholeRenderMode=words[1]; state.materialMode=words[1]+"-diagnostic"; } else { generation.Craft.SetMode(words[1]); state.materialMode=donorMaterialMode=words[1]; } }
         else if(words[0]=="view"&&words.Length==2) SelectView(words[1]);
         else if(words[0]=="debugshaderreload") ReloadDebugShader(Absolute(text.Substring(words[0].Length).Trim()));
         else if(words[0]=="zoom"&&words.Length==2) distance=Math.Max(.25,Math.Min(1e10,Math.Pow(10,Number(words[1]))));
@@ -226,7 +242,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         else if(words[0]=="override"&&words.Length==5) { string id=words[1]; if(id!=generation.Scene.bodyId&&id!=generation.Scene.vesselId) throw new InvalidDataException("Known asset ID required."); var next=overrides.Where(o=>o.assetId!=id).Concat(new[] {new PresentationQualityOverride {scope="asset",assetId=id,pass="world",scaleSet=true,worldScale=(float)Number(words[2]),mipSet=true,textureMipBias=(float)Number(words[3]),geometrySet=true,geometryErrorPixels=(float)Number(words[4])}}).ToArray(); PresentationQualityPolicy.Resolve(state.preset,state.context,id==generation.Scene.bodyId?"body":"craft","world",id,next); overrides=next; }
         else if(words[0]=="fixturehotreload") Reload(Absolute(text.Substring(words[0].Length).Trim()),false);
         else if(words[0]=="snapshotreload") { if(generation.Whole!=null) throw new InvalidDataException("Whole geometry/poses are immutable; reload scene generation instead of subset snapshot."); string path=Absolute(text.Substring(words[0].Length).Trim()); var snap=ResidentMaterialFormat.ReadSnapshot(path); if(snap.instances.Any(i=>i.opacityEffective!=1)) throw new InvalidDataException("Translucent snapshot rejected."); generation.Craft.ReloadSnapshot(path); }
-        else throw new InvalidDataException("status|quit|captureframe|materialmode reference/grouped (whole) or reference/instanced (subset)|benchmark WARMUP_SECONDS CAPTURE_SECONDS|cancelbenchmark|view composed or craft-/body- color/depth/flat/world-normals/view-normals/albedo/uv/material-id/linear-depth/log-depth (craft-vertex-colors only)|zoom log10metres|orbit yaw pitch|focus ID|focusinstance ID|preset low/balanced/high|override ID scale mip error|fixturehotreload PATH|snapshotreload PATH|debugshaderreload BUNDLE");
+        else throw new InvalidDataException("status|quit|captureframe|materialmode reference/grouped/retained-scalar/retained-grouped (whole) or reference/instanced (subset)|benchmark WARMUP_SECONDS CAPTURE_SECONDS|cancelbenchmark|view composed or craft-/body- color/depth/flat/world-normals/view-normals/albedo/uv/material-id/linear-depth/log-depth (craft-vertex-colors only)|zoom log10metres|orbit yaw pitch|focus ID|focusinstance ID|preset low/balanced/high|override ID scale mip error|fixturehotreload PATH|snapshotreload PATH|debugshaderreload BUNDLE");
         policyDirty=true; Write();
     }
     void CheckBenchmarkSources()
@@ -238,20 +254,21 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     {
         if(state.benchmarkActive||capturing||quitRequested||generation.Whole==null||!SplashScreen.isFinished||state.frames<1) throw new InvalidOperationException("Idle resident whole fixture after presentation required."); if(warmup<0||warmup>30||seconds<1||seconds>30) throw new InvalidDataException("Warmup0..30/capture1..30 seconds required."); CheckBenchmarkSources();
         benchmark=new Benchmark {hostId=state.hostId,processId=state.processId,sceneSha256=state.sceneSha256,wholeCraftSha256=state.wholeCraftSha256,debugBundleSha256=state.debugBundleSha256,assemblySha256=state.assemblySha256,mode=generation.Whole.RenderMode,view=state.view,width=Screen.width,height=Screen.height,antiAliasing=QualitySettings.antiAliasing,qualityLevel=QualitySettings.GetQualityLevel(),colorSpace=QualitySettings.activeColorSpace.ToString(),frequency=System.Diagnostics.Stopwatch.Frequency,warmupSeconds=warmup,requestedCaptureSeconds=seconds,preparationTicks=generation.Whole.PreparationTicks,frameMilliseconds=new double[65536],submissionMilliseconds=new double[65536],frameStartedTicks=new long[65536],frameEndedTicks=new long[65536],renderedFrames=new int[65536],submissionCalls=new int[65536]};
-        benchmarkPriorVsync=QualitySettings.vSyncCount; benchmarkPriorCap=Application.targetFrameRate; QualitySettings.vSyncCount=0; Application.targetFrameRate=-1; benchmark.vSyncCount=QualitySettings.vSyncCount; benchmark.targetFrameRate=Application.targetFrameRate; benchmark.frozenControlsJson=JsonUtility.ToJson(state); state.benchmarkActive=true; benchmarkCapturing=false; warmupEnd=System.Diagnostics.Stopwatch.GetTimestamp()+(long)(warmup*benchmark.frequency); Write();
+        benchmark.submissionScope=generation.Whole.RetainedScope; benchmarkPriorVsync=QualitySettings.vSyncCount; benchmarkPriorCap=Application.targetFrameRate; QualitySettings.vSyncCount=0; Application.targetFrameRate=-1; benchmark.vSyncCount=QualitySettings.vSyncCount; benchmark.targetFrameRate=Application.targetFrameRate; benchmark.frozenControlsJson=JsonUtility.ToJson(state); state.benchmarkActive=true; benchmarkCapturing=false; warmupEnd=System.Diagnostics.Stopwatch.GetTimestamp()+(long)(warmup*benchmark.frequency); Write();
     }
     void TickBenchmark()
     {
         long now=System.Diagnostics.Stopwatch.GetTimestamp();
         if(Screen.width!=benchmark.width||Screen.height!=benchmark.height||QualitySettings.vSyncCount!=0||Application.targetFrameRate!=-1||QualitySettings.antiAliasing!=benchmark.antiAliasing||QualitySettings.GetQualityLevel()!=benchmark.qualityLevel||QualitySettings.activeColorSpace.ToString()!=benchmark.colorSpace||!SplashScreen.isFinished||generation.Whole.RenderMode!=benchmark.mode||state.view!=benchmark.view) { EndBenchmark("invalid","effective-controls-changed"); return; }
-        if(!benchmarkCapturing) { if(now<warmupEnd) return; BeginProcessResources(); now=System.Diagnostics.Stopwatch.GetTimestamp(); benchmarkCapturing=true; benchmark.windowStartTicks=previousTick=now; previousFrame=Time.frameCount; previousSubmission=generation.Whole.SubmissionTicks; deadline=now+(long)(benchmark.requestedCaptureSeconds*benchmark.frequency); return; }
+        if(!benchmarkCapturing) { if(now<warmupEnd) return; BeginProcessResources(); benchmark.stateUploadsStart=generation.Whole.StateUploadCount; benchmark.stateUploadBytesStart=generation.Whole.StateUploadBytes; benchmark.commandBuildsStart=generation.Whole.CommandBuildCount; now=System.Diagnostics.Stopwatch.GetTimestamp(); benchmarkCapturing=true; benchmark.windowStartTicks=previousTick=now; previousFrame=Time.frameCount; previousSubmission=generation.Whole.SubmissionTicks; deadline=now+(long)(benchmark.requestedCaptureSeconds*benchmark.frequency); return; }
         if(now<=previousTick||Time.frameCount!=previousFrame+1||lastPresentedFrame!=previousFrame||presentedInFrame!=1) { EndBenchmark("invalid","missing-duplicate-or-nonconsecutive-presentation"); return; }
         if(now>deadline) { benchmark.omittedDeadlineStraddlers++; EndBenchmark(benchmark.sampleCount>0?"completed":"invalid",benchmark.sampleCount>0?"monotonic-window-complete":"no-complete-interval"); return; }
         int n=benchmark.sampleCount; if(n>=benchmark.capacity) { EndBenchmark("invalid","sample-capacity-exceeded"); return; } benchmark.frameStartedTicks[n]=previousTick; benchmark.frameEndedTicks[n]=now; benchmark.renderedFrames[n]=previousFrame; benchmark.frameMilliseconds[n]=(now-previousTick)*1000.0/benchmark.frequency; benchmark.submissionMilliseconds[n]=(generation.Whole.SubmissionTicks-previousSubmission)*1000.0/benchmark.frequency; benchmark.submissionCalls[n]=generation.Whole.LastSubmissionCalls; benchmark.sampleCount++; previousTick=now; previousFrame=Time.frameCount; previousSubmission=generation.Whole.SubmissionTicks;
     }
     void EndBenchmark(string status,string reason)
     {
-        if(!state.benchmarkActive) return; state.benchmarkActive=false; EndProcessResources(); QualitySettings.vSyncCount=benchmarkPriorVsync; Application.targetFrameRate=benchmarkPriorCap; benchmark.status=status; benchmark.reason=reason; benchmark.windowEndTicks=benchmarkCapturing?previousTick:0; benchmark.measuredSeconds=benchmarkCapturing?(benchmark.windowEndTicks-benchmark.windowStartTicks)/(double)benchmark.frequency:0;
+        if(!state.benchmarkActive) return; state.benchmarkActive=false; EndProcessResources(); benchmark.stateUploadsEnd=generation.Whole.StateUploadCount; benchmark.stateUploadBytesEnd=generation.Whole.StateUploadBytes; benchmark.commandBuildsEnd=generation.Whole.CommandBuildCount; QualitySettings.vSyncCount=benchmarkPriorVsync; Application.targetFrameRate=benchmarkPriorCap; benchmark.status=status; benchmark.reason=reason; benchmark.windowEndTicks=benchmarkCapturing?previousTick:0; benchmark.measuredSeconds=benchmarkCapturing?(benchmark.windowEndTicks-benchmark.windowStartTicks)/(double)benchmark.frequency:0;
+        if(benchmarkCapturing&&benchmark.mode.StartsWith("retained-",StringComparison.Ordinal)&&(benchmark.stateUploadsStart!=benchmark.stateUploadsEnd||benchmark.stateUploadBytesStart!=benchmark.stateUploadBytesEnd||benchmark.commandBuildsStart!=benchmark.commandBuildsEnd)) { benchmark.status="invalid"; benchmark.reason="retained-state-or-command-generation-changed"; }
         if(status=="completed"&&benchmark.commandsDuringCapture>0) { benchmark.status="invalid"; benchmark.reason="command-interference"; }
         try { CheckBenchmarkSources(); } catch(Exception e) { benchmark.status="invalid"; benchmark.reason="source-identity-drift: "+e.Message; }
         Array.Resize(ref benchmark.frameMilliseconds,benchmark.sampleCount); Array.Resize(ref benchmark.submissionMilliseconds,benchmark.sampleCount); Array.Resize(ref benchmark.frameStartedTicks,benchmark.sampleCount); Array.Resize(ref benchmark.frameEndedTicks,benchmark.sampleCount); Array.Resize(ref benchmark.renderedFrames,benchmark.sampleCount); Array.Resize(ref benchmark.submissionCalls,benchmark.sampleCount);
@@ -265,6 +282,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         {
             benchmarkProcess=System.Diagnostics.Process.GetCurrentProcess(); benchmarkProcess.Refresh();
             benchmarkCpuStart=benchmarkProcess.TotalProcessorTime; benchmark.workingSetStartBytes=benchmarkProcess.WorkingSet64;
+            benchmark.processResourceStartFrame=Time.frameCount;
             benchmark.processResourceStartTicks=System.Diagnostics.Stopwatch.GetTimestamp(); benchmark.processResourceStatus="started";
         }
         catch(Exception error) { benchmark.processResourceStatus="unsupported"; benchmark.processResourceError=error.GetType().Name+": "+error.Message; benchmarkProcess?.Dispose(); benchmarkProcess=null; }
@@ -276,6 +294,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         {
             benchmarkProcess.Refresh(); benchmark.processResourceEndTicks=System.Diagnostics.Stopwatch.GetTimestamp();
             benchmark.processCpuSeconds=(benchmarkProcess.TotalProcessorTime-benchmarkCpuStart).TotalSeconds; benchmark.workingSetEndBytes=benchmarkProcess.WorkingSet64;
+            benchmark.processResourceEndFrame=Time.frameCount;
             benchmark.processResourceStatus=benchmark.processCpuSeconds>=0?"available":"invalid-negative-cpu-delta";
         }
         catch(Exception error) { benchmark.processResourceStatus="unsupported"; benchmark.processResourceError=error.GetType().Name+": "+error.Message; }
@@ -302,15 +321,16 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     }
     void ReloadDebugShader(string path)
     {
-        string digest=Hash(path); AssetBundle next=AssetBundle.LoadFromFile(path); if(next==null) throw new InvalidDataException("Diagnostic bundle load failed."); Material[] craft=null,whole=null; Material body=null;
+        string digest=Hash(path); AssetBundle next=AssetBundle.LoadFromFile(path); if(next==null) throw new InvalidDataException("Diagnostic bundle load failed."); Material[] craft=null,whole=null; Material body=null; WholeCraftRuntime.DebugShaderCommit wholeCommit=null;
         try
         {
             Shader selected=null; foreach(var shader in next.LoadAllAssets<Shader>()) if(shader.name=="Continuum/MultiscaleDiagnostic") { if(selected!=null) throw new InvalidDataException("Duplicate diagnostic shader."); selected=shader; }
             ValidateDebugShader(selected); craft=generation.Craft.PrepareDebugShader(selected); if(generation.Whole!=null) whole=generation.Whole.PrepareDebugShader(selected); body=PrepareBodyDebug(generation,selected); if(bodyGeometryDebug) body.SetFloat("_Mode",ResidentMaterialRuntime.GeometryDebugMode(state.view.Substring(5)));
             if(Hash(path)!=digest) throw new InvalidDataException("Diagnostic bundle changed during preparation.");
-            var oldBundle=debugBundle; var oldBody=generation.DebugMaterial; generation.Craft.CommitDebugShader(craft); craft=null; if(whole!=null) { generation.Whole.CommitDebugShader(whole); whole=null; } generation.DebugMaterial=body; body=null; debugShader=selected; debugBundle=next; next=null; Destroy(oldBody); if(oldBundle!=null) oldBundle.Unload(true); state.debugBundleSha256=digest; state.debugBundlePath=path; state.debugShaderGeneration++; Write();
+            if(whole!=null) wholeCommit=generation.Whole.StageDebugShaderCommit(whole);
+            var oldBundle=debugBundle; var oldBody=generation.DebugMaterial; if(wholeCommit!=null) { generation.Whole.CommitDebugShader(wholeCommit); whole=null; } generation.Craft.CommitDebugShader(craft); craft=null; generation.DebugMaterial=body; body=null; debugShader=selected; debugBundle=next; next=null; Destroy(oldBody); if(oldBundle!=null) oldBundle.Unload(true); state.debugBundleSha256=digest; state.debugBundlePath=path; state.debugShaderGeneration++; Write();
         }
-        finally { if(craft!=null) foreach(var m in craft) Destroy(m); if(whole!=null) foreach(var m in whole) Destroy(m); if(body!=null) Destroy(body); if(next!=null) next.Unload(true); }
+        finally { if(wholeCommit!=null) wholeCommit.Dispose(); if(craft!=null) foreach(var m in craft) Destroy(m); if(whole!=null) foreach(var m in whole) Destroy(m); if(body!=null) Destroy(body); if(next!=null) next.Unload(true); }
     }
     IEnumerator QuitAfterReply(Command command)
     {

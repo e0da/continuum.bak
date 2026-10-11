@@ -87,7 +87,7 @@ namespace KspContinuum
                 { Require(cores.Count < 256, "Core ownership bound exceeded."); object value = stateField.GetValue(member); Require(value != null && !states.ContainsKey(value), "Absent/shared core state."); cores.Add(member); states.Add(value, member); }
                 if (cores.Count == 0) { Report.status = "not-present"; Report.detail = "Pinned mod present; active vessel has no MechJeb core."; Report.cleanupStatus = "not-installed"; active = null; return; }
                 Report.admittedCoreIds = cores.Select(c => c.GetInstanceID()).OrderBy(id => id).ToArray();
-                Register(drive, "master-drive-envelope"); Register(update, "vessel-state-update-inside-drive"); Register(update, "vessel-state-update-outside-drive");
+                Register(drive, "core-drive-entry-envelope"); Register(update, "vessel-state-update-inside-drive"); Register(update, "vessel-state-update-outside-drive");
                 Register(analyze, "analyze-parts-inside-drive"); Register(analyze, "analyze-parts-outside-drive");
                 var methods = new HashSet<MethodInfo>();
                 MethodInfo baseDrive = AccessTools.DeclaredMethod(module, "Drive", new[] { typeof(FlightCtrlState) });
@@ -157,7 +157,7 @@ namespace KspContinuum
             if (Report.status == "not-present") return;
             if (currentCore != null || (depths != null && depths.Any(d => d != 0))) Report.errors++;
             Remove(); Report.rows = timer.Finish(fixedWindowTicks, true); Report.observedCoreIds = observed.OrderBy(id => id).ToArray();
-            if (Report.status != "unavailable") Report.status = Report.errors == 0 && Report.cleanupStatus == "removed-owned-patches" && Report.rows.Any(r => r.category == "master-drive-envelope" && r.calls > 0) ? "observed" : "invalid";
+            if (Report.status != "unavailable") Report.status = Report.errors == 0 && Report.cleanupStatus == "removed-owned-patches" && Report.rows.Any(r => r.category == "core-drive-entry-envelope" && r.calls > 0) ? "observed" : "invalid";
         }
     }
 }
