@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><TreatWarningsAsErrors>true</TreatWarningsAsErrors></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/KspContinuum.Core/KspContinuum.Core.csproj" />
+    <Reference Include="Assembly-CSharp"><HintPath>$(KSP_MANAGED)/Assembly-CSharp.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(KSP_MANAGED)/UnityEngine.CoreModule.dll</HintPath><Private>true</Private></Reference>
+  </ItemGroup>
+  <Target Name="CheckGameReferences" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(KSP_MANAGED)/Assembly-CSharp.dll')" Text="Owner-provided pinned KSP Managed directory required. Replay never launches or installs a game." />
+  </Target>
+</Project>
