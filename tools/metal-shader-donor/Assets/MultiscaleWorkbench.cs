@@ -42,6 +42,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         public int processId,port,frames,bodyDraws,craftFrames,width,height,bodyWidth,bodyHeight,craftWidth,craftHeight,commands,sceneReloads;
         public long vesselGeneration; public double distance,logDistance; public double[] cameraAnchorMeters;
         public float yaw,pitch,fov,bodyNear,bodyFar,craftNear,craftFar;
+        public string projection="perspective"; public float verticalSpanMeters; public double pixelsPerMeterAtFocus;
+        public ScientificOverlay.StatusData scientificOverlay;
         public float bodyWorldScale,craftWorldScale,bodyMipBias,craftMipBias,bodyGeometryErrorPixels,craftGeometryErrorPixels;
         public string bodyPolicy,craftPolicy,bodyShadowPolicy,craftShadowPolicy;
         public bool reversedZ,uiNativeResolution=true,opaqueOnly=true,splashFinishedAtCapture,quitReplyWritten;
@@ -63,6 +65,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     readonly State state=new State(); readonly ConcurrentQueue<Command> queue=new ConcurrentQueue<Command>();
     VesselReplaySession replay;
     PersistentTrailRuntime trail;
+    readonly ScientificOverlay scientificOverlay=new ScientificOverlay();
+    float? perspectiveFov;
     PresentationQualityOverride[] overrides=new PresentationQualityOverride[0]; Generation generation; Camera present,craftCamera,bodyCamera; Target craftTarget,bodyTarget; Material composite,depthCopy;
     EffectivePresentationQuality craftQuality,bodyQuality; bool policyDirty=true;
     string output,partBundle,originalBundle,seen; double distance; float yaw,pitch; double pollAt; bool capturing,settingsOwned,quitRequested; TcpListener listener; Thread socket; volatile bool stopping; int queued;
@@ -184,8 +188,13 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
             if(bodyFocus) distance=Math.Max(distance,s.bodyRadiusMeters*1.01); Vector3 offset=Quaternion.Euler(pitch,yaw,0)*Vector3.back;
             for(int i=0;i<3;i++) cameraAnchor[i]=anchor[i]+offset[i]*distance;
             float x,y,z; MultiscaleSceneFormat.RelativePosition(vesselAnchor,cameraAnchor,out x,out y,out z); if(generation.Whole==null) generation.Craft.SetPresentationAnchor(new Vector3(x,y,z)); else generation.Whole.SetPresentationAnchor(new Vector3(x,y,z));
-            Quaternion rotation=Quaternion.LookRotation(-offset,Vector3.up); present.transform.SetPositionAndRotation(Vector3.zero,rotation); present.fieldOfView=s.fov;
-            craftCamera.transform.SetPositionAndRotation(Vector3.zero,rotation); bodyCamera.transform.SetPositionAndRotation(Vector3.zero,rotation); craftCamera.fieldOfView=bodyCamera.fieldOfView=s.fov; craftCamera.aspect=bodyCamera.aspect=present.aspect;
+            Quaternion rotation=Quaternion.LookRotation(-offset,Vector3.up); present.transform.SetPositionAndRotation(Vector3.zero,rotation);
+            craftCamera.transform.SetPositionAndRotation(Vector3.zero,rotation); bodyCamera.transform.SetPositionAndRotation(Vector3.zero,rotation);
+            float fov=perspectiveFov??s.fov; bool ortho=state.projection=="ortho";
+            present.orthographic=craftCamera.orthographic=bodyCamera.orthographic=ortho;
+            present.fieldOfView=craftCamera.fieldOfView=bodyCamera.fieldOfView=fov;
+            if(ortho)present.orthographicSize=craftCamera.orthographicSize=bodyCamera.orthographicSize=state.verticalSpanMeters*.5f;
+            craftCamera.aspect=bodyCamera.aspect=present.aspect;
             if(policyDirty) { craftQuality=PresentationQualityPolicy.Resolve(state.preset,state.context,"craft","world",s.vesselId,overrides); bodyQuality=PresentationQualityPolicy.Resolve(state.preset,state.context,"body","world",s.bodyId,overrides); state.craftShadowPolicy=PresentationQualityPolicy.Resolve(state.preset,state.context,"craft","shadow",s.vesselId,overrides).provenance; state.bodyShadowPolicy=PresentationQualityPolicy.Resolve(state.preset,state.context,"body","shadow",s.bodyId,overrides).provenance; policyDirty=false; }
             var cq=craftQuality; var bq=bodyQuality; state.craftPolicy=cq.provenance; state.bodyPolicy=bq.provenance;
             state.craftWorldScale=cq.worldScale; state.bodyWorldScale=bq.worldScale; state.craftMipBias=cq.textureMipBias; state.bodyMipBias=bq.textureMipBias; state.craftGeometryErrorPixels=cq.geometryErrorPixels; state.bodyGeometryErrorPixels=bq.geometryErrorPixels;
@@ -197,6 +206,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
             MultiscaleSceneFormat.RelativePosition(bodyGeometryAnchor,cameraAnchor,out x,out y,out z); Matrix4x4 bodyMatrix=Matrix(s.bodyLocalToMeters); bodyMatrix.m03=x; bodyMatrix.m13=y; bodyMatrix.m23=z;
             double bd=Math.Sqrt((double)x*x+(double)y*y+(double)z*z); bodyCamera.nearClipPlane=(float)Math.Max(1,(bd-s.bodyRadiusMeters)*.5); bodyCamera.farClipPlane=(float)Math.Max(bodyCamera.nearClipPlane*2,bd+s.bodyRadiusMeters*2);
             if(bodyCamera.nearClipPlane<=0||craftCamera.nearClipPlane<=0) throw new InvalidDataException("Invalid depth domain.");
+            present.nearClipPlane=Math.Min(craftCamera.nearClipPlane,bodyCamera.nearClipPlane); present.farClipPlane=Math.Max(craftCamera.farClipPlane,bodyCamera.farClipPlane);
             Shader.SetGlobalVector("_LocalCameraPos",new Vector4(0,0,0,priorCameraPosition.w)); Vector3 forward=rotation*Vector3.forward; Shader.SetGlobalVector("_LocalCameraDir",new Vector4(forward.x,forward.y,forward.z,priorCameraDirection.w));
             Graphics.DrawMesh(generation.Body,bodyMatrix,bodyGeometryDebug?generation.DebugMaterial:generation.Material,29,bodyCamera,0,null,ShadowCastingMode.On,false); bodyCamera.Render();
             if(generation.Whole!=null&&(generation.Whole.RenderMode=="retained-scalar"||generation.Whole.RenderMode=="retained-grouped")) generation.Whole.Submit(craftCamera); else craftCamera.Render();
@@ -205,6 +215,11 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
             if(generation.Whole!=null) { state.wholeNonvisibleDraws=generation.Whole.NonvisibleDraws; state.wholeRecipes=generation.Whole.RecipeCount; state.wholePackets=generation.Whole.PacketCount; state.wholeLastSubmissionCalls=generation.Whole.LastSubmissionCalls; state.wholePreparationTicks=generation.Whole.PreparationTicks; state.wholeSubmissionTicks=generation.Whole.SubmissionTicks; state.clockFrequency=System.Diagnostics.Stopwatch.Frequency; state.wholeStateUploadCount=generation.Whole.StateUploadCount; state.wholeStateTextureId=generation.Whole.StateTextureId; state.wholeStateUploadBytes=generation.Whole.StateUploadBytes; state.wholeCommandBuildCount=generation.Whole.CommandBuildCount; state.wholeNativeExecuteCount=generation.Whole.NativeExecuteCount; state.wholeViewUniformUpdateCount=generation.Whole.ViewUniformUpdateCount; state.wholeRetainedCommandCount=generation.Whole.RetainedCommandCount; state.wholeSubmissionScope=generation.Whole.RetainedScope; }
             composite.SetTexture("_BodyColor",bodyTarget.Color); composite.SetTexture("_BodyDepth",bodyTarget.Depth); composite.SetTexture("_CraftColor",craftTarget.Color); composite.SetTexture("_CraftDepth",craftTarget.Depth);
             state.frames++; state.bodyDraws++; state.craftFrames=generation.Whole==null?generation.Craft.SubmittedFrames:generation.Whole.SubmittedFrames; state.width=Screen.width; state.height=Screen.height; state.bodyWidth=bodyTarget.Color.width; state.bodyHeight=bodyTarget.Color.height; state.craftWidth=craftTarget.Color.width; state.craftHeight=craftTarget.Color.height; state.distance=distance; state.logDistance=Math.Log10(distance); state.yaw=yaw; state.pitch=pitch; state.fov=s.fov; state.cameraAnchorMeters=cameraAnchor; state.vesselGeneration=generation.Craft.Generation; state.bodyNear=bodyCamera.nearClipPlane; state.bodyFar=bodyCamera.farClipPlane; state.craftNear=craftCamera.nearClipPlane; state.craftFar=craftCamera.farClipPlane;
+            state.fov=fov;
+            var scientificView=CurrentScientificView();
+            double focusDepth=(anchor[0]-cameraAnchor[0])*present.transform.forward.x+(anchor[1]-cameraAnchor[1])*present.transform.forward.y+(anchor[2]-cameraAnchor[2])*present.transform.forward.z;
+            state.pixelsPerMeterAtFocus=scientificView.PixelsPerMeter(focusDepth);
+            state.scientificOverlay=scientificOverlay.Status;
             if(!state.benchmarkActive&&state.frames%30==0) Write();
         }
         catch(Exception e) { Fail(e); }
@@ -250,6 +265,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         if(words[0]=="cancelbenchmark"&&words.Length==1) { if(!state.benchmarkActive) throw new InvalidDataException("No active benchmark."); EndBenchmark("interrupted","operator-cancelled"); return; }
         if(words[0]=="captureframe") { if(replay!=null) replay.Pause(); StartCoroutine(Capture()); return; }
         if(words[0]=="trail") { TrailCommand(words); return; }
+        if(words[0]=="projection") { Projection(words); Write(); return; }
+        if(words[0]=="cad") { scientificOverlay.Handle(words); state.scientificOverlay=scientificOverlay.Status; Write(); return; }
         if(words[0]=="viewport"&&words.Length==3)
         {
             int width,height;
@@ -283,6 +300,26 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         if(state.debugBundlePath!=null&&Hash(state.debugBundlePath)!=state.debugBundleSha256) throw new InvalidDataException("Bound diagnostic bundle changed.");
     }
     void RequireReplay() { if(replay==null) throw new InvalidOperationException("Open a bound replay first."); }
+    void Projection(string[] words)
+    {
+        if(words.Length>=2&&words[1]=="perspective"&&(words.Length==2||words.Length==3))
+        {
+            double fov=words.Length==3?Number(words[2]):perspectiveFov??generation.Scene.fov;
+            if(fov<1||fov>179)throw new InvalidDataException("Perspective FOV1..179 degrees required.");
+            if(words.Length==3)perspectiveFov=(float)fov; state.projection="perspective"; state.fov=(float)fov; state.verticalSpanMeters=0;
+        }
+        else if(words.Length==3&&words[1]=="ortho")
+        {
+            double span=Number(words[2]); if(span<.001||span>1e12)throw new InvalidDataException("Orthographic full vertical span .001..1e12 metres required.");
+            state.projection="ortho"; state.verticalSpanMeters=(float)span;
+        }
+        else throw new InvalidDataException("projection perspective [FOV_DEGREES] | projection ortho VERTICAL_SPAN_METRES");
+    }
+    ScientificView CurrentScientificView()
+    {
+        Vector3 right=present.transform.right,up=present.transform.up,forward=present.transform.forward;
+        return new ScientificView(new ScientificVector3(cameraAnchor[0],cameraAnchor[1],cameraAnchor[2]),new ScientificVector3(right.x,right.y,right.z),new ScientificVector3(up.x,up.y,up.z),new ScientificVector3(forward.x,forward.y,forward.z),Screen.width,Screen.height,present.orthographic?ScientificProjectionKind.Orthographic:ScientificProjectionKind.Perspective,present.fieldOfView,present.orthographicSize*2,present.nearClipPlane,present.farClipPlane);
+    }
     void TrailCommand(string[] words)
     {
         if(words.Length==3&&words[1]=="recording")
@@ -476,6 +513,12 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     void OnGUI()
     {
         if (trail != null && trail.Status.probeInstalled) return;
+        if(present!=null&&generation!=null&&state.status!="failed")
+        {
+            var focus=state.focusTargetMeters;
+            if(focus!=null)scientificOverlay.SetFocus(new ScientificVector3(focus[0],focus[1],focus[2]));
+            scientificOverlay.Draw(CurrentScientificView()); state.scientificOverlay=scientificOverlay.Status;
+        }
         bool controlsAllowed=!capturing&&!state.benchmarkActive&&!quitRequested&&(trail==null||!trail.Status.probeInstalled);
         GUI.Box(new Rect(10,10,430,150),generation!=null&&generation.Whole!=null?"Whole craft snapshot / "+state.wholeRenderMode:"Captured material-family subset"); GUI.Label(new Rect(20,35,410,20),state.preset+" / "+state.distance.ToString("G5")+" m / "+state.view);
         float log=GUI.HorizontalSlider(new Rect(20,65,400,20),(float)Math.Log10(Math.Max(.25,distance)),-.6f,10); if(controlsAllowed) distance=Math.Pow(10,log);
@@ -484,6 +527,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         GUI.Label(new Rect(450,10,Screen.width-460,70),state.debugLegend);
         if(replay!=null) GUI.Label(new Rect(450,80,Screen.width-460,60),"Replay "+replay.Status.status+" / "+replay.Status.cursor+" of "+replay.Status.frames+" / UT "+replay.Status.universalTime.ToString("G10")+" / force "+replay.Status.forceSummary+" / moment "+replay.Status.momentSummary);
         if(trail!=null) GUI.Label(new Rect(450,145,Screen.width-460,50),"Artistic trail / t="+trail.Status.simulationTime.ToString("F2")+" / live "+trail.Status.live+" / expired "+trail.Status.expired+" / "+(trail.Status.paused?"paused":"playing")+" / emission "+trail.Status.emission);
+        GUI.Label(new Rect(450,200,Screen.width-460,22),state.projection+(state.projection=="ortho"?" / vertical "+state.verticalSpanMeters.ToString("G6")+" m":" / FOV "+state.fov.ToString("G5")+" degrees")+" / "+state.pixelsPerMeterAtFocus.ToString("G5")+" px/m at focus");
         for(int i=0;i<debugViews.Length;i++) if(GUI.Button(new Rect(10+(i%2)*215,170+(i/2)*23,210,22),debugViews[i])&&controlsAllowed) { SelectView(debugViews[i]); Write(); }
     }
     void SocketLoop()
@@ -495,6 +539,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     void OnDestroy()
     {
         state.trailInstalled=false;
+        scientificOverlay.Dispose();
         if(trail!=null) trail.Dispose();
         if(state.benchmarkActive) try { EndBenchmark("interrupted","owned-host-destroyed"); } catch(Exception e) { Debug.LogException(e); }
         if(debugDepth!=null) Destroy(debugDepth);

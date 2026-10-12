@@ -51,9 +51,10 @@ namespace KspContinuum
         static double Eye(MeasuredTrailPoint p,double[] camera,double[] forward) {return (p.x-camera[0])*forward[0]+(p.y-camera[1])*forward[1]+(p.z-camera[2])*forward[2];}
         static MeasuredTrailPoint Lerp(MeasuredTrailPoint a,MeasuredTrailPoint b,double u)
         {return new MeasuredTrailPoint{x=a.x+(b.x-a.x)*u,y=a.y+(b.y-a.y)*u,z=a.z+(b.z-a.z)*u,time=a.time+(b.time-a.time)*u,width=a.width+(b.width-a.width)*u,opacity=a.opacity+(b.opacity-a.opacity)*u};}
-        static void Project(MeasuredTrailPoint p,double[] camera,double[] right,double[] up,double[] forward,double focal,out double x,out double y)
-        {double d=Eye(p,camera,forward);x=((p.x-camera[0])*right[0]+(p.y-camera[1])*right[1]+(p.z-camera[2])*right[2])*focal/d;y=((p.x-camera[0])*up[0]+(p.y-camera[1])*up[1]+(p.z-camera[2])*up[2])*focal/d;}
-        public void Build(double now,double lifetime,double width,double diffusion,double decay,double[] camera,double[] right,double[] up,double[] forward,double focal,double near,double errorPixels)
+        static void Project(MeasuredTrailPoint p,double[] camera,double[] right,double[] up,double[] forward,double focal,bool orthographic,out double x,out double y)
+        {double d=orthographic?1:Eye(p,camera,forward);x=((p.x-camera[0])*right[0]+(p.y-camera[1])*right[1]+(p.z-camera[2])*right[2])*focal/d;y=((p.x-camera[0])*up[0]+(p.y-camera[1])*up[1]+(p.z-camera[2])*up[2])*focal/d;}
+        // Orthographic focal is constant pixels/metre; perspective focal is focal length in pixels.
+        public void Build(double now,double lifetime,double width,double diffusion,double decay,double[] camera,double[] right,double[] up,double[] forward,double focal,double near,double errorPixels,bool orthographic=false)
         {
             Need(Finite(now)&&now>=0&&now<=times[times.Length-1]&&Finite(lifetime)&&lifetime>0&&lifetime<=3600&&Finite(width)&&width>=.001&&width<=1000&&Finite(diffusion)&&diffusion>=0&&diffusion<=1000&&Finite(decay)&&decay>=0&&decay<=100&&Finite(focal)&&focal>0&&focal<=1e8&&Finite(near)&&near>0&&near<=1e12&&Finite(errorPixels)&&errorPixels>=0&&errorPixels<=4);
             foreach(var v in new[]{camera,right,up,forward}){Need(v!=null&&v.Length==3);foreach(double x in v)Need(Finite(x)&&Math.Abs(x)<=1e15);}
@@ -89,16 +90,16 @@ namespace KspContinuum
                 while(top>0)
                 {
                     int hi=stack[--top],lo=stack[--top];if(hi<=lo+1)continue;
-                    double ax,ay,bx,by;Project(points[lo],camera,right,up,forward,focal,out ax,out ay);Project(points[hi],camera,right,up,forward,focal,out bx,out by);
+                    double ax,ay,bx,by;Project(points[lo],camera,right,up,forward,focal,orthographic,out ax,out ay);Project(points[hi],camera,right,up,forward,focal,orthographic,out bx,out by);
                     double dx=bx-ax,dy=by-ay,length=dx*dx+dy*dy,maxScore=-1,maxScreen=0,maxDepth=0,maxDepthRatio=0;
                     double za=Eye(points[lo],camera,forward),zb=Eye(points[hi],camera,forward);Need(za>0&&zb>0);
                     int chosen=-1;
                     for(int k=lo+1;k<hi;k++)
                     {
-                        double x,y;Project(points[k],camera,right,up,forward,focal,out x,out y);
+                        double x,y;Project(points[k],camera,right,up,forward,focal,orthographic,out x,out y);
                         double u=length==0?0:Math.Max(0,Math.Min(1,((x-ax)*dx+(y-ay)*dy)/length));
                         double ex=x-ax-u*dx,ey=y-ay-u*dy,d=Math.Sqrt(ex*ex+ey*ey);
-                        double actual=Eye(points[k],camera,forward),chord=1/((1-u)/za+u/zb),depthError=Math.Abs(actual-chord);
+                        double actual=Eye(points[k],camera,forward),chord=orthographic?za+(zb-za)*u:1/((1-u)/za+u/zb),depthError=Math.Abs(actual-chord);
                         double depthRatio=depthError/(DepthAbsoluteToleranceMeters+DepthRelativeTolerance*Math.Abs(actual));
                         Need(Finite(d)&&Finite(chord)&&Finite(depthError)&&Finite(depthRatio)&&actual>0);
                         double screenRatio=errorPixels==0?(d==0?0:double.PositiveInfinity):d/errorPixels,score=Math.Max(screenRatio,depthRatio);

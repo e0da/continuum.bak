@@ -28,6 +28,8 @@ public sealed class PersistentTrailRuntime : IDisposable
         public double[] segmentGeometry=new double[0];
         public string segmentGeometryLayout="13 doubles per retained segment: ax ay az bx by bz birthA birthB widthA widthB opacityA opacityB emissionRun";
         public float[] segmentView=new float[16],segmentGpuProjection=new float[16];
+        public string projection="perspective",projectionClipScope="Trail retains .001m near and bounds-extended far; camera lens/orthographic scale retained";
+        public float verticalSpanMeters,pixelsPerMeterAtOneMetre;
         public int recordingProcessId,recordingCursor,recordingFrames;
         public double recordingUniversalTime,recordingDuration;
         public double[] recordedRootScene=new double[3];
@@ -55,6 +57,7 @@ public sealed class PersistentTrailRuntime : IDisposable
         public int textureSize=64,craftTextureId,bodyTextureId,width,height;
         public string textureFormat="RFloat",sampler="Point/Clamp/no-mips";
         public float radiusScreenHeight=.045f,actualFov,actualAspect;
+        public bool actualOrthographic; public float actualVerticalSpanMeters;
         public float[] actualCentersCameraRelative=new float[18],actualEyeDepths=new float[6],actualGpuProjection=new float[16],actualView=new float[16];
         public double historyTimeOnInstall; public long historyGenerationOnInstall;
         public bool pausedOnInstall,emissionOnInstall,historyRestored;
@@ -113,11 +116,13 @@ public sealed class PersistentTrailRuntime : IDisposable
     readonly double[] lastOrigin = new double[3];
     Quaternion lastRotation;
     float lastProbeFov,lastProbeAspect;
+    bool lastOrthographic; float lastOrthographicSize;
     RenderTexture target, composed;
     Texture2D probeCraft,probeBody;
     double lastWall;
     bool disposed;
     Matrix4x4 sceneProbeView;
+    Matrix4x4 sceneProbeProjection;
     float sceneProbeFov,sceneProbeAspect;
     public void SceneProbe(SceneTriangle craft,SceneTriangle body,Camera camera,float bodyNear,int width,int height,string sceneHash,string wholeHash,string bodyHash)
     {
@@ -128,7 +133,7 @@ public sealed class PersistentTrailRuntime : IDisposable
         float front=Mathf.Min(near,1)*.5f;
         var p=new ProbeData {depthSource="actual-scene-rendertextures",scope="Actual captured triangle projection plus existing scene positive-depth producers; opaque static witness only",triangles=new[]{craft,body},sceneSha256=sceneHash,wholeGeometrySha256=wholeHash,bodyGeometrySha256=bodyHash,width=width,height=height,radiusScreenHeight=4f/height,textureSize=0,craftRegion=new float[0],bodyRegion=new float[0],centerUvDepth=new float[12],actualCentersCameraRelative=new float[12],actualEyeDepths=new float[4],rgba=new float[]{0,1,0,1,1,0,0,1,0,1,1,1,1,1,0,1},expectedVisible=new[]{true,false,true,false},historyTimeOnInstall=owner.Time,historyGenerationOnInstall=owner.Generation,pausedOnInstall=Status.paused,emissionOnInstall=owner.Emission};
         for(int d=0;d<2;d++) { var t=p.triangles[d]; float behind=Mathf.Max(t.projectedUvDepth[2],Mathf.Max(t.projectedUvDepth[5],t.projectedUvDepth[8]))*1.05f; for(int k=0;k<2;k++) { int i=(d*2+k)*3; p.centerUvDepth[i]=t.centerU+(k==0?-8f:8f)/width; p.centerUvDepth[i+1]=t.centerV; p.centerUvDepth[i+2]=k==0?front:behind; } }
-        sceneProbeView=camera.worldToCameraMatrix; sceneProbeFov=camera.fieldOfView; sceneProbeAspect=camera.aspect;
+        sceneProbeView=camera.worldToCameraMatrix; sceneProbeProjection=camera.projectionMatrix; sceneProbeFov=camera.fieldOfView; sceneProbeAspect=camera.aspect;
         Status.probe=p; Status.probeInstalled=true; uploadedGeneration=-1; HoldClock();
     }
     public PersistentTrailRuntime(double[] anchor,TrailEmitterRecording measured=null,string recordingPath=null,string recordingHash=null)
@@ -252,13 +257,16 @@ public sealed class PersistentTrailRuntime : IDisposable
         Quaternion rotation = camera.transform.rotation;
         Mesh activeMesh=Status.representation=="segments"?segmentMesh:mesh;
         bool changed = uploadedGeneration != owner.Generation || rotation.x != lastRotation.x || rotation.y != lastRotation.y || rotation.z != lastRotation.z || rotation.w != lastRotation.w;
+        changed|=lastOrthographic!=camera.orthographic||lastOrthographicSize!=camera.orthographicSize;
         if(Status.probeInstalled||Status.representation=="segments") changed|=lastProbeFov!=camera.fieldOfView||lastProbeAspect!=camera.aspect;
         if(Status.representation=="segments")changed|=Status.segmentNearPlane!=camera.nearClipPlane||Status.segmentViewportWidth!=width||Status.segmentViewportHeight!=height;
         for (int i = 0; i < 3; i++) changed |= lastOrigin[i] != origin[i];
         Matrix4x4 view=camera.worldToCameraMatrix;
         bool actualProbe=Status.probeInstalled&&Status.probe.depthSource=="actual-scene-rendertextures";
-        if(actualProbe&&(width!=Status.probe.width||height!=Status.probe.height||camera.fieldOfView!=sceneProbeFov||camera.aspect!=sceneProbeAspect||view!=sceneProbeView)) throw new InvalidOperationException("Actual scene probe view changed; turn probe off before resizing/reframing.");
-        if(Status.probeInstalled) { Status.probe.width=width; Status.probe.height=height; Status.probe.actualFov=camera.fieldOfView; Status.probe.actualAspect=camera.aspect; }
+        if(actualProbe&&(width!=Status.probe.width||height!=Status.probe.height||camera.fieldOfView!=sceneProbeFov||camera.aspect!=sceneProbeAspect||view!=sceneProbeView||camera.projectionMatrix!=sceneProbeProjection)) throw new InvalidOperationException("Actual scene probe view changed; turn probe off before resizing/reframing.");
+        Status.projection=camera.orthographic?"ortho":"perspective"; Status.verticalSpanMeters=camera.orthographic?camera.orthographicSize*2:0;
+        Status.pixelsPerMeterAtOneMetre=camera.orthographic?height/(camera.orthographicSize*2):height/(2*Mathf.Tan(camera.fieldOfView*Mathf.Deg2Rad*.5f));
+        if(Status.probeInstalled) { Status.probe.width=width; Status.probe.height=height; Status.probe.actualFov=camera.fieldOfView; Status.probe.actualAspect=camera.aspect; Status.probe.actualOrthographic=camera.orthographic; Status.probe.actualVerticalSpanMeters=Status.verticalSpanMeters; }
         Status.viewSetupTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-setupStarted;
         float far = camera.farClipPlane;
         if (changed)
@@ -273,7 +281,7 @@ public sealed class PersistentTrailRuntime : IDisposable
             int drawCount=Status.probeInstalled?Status.probe.centerUvDepth.Length/3:owner.Count;
             for(int i=0;i<drawCount;i++)
             {
-                if(Status.probeInstalled) { var recipe=Status.probe; float d=recipe.centerUvDepth[i*3+2],half=d*Mathf.Tan(camera.fieldOfView*Mathf.Deg2Rad*.5f); Vector3 c=rotation*new Vector3((recipe.centerUvDepth[i*3]*2-1)*half*camera.aspect,(recipe.centerUvDepth[i*3+1]*2-1)*half,d); parcels[i]=new PersistentTrailParcel {id=i+1,x=c.x,y=c.y,z=c.z,width=half*recipe.radiusScreenHeight*2,opacity=1}; }
+                if(Status.probeInstalled) { var recipe=Status.probe; float d=recipe.centerUvDepth[i*3+2],half=camera.orthographic?camera.orthographicSize:d*Mathf.Tan(camera.fieldOfView*Mathf.Deg2Rad*.5f); Vector3 c=camera.orthographic?camera.ViewportToWorldPoint(new Vector3(recipe.centerUvDepth[i*3],recipe.centerUvDepth[i*3+1],d))-camera.transform.position:rotation*new Vector3((recipe.centerUvDepth[i*3]*2-1)*half*camera.aspect,(recipe.centerUvDepth[i*3+1]*2-1)*half,d); parcels[i]=new PersistentTrailParcel {id=i+1,x=c.x,y=c.y,z=c.z,width=half*recipe.radiusScreenHeight*2,opacity=1}; }
                 else parcels[i]=owner.RelativeAt(i,origin);
                 order[i]=i; ids[i]=parcels[i].id; depths[i]=-view.MultiplyPoint3x4(new Vector3((float)parcels[i].x,(float)parcels[i].y,(float)parcels[i].z)).z;
                 if(Status.probeInstalled) { Status.probe.actualCentersCameraRelative[i*3]=(float)parcels[i].x; Status.probe.actualCentersCameraRelative[i*3+1]=(float)parcels[i].y; Status.probe.actualCentersCameraRelative[i*3+2]=(float)parcels[i].z; Status.probe.actualEyeDepths[i]=(float)depths[i]; }
@@ -293,12 +301,21 @@ public sealed class PersistentTrailRuntime : IDisposable
             Status.uploadCount++; Status.uploadBytes += (Status.representation=="segments"?segmentVertices.Length:vertices.Length) * (12 + 16);
             uploadedGeneration = owner.Generation; lastRotation = rotation; Array.Copy(origin, lastOrigin, 3);
             lastProbeFov=camera.fieldOfView; lastProbeAspect=camera.aspect;
+            lastOrthographic=camera.orthographic; lastOrthographicSize=camera.orthographicSize;
             }
             finally { Status.uploadTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-uploadStarted; }
         }
         setupStarted=System.Diagnostics.Stopwatch.GetTimestamp();
         far = Math.Max(far, activeMesh.bounds.center.magnitude + activeMesh.bounds.extents.magnitude + 1);
-        Matrix4x4 projection = GL.GetGPUProjectionMatrix(Matrix4x4.Perspective(camera.fieldOfView, camera.aspect, .001f, far), true);
+        Matrix4x4 lens;
+        if(camera.orthographic)
+        {
+            lens=camera.projectionMatrix;
+            Matrix4x4 clip=Matrix4x4.Ortho(-camera.orthographicSize*camera.aspect,camera.orthographicSize*camera.aspect,-camera.orthographicSize,camera.orthographicSize,.001f,far);
+            lens.m22=clip.m22; lens.m23=clip.m23;
+        }
+        else lens=Matrix4x4.Perspective(camera.fieldOfView,camera.aspect,.001f,far);
+        Matrix4x4 projection = GL.GetGPUProjectionMatrix(lens,true);
         if(Status.probeInstalled) for(int r=0;r<4;r++) for(int c=0;c<4;c++) { Status.probe.actualGpuProjection[r*4+c]=projection[r,c]; Status.probe.actualView[r*4+c]=view[r,c]; }
         if(actualProbe) { Status.probe.craftTextureId=craftDepth.GetInstanceID(); Status.probe.bodyTextureId=bodyDepth.GetInstanceID(); }
         material.SetMatrix("_TrailVP", projection * view); material.SetMatrix("_TrailView", view); material.SetTexture("_CraftDepth", Status.probeInstalled&&!actualProbe?(Texture)probeCraft:craftDepth); material.SetTexture("_BodyDepth", Status.probeInstalled&&!actualProbe?(Texture)probeBody:bodyDepth);
@@ -315,7 +332,8 @@ public sealed class PersistentTrailRuntime : IDisposable
     void UploadSegments(Camera camera,double[] origin,Vector3 right,Vector3 up)
     {
         Vector3 forward=camera.transform.forward;
-        segments.Build(owner.Time,Status.lifetimeSeconds,Status.initialWidthMeters,Status.diffusionSquareMetersPerSecond,Status.decayPerSecond,origin,new double[]{right.x,right.y,right.z},new double[]{up.x,up.y,up.z},new double[]{forward.x,forward.y,forward.z},target.height/(2*Math.Tan(camera.fieldOfView*Math.PI/360)),camera.nearClipPlane,Status.segmentErrorPixels);
+        double scale=camera.orthographic?target.height/(2.0*camera.orthographicSize):target.height/(2*Math.Tan(camera.fieldOfView*Math.PI/360));
+        segments.Build(owner.Time,Status.lifetimeSeconds,Status.initialWidthMeters,Status.diffusionSquareMetersPerSecond,Status.decayPerSecond,origin,new double[]{right.x,right.y,right.z},new double[]{up.x,up.y,up.z},new double[]{forward.x,forward.y,forward.z},scale,camera.nearClipPlane,Status.segmentErrorPixels,camera.orthographic);
         Status.segmentInputSpans=segments.InputSpans;Status.segmentDraws=segments.Count;Status.segmentRetainedPoints=segments.RetainedPoints;Status.segmentNearClippedSpans=segments.NearClippedSpans;Status.segmentGapSpans=segments.GapSpans;Status.segmentRemovedErrorPixels=segments.MaximumRemovedErrorPixels;Status.segmentNearPlane=camera.nearClipPlane;Status.segmentViewportWidth=target.width;Status.segmentViewportHeight=target.height;Status.segmentBuilds++;Array.Copy(origin,Status.segmentCameraOrigin,3);
         Status.segmentWindChanges=segments.WindChanges;
         Status.segmentRemovedDepthErrorMeters=segments.MaximumRemovedDepthErrorMeters;Status.segmentRemovedDepthErrorRatio=segments.MaximumRemovedDepthErrorRatio;

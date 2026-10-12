@@ -24,7 +24,14 @@ Shader "Continuum/AeroFieldSceneDepthCopy"
     #else
     bool empty=raw>=1;
     #endif
-    return float4(empty?0:LinearEyeDepth(raw),0,0,1);
+    float depth=LinearEyeDepth(raw);
+    if(unity_OrthoParams.w>0.5) {
+     #if defined(UNITY_REVERSED_Z)
+     raw=1-raw;
+     #endif
+     depth=lerp(_ProjectionParams.y,_ProjectionParams.z,raw);
+    }
+    return float4(empty?0:depth,0,0,1);
    }
    ENDCG
   }

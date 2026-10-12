@@ -5,7 +5,7 @@ sampler2D _ContinuumViewField, _ContinuumSceneDepth, _ContinuumFlowField, _Conti
 float4 _ContinuumViewField_TexelSize;
 float4x4 _ContinuumViewInverseProjection, _ContinuumViewCameraToWorld;
 float4x4 _ContinuumFlowViewProjection, _ContinuumFlowWorldToView;
-float _ContinuumFlowFar;
+float _ContinuumFlowFar, _ContinuumViewOrthographic;
 float4 _ContinuumDepthParams, _ContinuumEffectColor, _ContinuumEffectDirection;
 float4 _ContinuumEffectParameters, _ContinuumTextureParameters, _ContinuumFalloffs;
 float4 _ContinuumSeedRect;
@@ -34,6 +34,7 @@ float3 FieldWorld(float2 uv, float depth)
 {
  float4 q=mul(_ContinuumViewInverseProjection,float4(FieldTextureUVToClip(uv),UNITY_NEAR_CLIP_VALUE,1));
  float3 ray=q.xyz/q.w;
+ if(_ContinuumViewOrthographic>0.5) return mul(_ContinuumViewCameraToWorld,float4(ray.xy,-depth,1)).xyz;
  return mul(_ContinuumViewCameraToWorld,float4(ray*(depth/max(-ray.z,.00001)),1)).xyz;
 }
 float Exposed(float3 world, float3 normal)

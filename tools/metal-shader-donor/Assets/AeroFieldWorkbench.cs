@@ -9,6 +9,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using KspContinuum;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -39,6 +40,8 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         public long materialGeneration;
         public int materialInstances, materialMeshes, materialPackets, materialDrawCalls, materialSubmittedFrames, materialSnapshotPublications, materialOccupiedPixels;
         public bool materialPixelProof;
+        public string projection="perspective"; public float fov,verticalSpanMeters,near,far; public double pixelsPerMeterAtFocus; public int viewportWidth,viewportHeight;
+        public ScientificOverlay.StatusData scientificOverlay;
     }
     [Serializable] sealed class Benchmark
     {
@@ -64,6 +67,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     readonly List<Mesh> meshes = new List<Mesh>();
     readonly Matrix4x4[] seeds = new Matrix4x4[256];
     Camera view, field, flow; GameObject geometryRoot;
+    readonly ScientificOverlay scientificOverlay=new ScientificOverlay();
     Bounds geometryBounds; Material opaque, coverage, flowMaterial, sheath, ribbon, depthCopy;
     AssetBundle bundle; Mesh quad; Texture2D noise;
     RenderTexture fieldMap, flowMap, sceneMap;
@@ -190,6 +194,8 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         switch(operation)
         {
             case "status": break;
+            case "projection": Projection(words); break;
+            case "cad": scientificOverlay.Handle(words); state.scientificOverlay=scientificOverlay.Status; break;
             case "pause": state.paused=true; break;
             case "resume": state.paused=false; break;
             case "setflow": if(words.Length!=4) throw new InvalidDataException("setflow x y z"); Vector3 nextDirection=new Vector3(Number(words[1]),Number(words[2]),Number(words[3])); if(nextDirection.sqrMagnitude<.000001f) throw new InvalidDataException("Zero flow."); direction=nextDirection.normalized; break;
@@ -209,6 +215,37 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             default: throw new InvalidDataException("Unknown command.");
         }
         if(!state.benchmarkActive) WriteStatus();
+    }
+    void Projection(string[] words)
+    {
+        if(words.Length>=2&&words[1]=="perspective"&&(words.Length==2||words.Length==3))
+        {
+            float fov=words.Length==3?Number(words[2]):view.fieldOfView;
+            if(fov<1||fov>179)throw new InvalidDataException("Perspective FOV1..179 degrees required.");
+            view.fieldOfView=fov; view.orthographic=false;
+        }
+        else if(words.Length==3&&words[1]=="ortho")
+        {
+            float span=Number(words[2]); if(span<.001f||span>1e12f)throw new InvalidDataException("Orthographic full vertical span .001..1e12 metres required.");
+            view.orthographicSize=span*.5f; view.orthographic=true;
+        }
+        else throw new InvalidDataException("projection perspective [FOV_DEGREES] | projection ortho VERTICAL_SPAN_METRES");
+        state.fieldPixelProof=state.materialPixelProof=false; state.viewOccupiedPixels=state.flowOccupiedPixels=state.sceneOccupiedPixels=state.materialOccupiedPixels=0;
+        ribbonCommands?.Clear(); sceneCommands?.Clear();
+    }
+    ScientificView CurrentScientificView()
+    {
+        Vector3 origin=view.transform.position,right=view.transform.right,up=view.transform.up,forward=view.transform.forward;
+        return new ScientificView(new ScientificVector3(origin.x,origin.y,origin.z),new ScientificVector3(right.x,right.y,right.z),new ScientificVector3(up.x,up.y,up.z),new ScientificVector3(forward.x,forward.y,forward.z),Screen.width,Screen.height,view.orthographic?ScientificProjectionKind.Orthographic:ScientificProjectionKind.Perspective,view.fieldOfView,view.orthographicSize*2,view.nearClipPlane,view.farClipPlane);
+    }
+    void OnGUI()
+    {
+        if(view==null)return;
+        Vector3 focus=geometryBounds.center;
+        var scientificView=CurrentScientificView();
+        scientificOverlay.SetFocus(new ScientificVector3(focus.x,focus.y,focus.z)); scientificOverlay.Draw(scientificView); state.scientificOverlay=scientificOverlay.Status;
+        double focusDepth=Vector3.Dot(focus-view.transform.position,view.transform.forward);
+        GUI.Label(new Rect(12,12,Screen.width-24,24),(view.orthographic?"ortho":"perspective")+(view.orthographic?" / vertical "+(view.orthographicSize*2).ToString("G6")+" m":" / FOV "+view.fieldOfView.ToString("G5")+" degrees")+" / "+(focusDepth>0?scientificView.PixelsPerMeter(focusDepth).ToString("G5")+" px/m at focus":"focus behind camera"));
     }
     void BeginBenchmark(double warmup,double duration)
     {
@@ -452,6 +489,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         Shader.SetGlobalTexture("_ContinuumViewField",fieldMap); Shader.SetGlobalTexture("_ContinuumFlowField",flowMap); Shader.SetGlobalTexture("_ContinuumSceneDepth",sceneMap); Shader.SetGlobalTexture("_ContinuumNoiseTex",noise);
         Shader.SetGlobalVector("_ContinuumViewField_TexelSize",new Vector4(1f/fieldMap.width,1f/fieldMap.height,fieldMap.width,fieldMap.height));
         Shader.SetGlobalMatrix("_ContinuumViewInverseProjection",GL.GetGPUProjectionMatrix(view.projectionMatrix,true).inverse); Shader.SetGlobalMatrix("_ContinuumViewCameraToWorld",view.cameraToWorldMatrix);
+        Shader.SetGlobalFloat("_ContinuumViewOrthographic",view.orthographic?1:0);
         Shader.SetGlobalMatrix("_ContinuumFlowViewProjection",GL.GetGPUProjectionMatrix(flow.projectionMatrix,true)*flow.worldToCameraMatrix); Shader.SetGlobalMatrix("_ContinuumFlowWorldToView",flow.worldToCameraMatrix); Shader.SetGlobalFloat("_ContinuumFlowFar",flow.farClipPlane);
         Shader.SetGlobalVector("_ContinuumEffectDirection",direction); Shader.SetGlobalColor("_ContinuumEffectColor",effectColor); Shader.SetGlobalVector("_ContinuumEffectParameters",effect); texture.w=clock; Shader.SetGlobalVector("_ContinuumTextureParameters",texture); Shader.SetGlobalVector("_ContinuumFalloffs",falloffs);
         Shader.SetGlobalVector("_ContinuumSeedRect",new Vector4(0,0,1,1));
@@ -504,6 +542,9 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             state.cameraPitch=Mathf.Asin(Mathf.Clamp(offset.y/Mathf.Max(offset.magnitude,.00001f),-1,1))*Mathf.Rad2Deg;
             Vector3 position=view.transform.position; Quaternion rotation=view.transform.rotation;
             state.cameraPosition=new[] {position.x,position.y,position.z}; state.cameraRotation=new[] {rotation.x,rotation.y,rotation.z,rotation.w};
+            state.projection=view.orthographic?"ortho":"perspective"; state.fov=view.fieldOfView; state.verticalSpanMeters=view.orthographic?view.orthographicSize*2:0; state.near=view.nearClipPlane; state.far=view.farClipPlane; state.viewportWidth=Screen.width; state.viewportHeight=Screen.height;
+            double focusDepth=Vector3.Dot(geometryBounds.center-position,view.transform.forward);
+            state.pixelsPerMeterAtFocus=focusDepth>0?CurrentScientificView().PixelsPerMeter(focusDepth):0; state.scientificOverlay=scientificOverlay.Status;
         }
         state.flowDirection=new[] {direction.x,direction.y,direction.z}; state.intensity=effect.x; state.effectClock=clock;
         if(resident!=null) { state.materialMode=resident.Mode; state.materialDiagnostic=resident.Diagnostic; state.materialTopologyId=resident.TopologyId; state.materialStateSha256=resident.StateSha256; state.materialBundleSha256=resident.BundleSha256; state.materialOriginalBundleSha256=resident.OriginalBundleSha256; state.materialGeneration=resident.Generation; state.materialInstances=resident.InstanceCount; state.materialMeshes=resident.MeshCount; state.materialPackets=resident.PacketCount; state.materialDrawCalls=resident.DrawCalls; state.materialSubmittedFrames=resident.SubmittedFrames; state.materialSnapshotPublications=resident.SnapshotPublications; state.contract="Resident real-material fixture; optional shipped shader reference, native comparisons qualify only their captured dependencies."; }
@@ -512,6 +553,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     }
     void OnDestroy()
     {
+        scientificOverlay.Dispose();
         if(state.benchmarkActive) EndBenchmark("interrupted","host-destroyed");
         if(resident!=null) { resident.Dispose(); resident=null; }
         stopping=true; listener?.Stop(); Command command; while(commands.TryDequeue(out command)) { command.response="{\"error\":\"host-stopping\"}"; command.done=true; }
