@@ -32,7 +32,7 @@ fn oracle(x:usize,y:usize)->(Option<f64>,bool) {
 fn proof(r:&Value,parent:&Path)->Result<Value> {
  require(r["schema"]=="continuum-aero-field-readback/v1"&&r["status"]=="completed"&&r["formatVersion"]==1,"Readback admission failed")?;
  require(r["renderer"]=="Metal"&&r["orthographic"]==true&&r["reversedZ"]==true&&r["graphicsUVStartsAtTop"]==true,"Frozen Metal projection differs")?;
- require(r["geometrySource"]=="analytic","Actual analytic fixture required")?;
+ require(r["geometrySource"]=="analytic-concave-shielded-not-KSP","Actual analytic fixture required")?;
  require(r["rawRowOrder"]=="Unity ReadPixels bottom-left origin; rows bottom-to-top; columns left-to-right"&&r["rawEncoding"]=="IEEE754 binary32 little-endian; no header; tightly packed channel order RGBA or R"&&r["matrixLayout"]=="row-major 16 floats","Raw layout differs")?;
  require(r["processId"].as_u64().is_some_and(|v|v>0)&&n(&r["endedTicks"])? >= n(&r["startedTicks"])?&&n(&r["clockFrequency"])? >0.0,"Capture provenance missing")?;
  for k in ["assemblySha256","bundleSha256"]{require(r[k].as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_hexdigit())),"Source hash missing")?;}
