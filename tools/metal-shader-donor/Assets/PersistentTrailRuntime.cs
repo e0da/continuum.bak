@@ -13,7 +13,7 @@ public sealed class PersistentTrailRuntime : IDisposable
         public double windX,windY,windZ,lifetimeSeconds=30,initialWidthMeters=.5,diffusionSquareMetersPerSecond=.1,decayPerSecond=.05,emissionCadenceSeconds=.1;
         public double[] oldestPositionMeters=new double[3],newestPositionMeters=new double[3];
         public double oldestAgeSeconds,newestAgeSeconds;
-        public bool paused = true, emission;
+        public bool paused = true, emission, visible=true;
         public bool compositionMainTextureProperty,compositionTrailTextureProperty;
         public bool probeInstalled;
         public string recordingPath,recordingSha256,recordingRunId,recordingMode,recordingPresentation;
@@ -143,6 +143,7 @@ public sealed class PersistentTrailRuntime : IDisposable
     { owner.Reset(); Wind(1,0,0); owner.SetEmission(true); owner.Advance(3); owner.SetEmission(false); Status.paused = true; Refresh(); }
     public void Reset() { owner.Reset(); Status.paused = true; if(recording!=null) { owner.SetWind(0,0,0);owner.SetEmission(recording.frames[0].emission); Status.windX=Status.windY=Status.windZ=0; Status.recordingCursor=0; UpdateRecordedRoot(); } Refresh(); }
     public void Pause() { Status.paused = true; }
+    public void SetVisible(bool visible) { Status.visible=visible; }
     public void HoldClock() { lastWall = Time.realtimeSinceStartup; }
     public void Play(double rate)
     { if (double.IsNaN(rate) || double.IsInfinity(rate) || rate < .01 || rate > 100) throw new ArgumentException("Trail rate .01..100 required."); Status.playbackRate = rate; Status.paused = false; lastWall = Time.realtimeSinceStartup; }
@@ -267,7 +268,7 @@ public sealed class PersistentTrailRuntime : IDisposable
         finally { RenderTexture.active=old; Status.renderTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-renderStarted; }
     }
     public void Compose(RenderTexture source, RenderTexture destination, Material worldComposite)
-    { long started=System.Diagnostics.Stopwatch.GetTimestamp(); RenderTexture old=RenderTexture.active; try { if(target==null||composed==null) { Graphics.Blit(source,destination,worldComposite); return; } if(Status.probeInstalled&&Status.probe.depthSource=="synthetic-texture2d") Graphics.Blit(source,composed,material,2); else Graphics.Blit(source,composed,worldComposite); material.SetTexture("_MainTex",composed); material.SetTexture("_TrailColor", target); Graphics.Blit(composed, destination, material, 1); } finally { RenderTexture.active=old; Status.compositionTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-started; } }
+    { long started=System.Diagnostics.Stopwatch.GetTimestamp(); RenderTexture old=RenderTexture.active; try { if(!Status.visible||target==null||composed==null) { Graphics.Blit(source,destination,worldComposite); return; } if(Status.probeInstalled&&Status.probe.depthSource=="synthetic-texture2d") Graphics.Blit(source,composed,material,2); else Graphics.Blit(source,composed,worldComposite); material.SetTexture("_MainTex",composed); material.SetTexture("_TrailColor", target); Graphics.Blit(composed, destination, material, 1); } finally { RenderTexture.active=old; Status.compositionTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-started; } }
     void ReleaseTarget() { commandsRecorded=false; if(commands!=null) commands.Clear(); if (target != null) { target.Release(); UnityEngine.Object.Destroy(target); target = null; } if(composed!=null) { composed.Release(); UnityEngine.Object.Destroy(composed); composed=null; } }
     public void Dispose()
     { if (disposed) return; disposed = true; Status.probeInstalled=false; if(probeCraft!=null) UnityEngine.Object.Destroy(probeCraft); if(probeBody!=null) UnityEngine.Object.Destroy(probeBody); ReleaseTarget(); if (commands != null) commands.Release(); if (mesh != null) UnityEngine.Object.Destroy(mesh); if (material != null) UnityEngine.Object.Destroy(material); Status.cleanupStatus = "owned-resources-destruction-requested"; Status.status = "disposed"; }
