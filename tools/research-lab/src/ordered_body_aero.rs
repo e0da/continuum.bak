@@ -23,6 +23,42 @@ fn force(command: &Value, expected: &[f32], point_bits: &[Value], mode: u64, pha
     check(words(command, "pointBits", 3)?.as_slice() == point_bits, "original world application point bits differ")
 }
 
+const BODY_FLOAT_FIELDS: [&str; 27] = ["mass","position.x","position.y","position.z","rotation.x","rotation.y","rotation.z","rotation.w","localCenterOfMass.x","localCenterOfMass.y","localCenterOfMass.z","worldCenterOfMass.x","worldCenterOfMass.y","worldCenterOfMass.z","inertiaTensor.x","inertiaTensor.y","inertiaTensor.z","inertiaTensorRotation.x","inertiaTensorRotation.y","inertiaTensorRotation.z","inertiaTensorRotation.w","velocity.x","velocity.y","velocity.z","angularVelocity.x","angularVelocity.y","angularVelocity.z"];
+
+fn body_snapshots(root: &Value, commands: &[Value], bindings: &[Value], bound: usize) -> Result<usize> {
+    let snapshots = root["bodySnapshots"].as_array().filter(|a| a.len() <= bound * 3).ok_or("v2 first-command body snapshots absent/unbounded")?;
+    let mut ids = BTreeSet::new();
+    let mut prior_end = n(root, "startedTicks")?;
+    let mut prior_first = None;
+    for (index, s) in snapshots.iter().enumerate() {
+        let id = s["bodyId"].as_i64().filter(|id| *id != 0).ok_or("v2 snapshot body identity absent")?;
+        let first = usize::try_from(n(s, "firstCommandSequence")?).map_err(|_| "snapshot sequence overflow")?;
+        let start = n(s, "startedTicks")?; let end = n(s, "endedTicks")?;
+        check(s["index"] == index && ids.insert(id) && start >= prior_end && end >= start && end <= n(root, "endedTicks")?
+            && prior_first.is_none_or(|p| first > p) && bindings.iter().any(|b| b["bodyId"] == id), "v2 snapshot identity/order/clock differs")?;
+        prior_end = end; prior_first = Some(first);
+        let c = commands.get(first).ok_or("v2 snapshot first command absent")?;
+        check(c["bodySnapshotIndex"] == index && c["recipientBodyId"] == id
+            && !commands[..first].iter().any(|c| c["recipientBodyId"] == id), "v2 snapshot is not first reached command")?;
+        let values = floats(s, "floatBits", 27)?;
+        check(values.iter().all(|v| v.is_finite()) && values[0] > 0. && values[14..17].iter().all(|v| *v > 0.), "v2 body mass/principal inertia/nonfinite properties differ")?;
+        for q in [&values[4..8], &values[17..21]] {
+            check((q.iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>() - 1.).abs() <= 0.001, "v2 native quaternion outside frozen unit bound")?;
+        }
+        for name in ["alive","isKinematic","dynamic","activeSelf","activeInHierarchy","sleeping"] {
+            check(s[name].is_boolean(), "v2 native body boolean absent")?;
+        }
+        check(s["alive"] == true && s["dynamic"].as_bool() != s["isKinematic"].as_bool()
+            && !(s["activeInHierarchy"] == true && s["activeSelf"] == false), "v2 body liveness/dynamic/activity contradiction")?;
+    }
+    for (sequence, c) in commands.iter().enumerate() {
+        let index = usize::try_from(n(c, "bodySnapshotIndex")?).map_err(|_| "body snapshot index overflow")?;
+        let s = snapshots.get(index).ok_or("v2 reached command has no body snapshot")?;
+        check(s["bodyId"] == c["recipientBodyId"] && n(s, "firstCommandSequence")? <= sequence as u64, "v2 command/body snapshot binding differs")?;
+    }
+    Ok(snapshots.len())
+}
+
 pub fn summarize(path: &Path, probe: &Value, pid: u32) -> Result<Value> {
     let r: Value = read(path)?;
     let outer = &probe["orderedBodyAeroCapture"];
@@ -33,12 +69,18 @@ pub fn summarize(path: &Path, probe: &Value, pid: u32) -> Result<Value> {
     let end = n(probe, "captureEndClockTimestamp")?;
     let frequency = n(probe, "clockFrequency")?;
     check(probe["status"] == "complete" && frequency > 0 && end > start && start > 0, "enclosing capture incomplete")?;
-    check(r["schema"] == "continuum-retained-ordered-body-aero-capture/v1" && r["status"] == "observed"
+    let v2 = r["schema"] == "continuum-retained-ordered-body-aero-capture/v2";
+    check((v2 || r["schema"] == "continuum-retained-ordered-body-aero-capture/v1") && r["status"] == "observed"
         && r["cleanupStatus"] == "removed-owned-patches" && r["requested"] == true && r["runId"] == run
         && r["processId"] == pid && &r["vesselId"] == vessel && n(&r, "clockFrequency")? == frequency
         && r["path"].as_str() == path.to_str() && outer["sha256"] == hash(path)?, "original tape identity/hash/lifecycle differs")?;
     for field in ["schema", "runId", "processId", "vesselId", "clockFrequency", "status", "cleanupStatus", "topologySha256", "providerEpoch", "roots", "bodyBindings", "methods"] {
         check(r[field] == outer[field], "original sidecar and enclosing receipt diverge")?;
+    }
+    if v2 {
+        check(r["bodyFloatFields"] == json!(BODY_FLOAT_FIELDS) && r["bodyFloatFields"] == outer["bodyFloatFields"]
+            && r["bodySnapshotScope"] == "Per-root first reached command properties, before the original native call. Once per distinct recipient; no absence-of-later-writes, acceleration conversion or aggregate/native equivalence claim."
+            && r["bodySnapshotScope"] == outer["bodySnapshotScope"], "v2 native property layout/scope differs")?;
     }
     check(r["originalAssemblySha256"] == "8a20892953fc14c02f352b393eb6712c665156d94a7d846d16c20a7de3e22f27"
         && r["originalAssemblyMvid"] == "10657063-2fc3-43a7-84fa-d39e75e877bf"
@@ -71,7 +113,7 @@ pub fn summarize(path: &Path, probe: &Value, pid: u32) -> Result<Value> {
     check(bound > 0 && bound <= 4096 && reachable > 0 && reachable <= bound && bindings.len() <= bound as usize * 3, "native owner bounds differ")?;
     let roots = r["roots"].as_array().filter(|a| a.len() == 2).ok_or("two immutable original roots absent")?;
     let mut matched = 0u64; let mut unsupported = 0u64; let mut last = start; let mut first_ids = Vec::new();
-    let mut root_ticks = 0u64; let mut reference_ticks = 0u64; let mut copy_ticks = 0u64; let mut command_count = 0u64;
+    let mut root_ticks = 0u64; let mut reference_ticks = 0u64; let mut copy_ticks = 0u64; let mut command_count = 0u64; let mut snapshot_count = 0usize;
     for (sequence, root) in roots.iter().enumerate() {
         let a = n(root, "startedTicks")?; let b = n(root, "endedTicks")?;
         check(root["sequence"] == sequence && root["originalReturned"] == true && root["commandTapeComplete"] == true && root["topologyIntact"] == true
@@ -83,6 +125,13 @@ pub fn summarize(path: &Path, probe: &Value, pid: u32) -> Result<Value> {
         let commands = root["commands"].as_array().filter(|a| a.len() <= bound as usize * 16).ok_or("original command tape absent/unbounded")?;
         check(n(root, "rowCount")? == rows.len() as u64 && n(root, "commandCount")? == commands.len() as u64, "original tape counts differ")?;
         command_count += commands.len() as u64;
+        if v2 {
+            for owner in bindings {
+                check(owner["bodyId"].as_i64().is_some_and(|id| id != 0) && n(owner, "partSlot")? < bound && n(owner, "partId")? > 0
+                    && ["part-rb","servo-rb","aero-recipient"].iter().any(|role| owner["role"] == *role), "v2 native alias ledger malformed")?;
+            }
+            snapshot_count += body_snapshots(root, commands, bindings, bound as usize)?;
+        }
         let mut prior_ordinal = 0u64; let mut aero_seen = BTreeSet::new();
         for (i, command) in commands.iter().enumerate() {
             let ordinal = n(command, "ordinal")?;
@@ -91,6 +140,7 @@ pub fn summarize(path: &Path, probe: &Value, pid: u32) -> Result<Value> {
             let row = &rows[ordinal as usize];
             check(command["partId"] == row["partId"] && command["recipientBodyId"].as_i64().is_some_and(|id| id != 0)
                 && bindings.iter().any(|owner| owner["bodyId"] == command["recipientBodyId"]), "original command native owner differs")?;
+            if v2 { check(bindings.iter().any(|owner| owner["bodyId"] == command["recipientBodyId"] && owner["partId"] == row["partId"] && owner["partSlot"] == row["partSlot"]), "v2 command alias owner differs")?; }
             floats(command, "forceBits", 3)?; floats(command, "pointBits", 3)?; f(&command["angularDragBits"])?;
             check([0,5].contains(&n(command, "forceMode")?), "original command mode differs")?;
             if command["phase"] == "queued-integration" {
@@ -158,6 +208,41 @@ pub fn summarize(path: &Path, probe: &Value, pid: u32) -> Result<Value> {
     let ms = 1000./frequency as f64;
     Ok(json!({"schema":"continuum-independent-ordered-body-aero/v1","status":"passed","runId":run,"processId":pid,
         "recordingSha256":hash(path)?,"originalRoots":2,"matchedDryRows":matched,"unsupportedRows":unsupported,"actualCommands":command_count,
+        "captureSchema":r["schema"],"firstCommandBodySnapshots":snapshot_count,"bodyPropertyCoverage":if v2 {"first-command-only"} else {"not-captured-v1"},
         "meanObservedRootMilliseconds":root_ticks as f64*ms/2.,"meanReferenceMilliseconds":reference_ticks as f64*ms/2.,"meanRecordingMilliseconds":copy_ticks as f64*ms/2.,
         "scope":"Independent raw IEEE input/scalar/ordered actual-tail command math under frozen numerical bounds. Actual queued tape is bound and ordered but queued input values are not reconstructed. No candidate force publication, complete aero replacement or clean FPS claim."}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_command_body_properties_reject_incomplete_or_foreign_binding() {
+        let mut bits = vec![0u32; 27];
+        bits[0] = 2f32.to_bits(); bits[7] = 1f32.to_bits();
+        bits[14] = 2f32.to_bits(); bits[15] = 3f32.to_bits(); bits[16] = 4f32.to_bits(); bits[20] = 1f32.to_bits();
+        bits[21] = (-0f32).to_bits();
+        let root = json!({"startedTicks":100,"endedTicks":200,"bodySnapshots":[{
+            "index":0,"bodyId":-42,"firstCommandSequence":0,"startedTicks":110,"endedTicks":120,
+            "floatBits":bits,"alive":true,"isKinematic":false,"dynamic":true,
+            "activeSelf":true,"activeInHierarchy":true,"sleeping":false}]});
+        let commands = vec![json!({"recipientBodyId":-42,"bodySnapshotIndex":0}), json!({"recipientBodyId":-42,"bodySnapshotIndex":0})];
+        // Two alias generations/parts share one actual body, and signed zero remains a bit value.
+        let bindings = vec![json!({"bodyId":-42,"partId":1}),json!({"bodyId":-42,"partId":2})];
+        assert_eq!(body_snapshots(&root,&commands,&bindings,2).unwrap(),1);
+        assert_eq!(root["bodySnapshots"][0]["floatBits"][21],json!(0x80000000u32));
+        for (field, value) in [("bodyId",json!(99)),("firstCommandSequence",json!(1)),("endedTicks",json!(201)),("dynamic",json!(false)),("alive",json!(false))] {
+            let mut bad=root.clone();bad["bodySnapshots"][0][field]=value;
+            assert!(body_snapshots(&bad,&commands,&bindings,2).is_err(),"{field}");
+        }
+        for (index,value) in [(0,0f32.to_bits()),(14,(-1f32).to_bits()),(15,f32::INFINITY.to_bits()),(7,0f32.to_bits())] {
+            let mut bad=root.clone();bad["bodySnapshots"][0]["floatBits"][index]=json!(value);
+            assert!(body_snapshots(&bad,&commands,&bindings,2).is_err());
+        }
+        let mut bad_commands=commands.clone();bad_commands[1]["bodySnapshotIndex"]=json!(1);
+        assert!(body_snapshots(&root,&bad_commands,&bindings,2).is_err());
+        let mut incomplete=root.clone();incomplete["bodySnapshots"]=json!([]);
+        assert!(body_snapshots(&incomplete,&commands,&bindings,2).is_err());
+    }
 }

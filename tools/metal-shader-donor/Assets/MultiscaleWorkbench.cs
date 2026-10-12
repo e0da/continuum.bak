@@ -97,7 +97,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     System.Diagnostics.Process benchmarkProcess; TimeSpan benchmarkCpuStart;
     static readonly string[] debugViews={"composed","craft-color","body-color","craft-flat","body-flat","craft-world-normals","body-world-normals","craft-view-normals","body-view-normals","craft-albedo","body-albedo","craft-vertex-colors","craft-uv","body-uv","craft-material-id","body-material-id","craft-linear-depth","body-linear-depth","craft-log-depth","body-log-depth"};
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)] static void Bootstrap()
-    { if(!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_MULTISCALE_SCENE"))) new GameObject("Continuum Multiscale Workbench").AddComponent<MultiscaleWorkbench>(); }
+    { if(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_RIGID_WORKBENCH_OUTPUT"))&&!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_MULTISCALE_SCENE"))) new GameObject("Continuum Multiscale Workbench").AddComponent<MultiscaleWorkbench>(); }
     static string Absolute(string path) { if(string.IsNullOrEmpty(path)||!Path.IsPathRooted(path)) throw new InvalidDataException("Absolute private path required."); return Path.GetFullPath(path); }
     static string Under(string root,string relative) { string prefix=Path.GetFullPath(root)+Path.DirectorySeparatorChar,result=Path.GetFullPath(Path.Combine(root,relative)); if(!result.StartsWith(prefix,StringComparison.Ordinal)) throw new InvalidDataException("Asset escapes scene directory."); return result; }
     static string Hash(string path) { using(var s=File.OpenRead(path)) using(var h=SHA256.Create()) return Hex(h.ComputeHash(s)); }

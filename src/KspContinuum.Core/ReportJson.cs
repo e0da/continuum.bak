@@ -127,6 +127,7 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+ReportData" ||
                  type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+MethodRow" ||
                  type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+BodyBinding" ||
+                 type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+BodySnapshot" ||
                  type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+Root" ||
                  type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+Row" ||
                  type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+Command" ||

@@ -115,7 +115,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     static void Bootstrap()
     {
-        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_MULTISCALE_SCENE"))) return;
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_MULTISCALE_SCENE")) || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_RIGID_WORKBENCH_OUTPUT"))) return;
         if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_AERO_WORKBENCH_OUTPUT")))
             new GameObject("Continuum Aero Field Workbench").AddComponent<AeroFieldWorkbench>();
     }

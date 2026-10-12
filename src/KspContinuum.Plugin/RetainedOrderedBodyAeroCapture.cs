@@ -38,7 +38,9 @@ namespace KspContinuum
         public readonly ReportData Report;
         [Serializable] public sealed class ReportData
         {
-            public string schema="continuum-retained-ordered-body-aero-capture/v1",status="starting",cleanupStatus="not-installed",runId,vesselId,path,sha256,topologySha256,providerEpoch,detail;
+            public string schema="continuum-retained-ordered-body-aero-capture/v2",status="starting",cleanupStatus="not-installed",runId,vesselId,path,sha256,topologySha256,providerEpoch,detail;
+            public string bodySnapshotScope="Per-root first reached command properties, before the original native call. Once per distinct recipient; no absence-of-later-writes, acceleration conversion or aggregate/native equivalence claim.";
+            public string[] bodyFloatFields={"mass","position.x","position.y","position.z","rotation.x","rotation.y","rotation.z","rotation.w","localCenterOfMass.x","localCenterOfMass.y","localCenterOfMass.z","worldCenterOfMass.x","worldCenterOfMass.y","worldCenterOfMass.z","inertiaTensor.x","inertiaTensor.y","inertiaTensor.z","inertiaTensorRotation.x","inertiaTensorRotation.y","inertiaTensorRotation.z","inertiaTensorRotation.w","velocity.x","velocity.y","velocity.z","angularVelocity.x","angularVelocity.y","angularVelocity.z"};
             public string originalAssemblySha256=StockSha,originalAssemblyMvid="10657063-2fc3-43a7-84fa-d39e75e877bf";
             public string scope="Two original attached-part Integrate roots. Actual native command operands, original order and exceptions are preserved; no command is suppressed/replayed and no candidate force is published. Retained dry-tail reference excludes queued forces, providers, SetDrag, transforms, lift local-field writes, wings and native integration. Unsupported rows are recorded, not replacement coverage.";
             public string bitEncoding="IEEE754 binary32 uint and binary64 signed-long bit patterns, including NaN and signed zero; no decimal reconstruction.";
@@ -61,7 +63,12 @@ namespace KspContinuum
         [Serializable] public sealed class Root
         {
             public int sequence,frame,rowCount,commandCount,matchedRows,unsupportedRows,eligibleRows,mismatchedRows;public double fixedTimeSeconds;
-            public long startedTicks,endedTicks,copyTicks,referenceTicks;public bool originalReturned,commandTapeComplete,topologyIntact;public Row[] rows;public Command[] commands;
+            public long startedTicks,endedTicks,copyTicks,referenceTicks;public bool originalReturned,commandTapeComplete,topologyIntact;public Row[] rows;public Command[] commands;public BodySnapshot[] bodySnapshots;
+        }
+        [Serializable] public sealed class BodySnapshot
+        {
+            public int index,bodyId,firstCommandSequence;public long startedTicks,endedTicks;public uint[] floatBits;
+            public bool alive,isKinematic,dynamic,activeSelf,activeInHierarchy,sleeping;
         }
         [Serializable] public sealed class Row
         {
@@ -72,10 +79,15 @@ namespace KspContinuum
         }
         [Serializable] public sealed class Command
         {
-            public int sequence,ordinal,recipientBodyId,forceMode;public uint partId,angularDragBits;public string phase,kind;public uint[] forceBits,pointBits;public bool originalReturned;
+            public int sequence,ordinal,recipientBodyId,forceMode,bodySnapshotIndex;public uint partId,angularDragBits;public string phase,kind;public uint[] forceBits,pointBits;public bool originalReturned;
         }
         struct Trace
-        {internal int sequence,ordinal,body,mode,kind;internal uint part;internal bool tail,returned;internal Vector3 force,point;internal float angular;}
+        {internal int sequence,ordinal,body,mode,kind,snapshot;internal uint part;internal bool tail,returned;internal Vector3 force,point;internal float angular;}
+        struct BodyWork
+        {
+            internal int id,first;internal long start,end;internal float mass;internal Vector3 position,localCom,worldCom,inertia,velocity,angularVelocity;internal Quaternion rotation,inertiaRotation;
+            internal bool alive,kinematic,activeSelf,activeHierarchy,sleeping;
+        }
         sealed class RowWork
         {
             internal int partSlot,tailCount;internal bool aeroEntered,aeroReturned,dragCalculated,liftReached,cleared,eligible,matched;internal string reason;
@@ -84,8 +96,8 @@ namespace KspContinuum
         sealed class RootWork
         {
             internal readonly RetainedOrderedBodyAeroBuffer buffer;internal readonly RowWork[] rows;internal readonly Trace[] tape;internal readonly BodyAeroCommand[] tail;
-            internal readonly Root result=new Root();internal int rowCount,commandCount;
-            internal RootWork(int count) {buffer=new RetainedOrderedBodyAeroBuffer(count);rows=new RowWork[count];for(int i=0;i<count;i++)rows[i]=new RowWork();tape=new Trace[checked(count*16)];tail=new BodyAeroCommand[checked(count*8)];}
+            internal readonly Root result=new Root();internal int rowCount,commandCount,snapshotCount;internal readonly BodyWork[] snapshots;internal readonly Dictionary<Rigidbody,int> snapshotIndices;
+            internal RootWork(int count) {buffer=new RetainedOrderedBodyAeroBuffer(count);rows=new RowWork[count];for(int i=0;i<count;i++)rows[i]=new RowWork();tape=new Trace[checked(count*16)];tail=new BodyAeroCommand[checked(count*8)];snapshots=new BodyWork[checked(count*3)];snapshotIndices=new Dictionary<Rigidbody,int>(checked(count*3));}
         }
         public static bool Requested {get{return !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_ORDERED_BODY_AERO_CAPTURE"));}}
         public static RetainedOrderedBodyAeroCapture Create(string[] args,string runId,Func<bool> capturing)
@@ -259,7 +271,17 @@ namespace KspContinuum
             try
             {
                 var w=o.current;int n=o.stack[o.depth-1],id;Need(o.bodies.TryGetValue(body,out id),"Original command recipient not bound.");if(w.commandCount==w.tape.Length) {o.Report.droppedCommands++;throw new InvalidOperationException("Actual command tape bound exceeded.");}
-                int slot=w.commandCount++;var input=w.buffer.InputAt(n);w.tape[slot]=new Trace {sequence=slot,ordinal=n,part=input.partId,body=id,kind=kind,force=force,point=point,mode=(int)mode,angular=angular,tail=tail};
+                int snapshot;
+                if(!w.snapshotIndices.TryGetValue(body,out snapshot))
+                {
+                    Need(body!=null&&w.snapshotCount<w.snapshots.Length,"Reached body snapshot owner/bound differs.");
+                    var s=new BodyWork {id=id,first=w.commandCount,start=Stopwatch.GetTimestamp(),alive=true};
+                    s.mass=body.mass;s.position=body.position;s.rotation=body.rotation;s.localCom=body.centerOfMass;s.worldCom=body.worldCenterOfMass;s.inertia=body.inertiaTensor;s.inertiaRotation=body.inertiaTensorRotation;s.velocity=body.velocity;s.angularVelocity=body.angularVelocity;
+                    s.kinematic=body.isKinematic;s.activeSelf=body.gameObject.activeSelf;s.activeHierarchy=body.gameObject.activeInHierarchy;s.sleeping=body.IsSleeping();s.end=Stopwatch.GetTimestamp();
+                    Need(body!=null&&body.GetInstanceID()==id&&BodyAeroVector.Number(s.mass)&&s.mass>0&&Finite(s.position)&&Finite(s.localCom)&&Finite(s.worldCom)&&Finite(s.inertia)&&s.inertia.x>0&&s.inertia.y>0&&s.inertia.z>0&&Finite(s.velocity)&&Finite(s.angularVelocity)&&Unit(s.rotation)&&Unit(s.inertiaRotation),"First-command native body properties outside finite positive principal-inertia domain.");
+                    snapshot=w.snapshotCount++;w.snapshots[snapshot]=s;w.snapshotIndices.Add(body,snapshot);
+                }
+                int slot=w.commandCount++;var input=w.buffer.InputAt(n);w.tape[slot]=new Trace {sequence=slot,ordinal=n,part=input.partId,body=id,kind=kind,force=force,point=point,mode=(int)mode,angular=angular,tail=tail,snapshot=snapshot};
                 if(tail)
                 {
                     var row=w.rows[n];Need(row.tailCount<8,"Original body-tail command bound exceeded.");var k=kind==3?BodyAeroCommandKind.AngularDrag:kind==4?BodyAeroCommandKind.DragAtPosition:BodyAeroCommandKind.LiftAtPosition;
@@ -294,6 +316,7 @@ namespace KspContinuum
         }
         static BodyAeroVector V(Vector3 v) {return new BodyAeroVector(v.x,v.y,v.z);}
         static bool Finite(Vector3 v) {return BodyAeroVector.Number(v.x)&&BodyAeroVector.Number(v.y)&&BodyAeroVector.Number(v.z);}
+        static bool Unit(Quaternion q) {return BodyAeroVector.Number(q.x)&&BodyAeroVector.Number(q.y)&&BodyAeroVector.Number(q.z)&&BodyAeroVector.Number(q.w)&&Math.Abs((double)q.x*q.x+(double)q.y*q.y+(double)q.z*q.z+(double)q.w*q.w-1)<=0.001;}
         static bool Zero(Vector3d v) {return v.x==0&&v.y==0&&v.z==0;}
         void Fault(Exception e) {disabled=true;Report.errors++;Report.detail=e.ToString();}
         static void Need(bool value,string reason) {if(!value)throw new InvalidOperationException(reason);}
@@ -309,7 +332,8 @@ namespace KspContinuum
         }
         Root Freeze(RootWork w)
         {
-            var r=w.result;r.rows=new Row[w.rowCount];r.commands=new Command[w.commandCount];
+            var r=w.result;r.rows=new Row[w.rowCount];r.commands=new Command[w.commandCount];r.bodySnapshots=new BodySnapshot[w.snapshotCount];
+            for(int i=0;i<w.snapshotCount;i++) {var s=w.snapshots[i];r.bodySnapshots[i]=new BodySnapshot {index=i,bodyId=s.id,firstCommandSequence=s.first,startedTicks=s.start,endedTicks=s.end,alive=s.alive,isKinematic=s.kinematic,dynamic=!s.kinematic,activeSelf=s.activeSelf,activeInHierarchy=s.activeHierarchy,sleeping=s.sleeping,floatBits=Bits(s.mass,s.position.x,s.position.y,s.position.z,s.rotation.x,s.rotation.y,s.rotation.z,s.rotation.w,s.localCom.x,s.localCom.y,s.localCom.z,s.worldCom.x,s.worldCom.y,s.worldCom.z,s.inertia.x,s.inertia.y,s.inertia.z,s.inertiaRotation.x,s.inertiaRotation.y,s.inertiaRotation.z,s.inertiaRotation.w,s.velocity.x,s.velocity.y,s.velocity.z,s.angularVelocity.x,s.angularVelocity.y,s.angularVelocity.z)};}
             for(int i=0;i<w.rowCount;i++)
             {
                 var a=w.buffer.InputAt(i);var b=w.rows[i];var x=b.original;uint flags=0;bool[] flag={a.ownBody,a.servoBody,a.shielded,a.applyDrag,a.applyParentDrag,a.angularDragByIntegrator,a.accelerationMode,a.bodyLiftEligible,a.liftForceEligible,a.liftGeometryCaptured};for(int n=0;n<flag.Length;n++)if(flag[n])flags|=1u<<n;
@@ -318,7 +342,7 @@ namespace KspContinuum
                 for(int n=0;n<b.tailCount;n++)row.tailKinds[n]=w.tail[i*8+n].kind;r.rows[i]=row;
             }
             string[] kinds={"AddForce","AddTorque","AddForceAtPosition","set_angularDrag","AddForceAtPosition","AddForceAtPosition"};
-            for(int i=0;i<w.commandCount;i++) {var c=w.tape[i];r.commands[i]=new Command {sequence=i,ordinal=c.ordinal,partId=c.part,recipientBodyId=c.body,forceMode=c.mode,phase=!c.tail?"queued-integration":c.kind==3?"aero-angular":c.kind==4?"aero-drag":"aero-lift",kind=kinds[c.kind],forceBits=Bits(c.force.x,c.force.y,c.force.z),pointBits=Bits(c.point.x,c.point.y,c.point.z),angularDragBits=Bits(c.angular)[0],originalReturned=c.returned};}return r;
+            for(int i=0;i<w.commandCount;i++) {var c=w.tape[i];r.commands[i]=new Command {sequence=i,ordinal=c.ordinal,partId=c.part,recipientBodyId=c.body,forceMode=c.mode,bodySnapshotIndex=c.snapshot,phase=!c.tail?"queued-integration":c.kind==3?"aero-angular":c.kind==4?"aero-drag":"aero-lift",kind=kinds[c.kind],forceBits=Bits(c.force.x,c.force.y,c.force.z),pointBits=Bits(c.point.x,c.point.y,c.point.z),angularDragBits=Bits(c.angular)[0],originalReturned=c.returned};}return r;
         }
         [StructLayout(LayoutKind.Explicit)]struct FloatBits {[FieldOffset(0)]public float value;[FieldOffset(0)]public uint bits;}
         static uint[] Bits(params float[] values) {var r=new uint[values.Length];for(int i=0;i<r.Length;i++)r[i]=new FloatBits {value=values[i]}.bits;return r;}
@@ -327,7 +351,14 @@ namespace KspContinuum
         public bool IsValidFinal(out string reason)
         {
             reason=null;if(!disposed||Report.status!="observed"||Report.cleanupStatus!="removed-owned-patches"||!Report.graphAdmissions||!Report.graphInstalled||!Report.graphReleased||Report.shapeAdmissions!=4||Report.staticCallsites!=14||Report.patchedMethods!=4||Report.capturedRoots!=Roots||Report.completedRoots!=Roots||Report.errors!=0||Report.originalExceptions!=0||Report.droppedCommands!=0||Report.referenceMismatches!=0||Report.matchedRows!=Report.eligibleRows||string.IsNullOrEmpty(Report.sha256)) {reason="Original command capture/retained reference coverage or lifecycle incomplete.";return false;}
-            foreach(var r in Report.roots)if(!r.originalReturned||!r.commandTapeComplete||!r.topologyIntact||r.endedTicks<=r.startedTicks||r.rowCount!=preorder.Length||r.rows.Any(x=>!x.aeroEntered||!x.aeroReturned||!x.queuedStateCleared)||r.commands.Any(x=>!x.originalReturned)) {reason="Original row/tape/window coverage incomplete.";return false;}return true;
+            foreach(var r in Report.roots)
+            {
+                if(!r.originalReturned||!r.commandTapeComplete||!r.topologyIntact||r.endedTicks<=r.startedTicks||r.rowCount!=preorder.Length||r.rows.Any(x=>!x.aeroEntered||!x.aeroReturned||!x.queuedStateCleared)||r.commands.Any(x=>!x.originalReturned)) {reason="Original row/tape/window coverage incomplete.";return false;}
+                var seen=new HashSet<int>();long last=r.startedTicks;int first=-1;
+                for(int i=0;i<r.bodySnapshots.Length;i++) {var s=r.bodySnapshots[i];if(s.index!=i||!s.alive||!seen.Add(s.bodyId)||s.startedTicks<last||s.endedTicks<s.startedTicks||s.endedTicks>r.endedTicks||s.firstCommandSequence<=first||s.firstCommandSequence>=r.commands.Length||r.commands[s.firstCommandSequence].bodySnapshotIndex!=i||r.commands[s.firstCommandSequence].recipientBodyId!=s.bodyId) {reason="First-command body snapshot coverage incomplete.";return false;}last=s.endedTicks;first=s.firstCommandSequence;}
+                foreach(var c in r.commands)if(c.bodySnapshotIndex<0||c.bodySnapshotIndex>=r.bodySnapshots.Length||r.bodySnapshots[c.bodySnapshotIndex].bodyId!=c.recipientBodyId||r.bodySnapshots[c.bodySnapshotIndex].firstCommandSequence>c.sequence) {reason="Reached command body snapshot binding incomplete.";return false;}
+            }
+            return true;
         }
     }
 }

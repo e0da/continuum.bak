@@ -92,6 +92,7 @@ The experiments are independent of the running game:
 | [Hardware-conscious execution](docs/hardware-execution.md) | Cache locality, retained storage, SIMD, worker/GPU residency, prewarming and complete-cost profiling |
 | [Runtime data design](docs/runtime-data-design.md) | Compiled vessel plans, replaceable execution, shared invariants, telemetry costs and CPU/GPU physics choices |
 | [Rigid craft and bulk systems](docs/rigid-and-bulk-systems.md) | Rigid primary physics, optional wobble, locked-region transactions and real captured-workload Rust ECS comparison |
+| [Rigid assembly motion boundary](docs/rigid-assembly-owner.md) | Aggregate mass/inertia, native compound ownership, real separation and first-command original KSP body snapshots |
 | [Compiled execution views](docs/execution-views.md) | Stable entity identity, dense per-system SoA batches, deterministic backend routing, and transactional publication |
 | [Aerodynamic strategies](docs/aerodynamics.md) | Deterministic drag-cube projection with scalar and order-preserving parallel paths; a metamorphic baseline pending comparison with captured stock labels |
 | [Gravitational trajectories](docs/field-trajectory.md) | Analytic and step-refined Plummer trajectories, conservation, reversibility and a potential-consistent split toy |

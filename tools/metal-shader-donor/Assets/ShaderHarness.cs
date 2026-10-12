@@ -17,6 +17,7 @@ public sealed class ShaderHarness : MonoBehaviour
     static void StartHarness()
     {
         if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_AERO_WORKBENCH_OUTPUT")) ||
+            !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_RIGID_WORKBENCH_OUTPUT")) ||
             !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_MULTISCALE_SCENE"))) return;
         new GameObject("Continuum shader harness").AddComponent<ShaderHarness>();
     }
