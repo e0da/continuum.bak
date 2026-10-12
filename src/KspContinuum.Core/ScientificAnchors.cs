@@ -68,7 +68,7 @@ namespace KspContinuum
                     try {ScientificView.CheckAxes(r,u);ScientificView.CheckAxes(r,f);ScientificView.CheckAxes(u,f);}catch(ArgumentException e){throw new InvalidDataException("Anchor axes are not orthonormal.",e);}
                     var cross=new ScientificVector3(r.y*u.z-r.z*u.y,r.z*u.x-r.x*u.z,r.x*u.y-r.y*u.x);Need(ScientificVector3.Dot(cross,f)>1-1e-6,"Anchor axes are not right handed.");
                 }
-                else Need(d.right==null&&d.up==null&&d.forward==null,"Unavailable axes must not be fabricated.");
+                else Need(Absent(d.right)&&Absent(d.up)&&Absent(d.forward),"Unavailable axes must not be fabricated.");
                 if(d.id==set.preferredId) {Need(d.kind=="control"||d.kind=="root-part"||d.kind=="vessel-origin","Preferred anchor is not a control/root/origin.");preferred=true;}
                 items[i]=new ScientificAnchor(d);
             }
@@ -79,5 +79,6 @@ namespace KspContinuum
             if(anchor==null)throw new ArgumentNullException("anchor");ScientificView.CheckVector(currentVesselOrigin);
             var result=new ScientificVector3(currentVesselOrigin.x+anchor.offsetMeters.x,currentVesselOrigin.y+anchor.offsetMeters.y,currentVesselOrigin.z+anchor.offsetMeters.z);ScientificView.CheckVector(result);return result;
         }
+        static bool Absent(double[] values) {return values==null||values.Length==0;}
     }
 }

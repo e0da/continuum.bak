@@ -8,6 +8,14 @@ public static class ScientificCameraChecks
     static void Need(bool value,string message) {if(!value)throw new InvalidOperationException(message);}
     public static void Run()
     {
+        string legacy=Environment.GetEnvironmentVariable("CONTINUUM_SCIENTIFIC_LEGACY_SCENE");
+        if(!string.IsNullOrEmpty(legacy)) {var scene=JsonUtility.FromJson<MultiscaleSceneManifest>(File.ReadAllText(legacy));Need(!scene.scientificAnchorsCaptured,"Legacy presence witness changed.");MultiscaleSceneFormat.Validate(scene);}
+        var anchor=new ScientificAnchorSet {runId="test",vesselId="vessel",bodyId="body",processId=42,preferredId="origin",anchors=new[] {
+            new ScientificAnchorData {id="origin",kind="vessel-origin",label="Origin",source="fixture",offsetMeters=new double[3]},
+            new ScientificAnchorData {id="com",kind="center-of-mass",label="CoM",source="fixture",offsetMeters=new[] {1.0,2.0,3.0}}
+        }};
+        var decoded=JsonUtility.FromJson<ScientificAnchorSet>(JsonUtility.ToJson(anchor));
+        Need(ScientificAnchors.Admit(decoded,"test",42,"vessel","body","body-centred-world-axes").Count==2,"Unity anchor serialization lost owner/position-only admission.");
         var camera=new ScientificCameraControls();
         var origin=new ScientificVector3(10,20,30);var com=new ScientificVector3(15,23,35);
         camera.SetAnchors(new[] {

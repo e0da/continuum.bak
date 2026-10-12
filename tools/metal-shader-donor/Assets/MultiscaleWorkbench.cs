@@ -178,7 +178,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     void PrepareCameraAnchors(Generation next)
     {
         var s=next.Scene;var rows=new List<ScientificCameraControls.Anchor>();
-        if(s.scientificAnchors!=null)
+        if(s.scientificAnchorsCaptured)
         {
             next.Anchors=ScientificAnchors.Admit(s.scientificAnchors,s.runId,s.processId,s.vesselId,s.bodyId,s.sourceFrame);
             for(int i=0;i<next.Anchors.Count;i++) {var a=next.Anchors.At(i);Quaternion q=Quaternion.identity;if(a.axesAvailable&&!ScientificCameraControls.TryBasis(FloatVector(a.right),FloatVector(a.up),FloatVector(a.forward),out q))throw new InvalidDataException("Captured scientific anchor axes cannot form a right-handed camera frame: "+a.id);rows.Add(new ScientificCameraControls.Anchor(a.kind,a.id,a.label,ScientificAnchors.Resolve(a,Point(s.vesselAnchorMeters)),q,a.axesAvailable));}

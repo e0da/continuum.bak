@@ -62,6 +62,7 @@ namespace KspContinuum
                     bodyMaterialRecipe = "continuum-body-diffuse-v1", originalBodyShader = material.shader.name, bodyTextureProperty = "_MainTex", bodyTextureCapture = captureMode,
                     bodyTexture = bodyTexture, bodyColor = V(material.HasProperty("_Color") ? material.GetColor("_Color") : Color.white), bodyTextureScaleOffset = new[] { tiling.x,tiling.y,offset.x,offset.y } };
                 scene.scientificAnchors=CaptureAnchors(vessel,centreOfMass,scene);
+                scene.scientificAnchorsCaptured=true;
                 MultiscaleSceneFormat.Validate(scene);
                 File.WriteAllText(Path.Combine(staging, "capture-evidence.json"), JsonUtility.ToJson(new Evidence { runId=runId, body=body.bodyName, mesh=mesh.name, shader=material.shader.name,
                     vertices=vertices.Length, triangles=geometry.indices.Length/3, derivedTangents=derivedTangents, textureCapture=captureMode, sourceTexture=texture.name,
