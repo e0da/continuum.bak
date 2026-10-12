@@ -289,10 +289,10 @@ impl ResolvedLaunch {
             let f = self.flight.as_ref().ok_or("convection replacement requires flight")?;
             if !["query", "verify"].contains(&mode.as_str()) || !f.atmosphere || f.warp != 1
                 || self.diagnostics.checkpoint_reload || self.diagnostics.docking.is_some()
-                || self.diagnostics.convection_capture.is_some() || self.diagnostics.integrator_update_attribution
-                || (mode == "verify" && f.callback_attribution) || self.live_play
+                || self.diagnostics.convection_capture.is_some()
+                || (mode == "verify" && (f.callback_attribution || self.diagnostics.integrator_update_attribution)) || self.live_play
             {
-                return Err("convection replacement requires query or verify in normal-time atmospheric flight; only query admits broad fixed callback attribution".into());
+                return Err("convection replacement requires query or verify in normal-time atmospheric flight; only query admits callback attribution".into());
             }
         }
         if let Some(docking) = &self.diagnostics.docking {
@@ -572,7 +572,7 @@ const FLIGHT_KEYS: &[(&str, &str)] = &[
 mod tests {
     use super::*;
     #[test]
-    fn query_allows_fixed_attribution_but_verify_and_narrow_observers_stay_exclusive() {
+    fn query_allows_each_attribution_but_verify_and_combined_observers_stay_exclusive() {
         let mut input = options(&[
             ("--flight-save", "lab"), ("--flight-checkpoint", "checkpoint"),
             ("--flight-expected-parts", "512"), ("--flight-atmosphere", "true"),
@@ -588,6 +588,10 @@ mod tests {
         assert!(ResolvedLaunch::parse(&input).is_err());
         input.insert("--flight-convection-replacement".into(), "query".into());
         input.insert("--flight-integrator-update-attribution".into(), "true".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input.remove("--flight-callback-attribution");
+        assert!(ResolvedLaunch::parse(&input).is_ok());
+        input.insert("--flight-convection-replacement".into(), "verify".into());
         assert!(ResolvedLaunch::parse(&input).is_err());
     }
     #[test]
