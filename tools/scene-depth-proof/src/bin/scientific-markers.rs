@@ -21,7 +21,7 @@ fn cyan(p:[u8;3])->bool {p[0]<=155&&p[1]>=185&&p[2]>=210&&p[1].saturating_sub(p[
 fn cross(image:&[[u8;3]],w:usize,h:usize,x:f64,y:f64)->Result<Value> {
  let mut horizontal=0;let mut vertical=0;let mut hits=0;
  for yy in (y.floor() as i32-7)..=(y.ceil() as i32+7) {for xx in (x.floor() as i32-7)..=(x.ceil() as i32+7) {
-  if xx<0||yy<0||xx>=w as i32||yy>=h as i32 {continue;} let dx=xx as f64+.5-x;let dy=yy as f64+.5-y;
+  if xx<0||yy<0||xx>=w as i32||yy>=h as i32 {continue;} let dx=xx as f64+0.5-x;let dy=yy as f64+0.5-y;
   if cyan(image[yy as usize*w+xx as usize]) {if dx.abs()<=6.&&dy.abs()<=3. {horizontal+=1;}if dy.abs()<=6.&&dx.abs()<=3. {vertical+=1;}if dx.abs()<=3.&&dy.abs()<=3. {hits+=1;}}
  }}
  check(horizontal>=4&&vertical>=4&&hits>=2,"Cyan cross absent near independent center")?;
