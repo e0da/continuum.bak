@@ -6,6 +6,7 @@ static class Program
     static PersistentTrailOwner Owner(int capacity=100,double life=30) => new(capacity,new double[]{1000000000,0,0},new double[]{1,0,0},life,2,.5,.1,1);
     static void Main()
     {
+        MeasuredEmitterChecks.Run();
         var a=Owner(); a.SetWind(2,0,0); a.SetEmission(true); a.Advance(1); a.SetEmission(false); a.Advance(3);
         var p=a.At(0); Near(p.x,1000000005); Near(p.width,Math.Sqrt(6)); Near(p.opacity,Math.Exp(-.2));
         a.SetWind(-1,0,0); Near(a.At(0).x,p.x); a.Advance(4); Near(a.At(0).x,p.x-1);

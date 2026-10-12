@@ -47,6 +47,19 @@ namespace KspContinuum
         public void Reset()
         { head = count = 0; Time = nextBirth = emissionEpoch = 0; nextBirthIndex = 1; nextId = 1; Emitted = Expired = CapacityEvictions = 0; Array.Clear(integrated, 0, 3); Emission = false; Generation++; }
         public void Advance(double target)
+        { AdvanceCore(target, null, null); }
+        public void AdvanceMeasured(double target, double[] start, double[] end, bool emission)
+        {
+            Range(target, Time, Math.Min(1e9, Time + 3600)); CheckVector(start, 1e15); CheckVector(end, 1e15);
+            double epoch = emission == Emission ? emissionEpoch : Time;
+            double first = emission == Emission ? nextBirth : Time + cadence;
+            long index = emission == Emission ? nextBirthIndex : 1;
+            int births = emission && first <= target ? checked((int)Math.Floor((target - first) / cadence + 1e-9) + 1) : 0;
+            while (births > 0 && epoch + (index + births - 1) * cadence > target) births--;
+            if (births > Capacity * 4) throw new ArgumentException("Measured advance exceeds bounded emission work.");
+            SetEmission(emission); AdvanceCore(target, start, end);
+        }
+        void AdvanceCore(double target, double[] measuredStart, double[] measuredEnd)
         {
             Range(target, Time, Math.Min(1e9, Time + 3600));
             double dt = target - Time;
@@ -60,8 +73,11 @@ namespace KspContinuum
                 double birth = emissionEpoch + (nextBirthIndex + i) * cadence;
                 ExpireAt(birth);
                 if (count == Capacity) { head = (head + 1) % Capacity; count--; CapacityEvictions++; }
+                double fraction = (birth - Time) / dt;
                 history[(head + count++) % Capacity] = new Birth { id = nextId++, time = birth,
-                    x = origin[0] + velocity[0] * birth, y = origin[1] + velocity[1] * birth, z = origin[2] + velocity[2] * birth,
+                    x = measuredStart == null ? origin[0] + velocity[0] * birth : measuredStart[0] + (measuredEnd[0] - measuredStart[0]) * fraction,
+                    y = measuredStart == null ? origin[1] + velocity[1] * birth : measuredStart[1] + (measuredEnd[1] - measuredStart[1]) * fraction,
+                    z = measuredStart == null ? origin[2] + velocity[2] * birth : measuredStart[2] + (measuredEnd[2] - measuredStart[2]) * fraction,
                     wx = integrated[0] + wind[0] * (birth - Time), wy = integrated[1] + wind[1] * (birth - Time), wz = integrated[2] + wind[2] * (birth - Time) };
                 Emitted++;
             }

@@ -178,11 +178,12 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         if(generation==null||state.status=="failed") return;
         try
         {
-            var s=generation.Scene; bool bodyFocus=state.focus==s.bodyId; double[] anchor=bodyFocus?s.bodyAnchorMeters:s.vesselAnchorMeters;
-            if(state.focusInstance!=null) { float instanceRadius; Vector3 local=generation.Center(state.focusInstance,out instanceRadius); for(int i=0;i<3;i++) focusAnchor[i]=s.vesselAnchorMeters[i]+local[i]; anchor=focusAnchor; } state.focusTargetMeters=anchor;
+            var s=generation.Scene; double[] vesselAnchor=trail!=null&&!string.IsNullOrEmpty(trail.Status.recordingPath)?trail.Status.recordedRootScene:s.vesselAnchorMeters;
+            bool bodyFocus=state.focus==s.bodyId; double[] anchor=bodyFocus?s.bodyAnchorMeters:vesselAnchor;
+            if(state.focusInstance!=null) { float instanceRadius; Vector3 local=generation.Center(state.focusInstance,out instanceRadius); for(int i=0;i<3;i++) focusAnchor[i]=vesselAnchor[i]+local[i]; anchor=focusAnchor; } state.focusTargetMeters=anchor;
             if(bodyFocus) distance=Math.Max(distance,s.bodyRadiusMeters*1.01); Vector3 offset=Quaternion.Euler(pitch,yaw,0)*Vector3.back;
             for(int i=0;i<3;i++) cameraAnchor[i]=anchor[i]+offset[i]*distance;
-            float x,y,z; MultiscaleSceneFormat.RelativePosition(s.vesselAnchorMeters,cameraAnchor,out x,out y,out z); if(generation.Whole==null) generation.Craft.SetPresentationAnchor(new Vector3(x,y,z)); else generation.Whole.SetPresentationAnchor(new Vector3(x,y,z));
+            float x,y,z; MultiscaleSceneFormat.RelativePosition(vesselAnchor,cameraAnchor,out x,out y,out z); if(generation.Whole==null) generation.Craft.SetPresentationAnchor(new Vector3(x,y,z)); else generation.Whole.SetPresentationAnchor(new Vector3(x,y,z));
             Quaternion rotation=Quaternion.LookRotation(-offset,Vector3.up); present.transform.SetPositionAndRotation(Vector3.zero,rotation); present.fieldOfView=s.fov;
             craftCamera.transform.SetPositionAndRotation(Vector3.zero,rotation); bodyCamera.transform.SetPositionAndRotation(Vector3.zero,rotation); craftCamera.fieldOfView=bodyCamera.fieldOfView=s.fov; craftCamera.aspect=bodyCamera.aspect=present.aspect;
             if(policyDirty) { craftQuality=PresentationQualityPolicy.Resolve(state.preset,state.context,"craft","world",s.vesselId,overrides); bodyQuality=PresentationQualityPolicy.Resolve(state.preset,state.context,"body","world",s.bodyId,overrides); state.craftShadowPolicy=PresentationQualityPolicy.Resolve(state.preset,state.context,"craft","shadow",s.vesselId,overrides).provenance; state.bodyShadowPolicy=PresentationQualityPolicy.Resolve(state.preset,state.context,"body","shadow",s.bodyId,overrides).provenance; policyDirty=false; }
@@ -255,6 +256,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
             if(!int.TryParse(words[1],NumberStyles.None,CultureInfo.InvariantCulture,out width)||!int.TryParse(words[2],NumberStyles.None,CultureInfo.InvariantCulture,out height)||width<320||width>4096||height<240||height>4096||(long)width*height>16000000) throw new InvalidDataException("Viewport integer320..4096 by240..4096, at most16000000 pixels required.");
             Screen.SetResolution(width,height,false); state.viewportWidthRequested=width; state.viewportHeightRequested=height; return;
         }
+        if((words[0]=="replay.open"||words[0]=="replay.resume")&&trail!=null&&!string.IsNullOrEmpty(trail.Status.recordingPath))throw new InvalidOperationException("Remove measured emitter worldline before vessel pose replay.");
         if(words[0]=="replay.open"&&words.Length>=2) { var next=VesselReplaySession.Open(Absolute(text.Substring(words[0].Length).Trim()),state.sceneSha256,generation.Whole); replay=next; state.replay=next.Status; }
         else if(words[0]=="replay.resume"&&words.Length>=2) { var next=VesselReplaySession.Resume(Absolute(text.Substring(words[0].Length).Trim()),state.sceneSha256,generation.Whole); replay=next; state.replay=next.Status; }
         else if(words[0]=="replay.seek"&&words.Length==2) { RequireReplay(); replay.Seek(int.Parse(words[1],CultureInfo.InvariantCulture)); }
@@ -283,6 +285,15 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     void RequireReplay() { if(replay==null) throw new InvalidOperationException("Open a bound replay first."); }
     void TrailCommand(string[] words)
     {
+        if(words.Length==3&&words[1]=="recording")
+        {
+            if(replay!=null)throw new InvalidOperationException("Remove bound vessel replay before emitter worldline presentation.");
+            string path=Path.GetFullPath(words[2]); if(!Path.IsPathRooted(words[2]))throw new InvalidDataException("Absolute emitter recording path required.");
+            string digest=Hash(path);var recording=TrailEmitterFormat.Read(path);if(Hash(path)!=digest)throw new InvalidDataException("Emitter recording changed during read.");
+            if(generation.Whole==null||recording.sceneSha256!=state.sceneSha256||recording.wholeCraftSha256!=generation.Whole.ManifestSha256||recording.vesselId!=generation.Scene.vesselId||recording.bodyName!=generation.Scene.bodyName||!generation.Whole.Manifest.draws.Any(d=>d.partId==recording.partId))throw new InvalidDataException("Emitter recording differs from resident cold scene/part.");
+            PersistentTrailRuntime next=null;try{next=new PersistentTrailRuntime(generation.Scene.vesselAnchorMeters,recording,path,digest);}catch{if(next!=null)next.Dispose();throw;}
+            var old=trail;trail=next;state.trail=next.Status;state.trailInstalled=true;if(old!=null)old.Dispose();return;
+        }
         if(words.Length==2&&words[1]=="remove") { if(trail!=null) trail.Dispose(); trail=null; state.trail=null; state.trailInstalled=false; return; }
         if(words.Length==2&&words[1]=="fixture")
         {
@@ -298,13 +309,14 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         else if(words.Length==2&&words[1]=="pause") trail.Pause();
         else if((words.Length==2||words.Length==3)&&words[1]=="play") trail.Play(words.Length==3?Number(words[2]):1);
         else if(words.Length==3&&words[1]=="step") trail.Step(Number(words[2]));
+        else if(words.Length==3&&words[1]=="seek") trail.SeekRecording(Number(words[2]));
         else if(words.Length==5&&words[1]=="wind") trail.Wind(Number(words[2]),Number(words[3]),Number(words[4]));
         else if(words.Length==3&&words[1]=="emission"&&(words[2]=="on"||words[2]=="off")) trail.Emission(words[2]=="on");
         else throw new InvalidDataException("trail fixture|remove|probe on/scene/off|reset|pause|play [RATE]|step SECONDS|wind X Y Z|emission on/off");
     }
     void InstallSceneTrailProbe()
     {
-        if(replay!=null||state.view!="composed"||generation.Whole==null||craftTarget==null||bodyTarget==null||state.frames==0) throw new InvalidOperationException("Actual probe requires resident static whole craft, composed view and completed scene render.");
+        if(replay!=null||!string.IsNullOrEmpty(trail.Status.recordingPath)||state.view!="composed"||generation.Whole==null||craftTarget==null||bodyTarget==null||state.frames==0) throw new InvalidOperationException("Actual probe requires resident static whole craft, composed view and completed scene render.");
         if(trail.Status.probeInstalled) throw new InvalidOperationException("Turn prior probe off first.");
         var s=generation.Scene; string manifestPath=Under(Path.GetDirectoryName(state.scenePath),s.wholeCraft),root=Path.GetDirectoryName(manifestPath);
         var manifest=generation.Whole.Manifest; string geometryPath=Under(root,manifest.geometry);

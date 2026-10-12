@@ -16,6 +16,10 @@ public sealed class PersistentTrailRuntime : IDisposable
         public bool paused = true, emission;
         public bool compositionMainTextureProperty,compositionTrailTextureProperty;
         public bool probeInstalled;
+        public string recordingPath,recordingSha256,recordingRunId,recordingMode,recordingPresentation;
+        public int recordingProcessId,recordingCursor,recordingFrames;
+        public double recordingUniversalTime,recordingDuration;
+        public double[] recordedRootScene=new double[3];
         public ProbeData probe;
         public int live, capacity = 1024, uploadCount;
         public long expired, capacityEvictions, emitted, generation, uploadBytes, renderedFrames;
@@ -68,6 +72,7 @@ public sealed class PersistentTrailRuntime : IDisposable
     static bool Inside(Vector3 p,Camera c) { return !float.IsNaN(p.x)&&!float.IsNaN(p.y)&&!float.IsNaN(p.z)&&p.z>c.nearClipPlane&&p.z<c.farClipPlane&&p.x>=0&&p.x<=1&&p.y>=0&&p.y<=1; }
     public readonly StatusData Status = new StatusData();
     readonly PersistentTrailOwner owner;
+    readonly TrailEmitterRecording recording;
     readonly Mesh mesh;
     readonly Material material;
     readonly CommandBuffer commands;
@@ -107,9 +112,11 @@ public sealed class PersistentTrailRuntime : IDisposable
         sceneProbeView=camera.worldToCameraMatrix; sceneProbeFov=camera.fieldOfView; sceneProbeAspect=camera.aspect;
         Status.probe=p; Status.probeInstalled=true; uploadedGeneration=-1; HoldClock();
     }
-    public PersistentTrailRuntime(double[] anchor)
+    public PersistentTrailRuntime(double[] anchor,TrailEmitterRecording measured=null,string recordingPath=null,string recordingHash=null)
     {
         long preparationStarted=System.Diagnostics.Stopwatch.GetTimestamp();
+        if(measured!=null) TrailEmitterFormat.Validate(measured);
+        recording=measured;
         owner = new PersistentTrailOwner(Status.capacity, new[] { anchor[0] + 3, anchor[1], anchor[2] }, new[] { 0.0, 0.0, -8.0 });
         try
         {
@@ -127,20 +134,43 @@ public sealed class PersistentTrailRuntime : IDisposable
             commands = new CommandBuffer { name = "Owned persistent trail transparent depth consumer" };
             lastWall = Time.realtimeSinceStartup;
             Refresh();
+            if(recording!=null) { Status.model="Artistic particles driven by captured KSP part motion; no observed plume/weather; endpoint interpolation"; Status.recordingPath=recordingPath; Status.recordingSha256=recordingHash; Status.recordingRunId=recording.runId; Status.recordingProcessId=recording.processId; Status.recordingMode=recording.mode; Status.recordingFrames=recording.frames.Length; Status.recordingDuration=recording.frames[recording.frames.Length-1].universalTime-recording.frames[0].universalTime; Status.recordingPresentation="Measured body-fixed worldline; artistic endpoint-interpolated births; immutable captured craft geometry follows root translation only, no recorded deformation/rotation applied";owner.SetEmission(recording.frames[0].emission); UpdateRecordedRoot(); Refresh(); }
         }
         catch { Dispose(); throw; }
         finally { Status.preparationTicks=System.Diagnostics.Stopwatch.GetTimestamp()-preparationStarted; }
     }
     public void Fixture()
     { owner.Reset(); Wind(1,0,0); owner.SetEmission(true); owner.Advance(3); owner.SetEmission(false); Status.paused = true; Refresh(); }
-    public void Reset() { owner.Reset(); Status.paused = true; Refresh(); }
+    public void Reset() { owner.Reset(); Status.paused = true; if(recording!=null) { owner.SetWind(0,0,0);owner.SetEmission(recording.frames[0].emission); Status.windX=Status.windY=Status.windZ=0; Status.recordingCursor=0; UpdateRecordedRoot(); } Refresh(); }
     public void Pause() { Status.paused = true; }
     public void HoldClock() { lastWall = Time.realtimeSinceStartup; }
     public void Play(double rate)
     { if (double.IsNaN(rate) || double.IsInfinity(rate) || rate < .01 || rate > 100) throw new ArgumentException("Trail rate .01..100 required."); Status.playbackRate = rate; Status.paused = false; lastWall = Time.realtimeSinceStartup; }
-    public void Step(double seconds) { long started=System.Diagnostics.Stopwatch.GetTimestamp(); try { owner.Advance(owner.Time + seconds); Refresh(); } finally { Status.simulationTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-started; } }
+    public void Step(double seconds) { long started=System.Diagnostics.Stopwatch.GetTimestamp(); try { if(recording==null) owner.Advance(owner.Time + seconds); else AdvanceRecording(owner.Time+seconds); Refresh(); } finally { Status.simulationTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-started; } }
+    public void SeekRecording(double seconds)
+    { if(recording==null||double.IsNaN(seconds)||double.IsInfinity(seconds)||seconds<0||seconds>Status.recordingDuration) throw new ArgumentException("Recording seek outside measured duration."); Reset(); AdvanceRecording(seconds); Refresh(); }
+    void AdvanceRecording(double target)
+    {
+        if(double.IsNaN(target)||double.IsInfinity(target)||target<owner.Time||target>Status.recordingDuration||target-owner.Time>3600) throw new ArgumentException("Recording advance outside measured duration.");
+        while(Status.recordingCursor+1<recording.frames.Length&&owner.Time<target)
+        {
+            int i=Status.recordingCursor; var a=recording.frames[i]; var b=recording.frames[i+1]; double start=a.universalTime-recording.frames[0].universalTime,end=b.universalTime-recording.frames[0].universalTime;
+            if(end<=owner.Time) {Status.recordingCursor++;continue;}
+            double next=Math.Min(target,end); var p=RecordedPosition(a.emitterBodyFixed,b.emitterBodyFixed,(owner.Time-start)/(end-start)); var q=RecordedPosition(a.emitterBodyFixed,b.emitterBodyFixed,(next-start)/(end-start));
+            owner.AdvanceMeasured(next,p,q,a.emission); if(next==end)Status.recordingCursor++;
+        }
+        if(owner.Time==Status.recordingDuration)Status.paused=true;
+        UpdateRecordedRoot();
+    }
+    double[] RecordedPosition(double[] a,double[] b,double fraction)
+    { return TrailEmitterFormat.Position(recording,new[]{a[0]+(b[0]-a[0])*fraction,a[1]+(b[1]-a[1])*fraction,a[2]+(b[2]-a[2])*fraction}); }
+    void UpdateRecordedRoot()
+    {
+        int i=Status.recordingCursor;var a=recording.frames[i];var b=recording.frames[Math.Min(i+1,recording.frames.Length-1)];double span=b.universalTime-a.universalTime;
+        Status.recordedRootScene=RecordedPosition(a.rootBodyFixed,b.rootBodyFixed,span==0?0:(owner.Time+recording.frames[0].universalTime-a.universalTime)/span);Status.recordingUniversalTime=recording.frames[0].universalTime+owner.Time;
+    }
     public void Wind(double x, double y, double z) { owner.SetWind(x, y, z); Status.windX=x; Status.windY=y; Status.windZ=z; Refresh(); }
-    public void Emission(bool enabled) { owner.SetEmission(enabled); Refresh(); }
+    public void Emission(bool enabled) { if(recording!=null)throw new InvalidOperationException("Recording emission is owned by measured mode/readback.");owner.SetEmission(enabled); Refresh(); }
     public void Probe(bool enabled)
     {
         if(enabled==Status.probeInstalled) return;
@@ -166,7 +196,7 @@ public sealed class PersistentTrailRuntime : IDisposable
         try { texture.LoadRawTextureData(bytes); texture.Apply(false,true); return texture; } catch { UnityEngine.Object.Destroy(texture); throw; }
     }
     public void Tick(bool frozen)
-    { double now = Time.realtimeSinceStartup, delta = Math.Max(0, Math.Min(.25, now - lastWall)); lastWall = now; if (!frozen && !Status.paused&&!Status.probeInstalled) Step(delta * Status.playbackRate); }
+    { double now = Time.realtimeSinceStartup, delta = Math.Max(0, Math.Min(.25, now - lastWall)); lastWall = now; if (!frozen && !Status.paused&&!Status.probeInstalled) Step(recording==null?delta*Status.playbackRate:Math.Min(delta*Status.playbackRate,Status.recordingDuration-owner.Time)); }
     void Refresh()
     { Status.simulationTime = owner.Time; Status.live = owner.Count; Status.expired = owner.Expired; Status.capacityEvictions = owner.CapacityEvictions; Status.emitted = owner.Emitted; Status.generation = owner.Generation; Status.emission = owner.Emission;
         if(owner.Count>0) { var a=owner.At(0); var b=owner.At(owner.Count-1); Status.oldestPositionMeters[0]=a.x; Status.oldestPositionMeters[1]=a.y; Status.oldestPositionMeters[2]=a.z; Status.newestPositionMeters[0]=b.x; Status.newestPositionMeters[1]=b.y; Status.newestPositionMeters[2]=b.z; Status.oldestAgeSeconds=a.age; Status.newestAgeSeconds=b.age; }
