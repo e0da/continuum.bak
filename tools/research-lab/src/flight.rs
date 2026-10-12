@@ -817,6 +817,11 @@ pub fn analyze(
         summary["flightIntegratorUpdateAttribution"] = crate::integrator_summary::summarize(report)?;
         summary["intrusiveDiagnosticsRequested"] = Value::Bool(true);
     }
+    if !report["updateCallbackAttribution"].is_null() {
+        summary["updateCallbackAttribution"] = crate::update_callbacks::summarize(report)?;
+        summary["intrusiveDiagnosticsRequested"] = Value::Bool(true);
+        summary["comparisonEligibility"] = Value::String("intrusive-update-owner-trace; not-clean-performance-comparison".into());
+    }
     if !report["convectionCapture"].is_null() {
         summary["convectionCapture"] = report["convectionCapture"].clone();
         summary["intrusiveDiagnosticsRequested"] = Value::Bool(true);

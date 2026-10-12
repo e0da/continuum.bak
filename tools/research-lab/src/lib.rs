@@ -20,6 +20,7 @@ pub mod reference_program;
 pub mod provider_proofs;
 pub mod recovery;
 pub mod startup;
+pub mod update_callbacks;
 
 pub type Result<T> = std::result::Result<T, String>;
 
