@@ -42,6 +42,8 @@ namespace KspContinuum
             public Target[] targets = new Target[0];
             public StateOwner[] stateOwners = new StateOwner[0];
             public Window[] windows = new Window[0];
+            public int[] unreachedSlots = new int[0];
+            public string coverageStatus = "pending";
             public string[] preinstallPatchGraph = new string[0], installedPatchGraph = new string[0], precleanupPatchGraph = new string[0], restoredPatchGraph = new string[0];
         }
         [Serializable] public sealed class Target
@@ -400,7 +402,10 @@ namespace KspContinuum
                 exported[window] = new Window { sequence = window, frame = boundary.Frame, fixedTimeSeconds = boundary.Time, startedTicks = boundary.Start, endedTicks = boundary.End,
                     elapsedTicks = boundary.End - boundary.Start, captureActiveAtEnd = boundary.CaptureAtEnd, entries = entries };
             }
-            Report.windows = exported; Report.observedTargets = reached.Count(value => value); Report.exportEndedTicks = Stopwatch.GetTimestamp(); disposed = true;
+            Report.windows = exported; Report.observedTargets = reached.Count(value => value);
+            Report.unreachedSlots = Enumerable.Range(0, Slots).Where(slot => !reached[slot]).ToArray();
+            Report.coverageStatus = Report.observedTargets == Slots ? "all-targets-reached" : Report.observedTargets > 0 ? "partial-target-execution" : "no-target-execution";
+            Report.exportEndedTicks = Stopwatch.GetTimestamp(); disposed = true;
             string reason; Report.status = IsValidFinal(out reason) ? "observed" : "invalid"; if (Report.detail == null && reason != null) Report.detail = reason;
         }
         public bool IsValidFinal(out string reason)
@@ -408,10 +413,10 @@ namespace KspContinuum
             reason = null;
             if (!disposed || Report.cleanupStatus != "removed-owned-patches" || Report.errors != 0 || Report.ownershipErrors != 0 || Report.contextErrors != 0 || Report.originalExceptions != 0 ||
                 Report.droppedWindows != 0 || Report.targetCount != Slots || Report.patchedMethods != Slots || Report.startedWindows != Report.completedWindows || Report.completedWindows == 0 ||
-                Report.observedTargets != Slots || Report.windows.Length != Report.completedWindows || Report.preinstallPatchGraph.Length == 0 || Report.installedPatchGraph.Length == 0 ||
+                Report.observedTargets <= 0 || Report.observedTargets > Slots || Report.windows.Length != Report.completedWindows || Report.preinstallPatchGraph.Length == 0 || Report.installedPatchGraph.Length == 0 ||
                 !Report.installedPatchGraph.SequenceEqual(Report.precleanupPatchGraph) || !Report.preinstallPatchGraph.SequenceEqual(Report.restoredPatchGraph))
             { reason = "Fixed owner installation, execution coverage or exact cleanup incomplete."; return false; }
-            long callTotal = 0; long[] updates = new long[2];
+            long callTotal = 0; long[] updates = new long[2]; var reached = new bool[Slots];
             for (int window = 0; window < Report.windows.Length; window++)
             {
                 Window row = Report.windows[window]; long selfSum = 0;
@@ -426,12 +431,17 @@ namespace KspContinuum
                         slot >= 4 && (entry.insideFeedCalls + entry.outsideFeedCalls != entry.calls || entry.insideFeedTicks + entry.outsideFeedTicks != entry.inclusiveTicks) ||
                         slot < 4 && entry.insideFeedCalls + entry.outsideFeedCalls + entry.insideFeedTicks + entry.outsideFeedTicks != 0)
                     { reason = "Fixed row counters/body clocks failed."; return false; }
+                    if (entry.calls > 0) reached[slot] = true;
                     callTotal += entry.calls; selfSum += entry.selfTicks; if (slot >= 4) updates[slot - 4] += entry.calls;
                 }
                 if (selfSum > row.elapsedTicks) { reason = "Fixed observed self costs exceed phase wall."; return false; }
             }
             if (callTotal != Report.capturedCalls || updates[0] != Report.stateOwners.Sum(state => state.updateCalls) || updates[1] != Report.stateOwners.Sum(state => state.analyzeCalls))
             { reason = "Fixed state-instance counters differ from windows."; return false; }
+            if (Report.observedTargets != reached.Count(value => value) || Report.unreachedSlots == null ||
+                !Report.unreachedSlots.SequenceEqual(Enumerable.Range(0, Slots).Where(slot => !reached[slot])) ||
+                Report.coverageStatus != (Report.observedTargets == Slots ? "all-targets-reached" : "partial-target-execution"))
+            { reason = "Fixed target execution coverage differs from windows."; return false; }
             return true;
         }
     }
