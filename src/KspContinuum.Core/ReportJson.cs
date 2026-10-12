@@ -111,6 +111,9 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.FixedStepOwnerAttribution+ReportData" ||
                  type.FullName == "KspContinuum.FixedStepOwnerAttribution+Target" ||
                  type.FullName == "KspContinuum.FixedStepOwnerAttribution+StateOwner" ||
+                 type.FullName == "KspContinuum.FixedStepOwnerAttribution+SingletonOwner" ||
+                 type.FullName == "KspContinuum.FixedStepOwnerAttribution+VesselOwner" ||
+                 type.FullName == "KspContinuum.FixedStepOwnerAttribution+ModuleOwner" ||
                  type.FullName == "KspContinuum.FixedStepOwnerAttribution+Window" ||
                  type.FullName == "KspContinuum.FixedStepOwnerAttribution+Entry" ||
                  type.FullName == "KspContinuum.TrailEmitterCapture+CaptureReport" ||
