@@ -93,12 +93,13 @@ public sealed class PersistentTrailRuntime : IDisposable
     bool disposed;
     Matrix4x4 sceneProbeView;
     float sceneProbeFov,sceneProbeAspect;
-    public void SceneProbe(SceneTriangle craft,SceneTriangle body,Camera camera,int width,int height,string sceneHash,string wholeHash,string bodyHash)
+    public void SceneProbe(SceneTriangle craft,SceneTriangle body,Camera camera,float bodyNear,int width,int height,string sceneHash,string wholeHash,string bodyHash)
     {
         if(Status.probeInstalled) throw new InvalidOperationException("Turn prior probe off first.");
         if(craft==null||body==null) throw new InvalidOperationException("Actual triangles need >=16px inscribed radius, unclipped and separated; focus/zoom then retry.");
-        if(camera.nearClipPlane<=.004f) throw new InvalidOperationException("Scene near plane needs room for an unclipped front witness; zoom out before admission.");
-        float front=Mathf.Min(camera.nearClipPlane,1)*.5f;
+        float near=Mathf.Min(camera.nearClipPlane,bodyNear);
+        if(near<=.004f) throw new InvalidOperationException("Both scene near planes need room for an unclipped front witness; zoom out before admission.");
+        float front=Mathf.Min(near,1)*.5f;
         var p=new ProbeData {depthSource="actual-scene-rendertextures",scope="Actual captured triangle projection plus existing scene positive-depth producers; opaque static witness only",triangles=new[]{craft,body},sceneSha256=sceneHash,wholeGeometrySha256=wholeHash,bodyGeometrySha256=bodyHash,width=width,height=height,radiusScreenHeight=4f/height,textureSize=0,craftRegion=new float[0],bodyRegion=new float[0],centerUvDepth=new float[12],actualCentersCameraRelative=new float[12],actualEyeDepths=new float[4],rgba=new float[]{0,1,0,1,1,0,0,1,0,1,1,1,1,1,0,1},expectedVisible=new[]{true,false,true,false},historyTimeOnInstall=owner.Time,historyGenerationOnInstall=owner.Generation,pausedOnInstall=Status.paused,emissionOnInstall=owner.Emission};
         for(int d=0;d<2;d++) { var t=p.triangles[d]; float behind=Mathf.Max(t.projectedUvDepth[2],Mathf.Max(t.projectedUvDepth[5],t.projectedUvDepth[8]))*1.05f; for(int k=0;k<2;k++) { int i=(d*2+k)*3; p.centerUvDepth[i]=t.centerU+(k==0?-8f:8f)/width; p.centerUvDepth[i+1]=t.centerV; p.centerUvDepth[i+2]=k==0?front:behind; } }
         sceneProbeView=camera.worldToCameraMatrix; sceneProbeFov=camera.fieldOfView; sceneProbeAspect=camera.aspect;

@@ -336,7 +336,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
             if(Vector3.Dot(Vector3.Cross(b-a,c-a),a)*Mathf.Sign(bm.determinant)>=0) continue;
             body=PersistentTrailRuntime.SelectTriangle(body,"body",s.bodyId,a,b,c,i/3,bodyCamera,Screen.width,Screen.height,craft);
         }
-        trail.SceneProbe(craft,body,craftCamera,Screen.width,Screen.height,state.sceneSha256,generation.Whole.GeometrySha256,state.bodyGeometrySha256);
+        trail.SceneProbe(craft,body,craftCamera,bodyCamera.nearClipPlane,Screen.width,Screen.height,state.sceneSha256,generation.Whole.GeometrySha256,state.bodyGeometrySha256);
         var proof=trail.Status.probe; proof.craftProducerProjection=new float[16]; proof.bodyProducerProjection=new float[16];
         Matrix4x4 cp=GL.GetGPUProjectionMatrix(craftCamera.projectionMatrix,true),bp=GL.GetGPUProjectionMatrix(bodyCamera.projectionMatrix,true);
         for(int r=0;r<4;r++) for(int c=0;c<4;c++) { proof.craftProducerProjection[r*4+c]=cp[r,c]; proof.bodyProducerProjection[r*4+c]=bp[r,c]; }
