@@ -3,6 +3,7 @@ name = "continuum-scene-depth-proof"
 version = "0.1.0"
 edition = "2021"
 publish = false
+default-run = "continuum-scene-depth-proof"
 
 [dependencies]
 png = "0.17.16"
