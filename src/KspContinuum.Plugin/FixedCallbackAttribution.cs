@@ -296,7 +296,7 @@ namespace KspContinuum
         internal const string PatchOwner = "continuum.flight-integrator-update-attribution";
         const string Owner = PatchOwner;
         const string ConvectionOwner = "continuum.convection-sparse-replacement";
-        static readonly string[] CoownerOrder = { ConvectionOwner, CylinderOcclusionCapture.PatchOwner };
+        static readonly string[] CoownerOrder = { ConvectionOwner, CylinderOcclusionCapture.PatchOwner, CylinderOcclusionReplacement.PatchOwner };
         const string StockSha256 = "8a20892953fc14c02f352b393eb6712c665156d94a7d846d16c20a7de3e22f27";
         const int Slots = 6, MaximumWindows = 4096;
         static readonly Guid StockMvid = new Guid("10657063-2fc3-43a7-84fa-d39e75e877bf");
@@ -307,7 +307,7 @@ namespace KspContinuum
         [Serializable] public sealed class ReportData
         {
             public string schema = "continuum-flight-integrator-attribution/v1", status = "not-started", cleanupStatus = "not-installed", detail, assemblySha256;
-            public string scope = "Observer-lifetime inclusive wall time for six pinned FlightIntegrator declared method entry/exit seams under the reported exact installed variant. Convection query includes replacement admission/copy/fold/publication/FX and hooks, rather than the skipped original fold. Optional solar/body tape capture hooks are included. Render Update and physics Fixed windows have separate denominators; parent/child rows overlap and are not additive or exclusive CPU. Other methods, overrides that do not call these declared bodies and calls outside those subtrees are not attributed. All instances of the pinned declared bodies are included.";
+            public string scope = "Observer-lifetime inclusive wall time for six pinned FlightIntegrator declared method entry/exit seams under the reported exact installed variant. Convection query includes replacement admission/copy/fold/publication/FX and hooks, rather than the skipped original fold. Optional solar/body tape capture or complete indexed replacement hooks are included; replacement control/query/verification windows must be distinguished by its own report. Render Update and physics Fixed windows have separate denominators; parent/child rows overlap and are not additive or exclusive CPU. Other methods, overrides that do not call these declared bodies and calls outside those subtrees are not attributed. All instances of the pinned declared bodies are included.";
             public string overheadScope = "Intrusive observer tax remains unqualified. Admission, storage preparation, report validation and serialization are outside method samples; timer floor does not measure Harmony or whole-frame observer tax. No force, thermal, input or rendering state is written.";
             public string windowScope = "Timestamped windows include warmup/cleanup. Select fully enclosed startedTicks/endedTicks against Probe capture timestamps before deriving capture means. Each slot follows seamOrder; zero calls means no execution coverage, not zero cost.";
             public string witnessStatus = "not-run";
@@ -352,6 +352,7 @@ namespace KspContinuum
         readonly AeroStepContext aero;
         readonly ConvectionReplacement convection;
         readonly CylinderOcclusionCapture cylinder;
+        readonly CylinderOcclusionReplacement cylinderReplacement;
         readonly Dictionary<int, int> slots = new Dictionary<int, int>();
         readonly int[] depths = new int[Slots], calls = new int[MaximumWindows * Slots], outerCalls = new int[MaximumWindows * Slots];
         readonly long[] ticks = new long[MaximumWindows * Slots], outerTicks = new long[MaximumWindows * Slots], phaseTicks = new long[2];
@@ -361,12 +362,13 @@ namespace KspContinuum
         int threadId, activeIndex = -1, windowCount;
         int activeFrame;
         long windowStart;
-        bool installed, disposed, installing, convectionLease, cleanupAttempted;
+        bool installed, disposed, installing, convectionLease, cylinderReplacementLease, cleanupAttempted;
         public ReportData Report { get; private set; } = new ReportData();
 
-        public FlightIntegratorUpdateAttribution(string runId = null, AeroStepContext aero = null, ConvectionReplacement convection = null, CylinderOcclusionCapture cylinder = null)
+        public FlightIntegratorUpdateAttribution(string runId = null, AeroStepContext aero = null, ConvectionReplacement convection = null, CylinderOcclusionCapture cylinder = null,
+            CylinderOcclusionReplacement cylinderReplacement = null)
         {
-            this.aero = aero; this.convection = convection; this.cylinder = cylinder; Report.runId = runId;
+            this.aero = aero; this.convection = convection; this.cylinder = cylinder; this.cylinderReplacement = cylinderReplacement; Report.runId = runId;
             Report.storageStartedTicks = storageStartedTicks; Report.storageEndedTicks = Stopwatch.GetTimestamp();
         }
 
@@ -388,6 +390,8 @@ namespace KspContinuum
         }
         internal bool OwnsConvection(ConvectionReplacement value)
         { return ReferenceEquals(activeOwner, this) && (installed || installing) && ReferenceEquals(convection, value); }
+        internal bool OwnsCylinderReplacement(CylinderOcclusionReplacement value)
+        { return ReferenceEquals(activeOwner, this) && (installed || installing) && ReferenceEquals(cylinderReplacement, value); }
         static bool ObserverPatch(Patch patch, bool prefix)
         {
             return patch.owner == Owner && patch.priority == (prefix ? Priority.First : Priority.Last) &&
@@ -440,6 +444,8 @@ namespace KspContinuum
                     Require(convection.MatchesAttributionGraph(method, graph, observerInstalled), "Exact convection query graph differs.");
                 else if ((i == 4 || i == 5) && cylinder != null)
                     Require(CylinderOcclusionCapture.HasExactCapturePatch(graph, method, observerInstalled), "Exact cylinder capture graph differs: " + method.Name);
+                else if ((i == 4 || i == 5) && cylinderReplacement != null)
+                    Require(cylinderReplacement.MatchesAttributionGraph(method, graph, observerInstalled), "Exact cylinder replacement graph differs: " + method.Name);
                 else if (observerInstalled)
                     Require(HasExactObserverPatch(graph, method) && graph.Prefixes.Count == 1 && graph.Finalizers.Count == 1 &&
                         graph.Transpilers.Count == 0 && graph.Postfixes.Count == 0, "Unexpected patch on narrow seam: " + method.Name);
@@ -491,18 +497,22 @@ namespace KspContinuum
                     }
                 }
                 Report.seamOrder = identities;
-                if (aero != null || convection != null || cylinder != null)
+                Require(cylinder == null || cylinderReplacement == null, "Cylinder capture and replacement cannot share a caller.");
+                if (aero != null || convection != null || cylinder != null || cylinderReplacement != null)
                 {
                     Require(!string.IsNullOrEmpty(Report.runId), "Co-owned attribution requires a bound run ID.");
                     Require(aero == null || aero.Report.runId == Report.runId && aero.Report.mode == "query", "Aero query run/mode differs.");
                     Require(convection == null || convection.Report.runId == Report.runId && convection.Report.mode == "query", "Convection query run/mode differs.");
                     Require(cylinder == null || cylinder.Report.runId == Report.runId && cylinder.Report.status == "installed", "Cylinder capture run/status differs.");
+                    Require(cylinderReplacement == null || cylinderReplacement.Report.runId == Report.runId && cylinderReplacement.Report.status == "installed" &&
+                        (cylinderReplacement.Report.mode == "verify" || cylinderReplacement.Report.mode == "compare" || cylinderReplacement.Report.mode == "query"), "Cylinder replacement run/mode/status differs.");
                 }
                 Report.knownOwners = new[] { aero == null ? null : "continuum.aero-step-context", convection == null ? null : ConvectionOwner,
-                    cylinder == null ? null : CylinderOcclusionCapture.PatchOwner }.Where(value => value != null).ToArray();
+                    cylinder == null ? null : CylinderOcclusionCapture.PatchOwner, cylinderReplacement == null ? null : CylinderOcclusionReplacement.PatchOwner }.Where(value => value != null).ToArray();
                 Report.variant = Report.knownOwners.Length == 0 ? "stock" : string.Join("+", Report.knownOwners);
                 Report.preinstallPatchGraph = GraphSnapshot(); RequireGraph(false);
                 if (convection != null) { convection.BeginAttribution(this); convectionLease = true; }
+                if (cylinderReplacement != null) { cylinderReplacement.BeginAttribution(this); cylinderReplacementLease = true; }
                 foreach (MethodInfo method in targets)
                 {
                     patched.Add(method);
@@ -603,6 +613,7 @@ namespace KspContinuum
                     Require(Report.preinstallPatchGraph.SequenceEqual(Report.restoredPatchGraph), "Preinstalled query/capture graphs were not exactly restored.");
                 }
                 if (convectionLease) { convection.EndAttribution(this); convectionLease = false; }
+                if (cylinderReplacementLease) { cylinderReplacement.EndAttribution(this); cylinderReplacementLease = false; }
                 Report.cleanupStatus = "removed-owned-patches";
                 if (Report.patchGraphWitnessStatus != "invalid" && Report.installedPatchGraph.Length != 0 && Report.precleanupPatchGraph.Length != 0)
                     Report.patchGraphWitnessStatus = "passed";
