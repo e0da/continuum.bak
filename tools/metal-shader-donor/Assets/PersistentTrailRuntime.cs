@@ -14,6 +14,7 @@ public sealed class PersistentTrailRuntime : IDisposable
         public double[] oldestPositionMeters=new double[3],newestPositionMeters=new double[3];
         public double oldestAgeSeconds,newestAgeSeconds;
         public bool paused = true, emission;
+        public bool compositionMainTextureProperty,compositionTrailTextureProperty;
         public int live, capacity = 1024, uploadCount;
         public long expired, capacityEvictions, emitted, generation, uploadBytes, renderedFrames;
         public long submissionTicks, commandBuilds,preparationTicks,simulationTicks,uploadTicks,viewSetupTicks,renderTicks,compositionTicks,clockFrequency=System.Diagnostics.Stopwatch.Frequency;
@@ -52,7 +53,10 @@ public sealed class PersistentTrailRuntime : IDisposable
         {
             Shader shader = Shader.Find("Hidden/Continuum/PersistentTrail");
             if (shader == null || !shader.isSupported) throw new InvalidOperationException("Persistent trail shader unavailable.");
-            material = new Material(shader); mesh = new Mesh { name = "Bounded persistent trail parcels" }; mesh.MarkDynamic();
+            material = new Material(shader);
+            Status.compositionMainTextureProperty=material.HasProperty("_MainTex"); Status.compositionTrailTextureProperty=material.HasProperty("_TrailColor");
+            if(!Status.compositionMainTextureProperty||!Status.compositionTrailTextureProperty) throw new InvalidOperationException("Trail composition texture binding contract absent.");
+            mesh = new Mesh { name = "Bounded persistent trail parcels" }; mesh.MarkDynamic();
             vertices = new Vector3[Status.capacity * 4]; colors = new Color[vertices.Length];
             parcels=new PersistentTrailParcel[Status.capacity]; order=new int[Status.capacity]; depths=new double[Status.capacity]; ids=new long[Status.capacity]; depthOrder=new DepthOrder(depths,ids);
             var uv = new Vector2[vertices.Length]; var indices = new int[Status.capacity * 6];
@@ -133,7 +137,7 @@ public sealed class PersistentTrailRuntime : IDisposable
         finally { RenderTexture.active=old; Status.renderTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-renderStarted; }
     }
     public void Compose(RenderTexture source, RenderTexture destination, Material worldComposite)
-    { long started=System.Diagnostics.Stopwatch.GetTimestamp(); RenderTexture old=RenderTexture.active; try { if(target==null||composed==null) { Graphics.Blit(source,destination,worldComposite); return; } Graphics.Blit(source,composed,worldComposite); material.SetTexture("_TrailColor", target); Graphics.Blit(composed, destination, material, 1); } finally { RenderTexture.active=old; Status.compositionTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-started; } }
+    { long started=System.Diagnostics.Stopwatch.GetTimestamp(); RenderTexture old=RenderTexture.active; try { if(target==null||composed==null) { Graphics.Blit(source,destination,worldComposite); return; } Graphics.Blit(source,composed,worldComposite); material.SetTexture("_MainTex",composed); material.SetTexture("_TrailColor", target); Graphics.Blit(composed, destination, material, 1); } finally { RenderTexture.active=old; Status.compositionTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-started; } }
     void ReleaseTarget() { commandsRecorded=false; if(commands!=null) commands.Clear(); if (target != null) { target.Release(); UnityEngine.Object.Destroy(target); target = null; } if(composed!=null) { composed.Release(); UnityEngine.Object.Destroy(composed); composed=null; } }
     public void Dispose()
     { if (disposed) return; disposed = true; ReleaseTarget(); if (commands != null) commands.Release(); if (mesh != null) UnityEngine.Object.Destroy(mesh); if (material != null) UnityEngine.Object.Destroy(material); Status.cleanupStatus = "owned-resources-destruction-requested"; Status.status = "disposed"; }

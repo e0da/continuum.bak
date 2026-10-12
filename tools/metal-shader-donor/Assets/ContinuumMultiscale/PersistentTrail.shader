@@ -1,5 +1,10 @@
 Shader "Hidden/Continuum/PersistentTrail"
 {
+ Properties
+ {
+  [HideInInspector] _MainTex ("Composed opaque scene", 2D) = "black" {}
+  [HideInInspector] _TrailColor ("Premultiplied trail", 2D) = "black" {}
+ }
  SubShader
  {
   Pass
