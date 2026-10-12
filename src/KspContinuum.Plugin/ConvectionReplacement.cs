@@ -32,6 +32,7 @@ namespace KspContinuum
         readonly Vessel vessel;
         readonly int threadId = Thread.CurrentThread.ManagedThreadId;
         bool disposed, disabled;
+        FlightIntegratorUpdateAttribution attribution;
         long sequence;
 
         [Serializable] public sealed class ReportData
@@ -72,6 +73,35 @@ namespace KspContinuum
             internal RollbackFailure(Exception error) : base("Original live state could not be restored.", error) { }
         }
         public ReportData Report { get; private set; }
+
+        internal bool MatchesAttributionGraph(MethodBase method, Patches graph, bool observerInstalled)
+        {
+            if (!ReferenceEquals(active, this) || disposed || disabled || Report.mode != "query" || Report.status != "installed" ||
+                !Report.hookShapeVerified || !FlightIntegratorUpdateAttribution.SameMethod(method, Target) || graph == null) return false;
+            if (observerInstalled && (attribution == null || !attribution.OwnsConvection(this) ||
+                !FlightIntegratorUpdateAttribution.HasExactObserverPatch(graph, method))) return false;
+            int extra = observerInstalled ? 1 : 0;
+            if (graph.Prefixes.Count != 1 + extra || graph.Finalizers.Count != 1 + extra || graph.Transpilers.Count != 1 || graph.Postfixes.Count != 0) return false;
+            return OwnPatch(graph.Prefixes, "Prefix") && OwnPatch(graph.Transpilers, "Hook") && OwnPatch(graph.Finalizers, "Finalizer");
+        }
+        static bool OwnPatch(IEnumerable<Patch> patches, string name)
+        {
+            Patch[] own = patches.Where(patch => patch.owner == Owner).ToArray();
+            return own.Length == 1 && own[0].priority == Priority.Normal && own[0].before.Length == 0 && own[0].after.Length == 0 &&
+                FlightIntegratorUpdateAttribution.SameMethod(own[0].PatchMethod, AccessTools.DeclaredMethod(typeof(ConvectionReplacement), name));
+        }
+        internal void BeginAttribution(FlightIntegratorUpdateAttribution observer)
+        {
+            ConvectionSparseKernel.Require(observer != null && attribution == null && observer.OwnsConvection(this) &&
+                MatchesAttributionGraph(Target, Harmony.GetPatchInfo(Target), false), "Convection narrow-attribution lease differs.");
+            attribution = observer;
+        }
+        internal void EndAttribution(FlightIntegratorUpdateAttribution observer)
+        {
+            ConvectionSparseKernel.Require(ReferenceEquals(attribution, observer) && MatchesAttributionGraph(Target, Harmony.GetPatchInfo(Target), false),
+                "Convection original query graph was not restored after attribution.");
+            attribution = null;
+        }
 
         ConvectionReplacement(string mode, string runId, Func<bool> capturing)
         {
@@ -215,7 +245,8 @@ namespace KspContinuum
             try
             {
                 var patches = Harmony.GetPatchInfo(Target);
-                if (patches == null || patches.Owners.Any(id => id != Owner)) throw new ConvectionSparseKernel.Unsupported("foreign-live-hook");
+                if (attribution == null ? patches == null || patches.Owners.Any(id => id != Owner) : !MatchesAttributionGraph(Target, patches, true))
+                    throw new ConvectionSparseKernel.Unsupported("foreign-live-hook");
                 var rows = (List<OcclusionData>)Rows.GetValue(integrator);
                 if (rows == null || rows.Count < 1 || rows.Count > ConvectionFormat.MaxRows || (int)Count.GetValue(integrator) != rows.Count)
                     throw new ConvectionSparseKernel.Unsupported("live-row-count");
@@ -357,6 +388,7 @@ namespace KspContinuum
         public void Dispose()
         {
             if (disposed) return; disposed = true;
+            if (attribution != null) Fault(new InvalidOperationException("Narrow attribution must be removed before convection query cleanup."));
             try
             {
                 harmony.UnpatchAll(Owner); var patches = Harmony.GetPatchInfo(Target);

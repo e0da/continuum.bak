@@ -173,7 +173,7 @@ namespace KspContinuum
             if (string.IsNullOrEmpty(mode)) return null;
             if ((mode != "verify" && mode != "query" && mode != "compare") || string.IsNullOrEmpty(runId) || capturing == null || FlightGlobals.ActiveVessel == null ||
                 !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_AERO_INTEGRATION_ATTRIBUTION")) ||
-                args.Any(arg => arg == "--continuum-callback-attribution" || arg == "--continuum-flight-integrator-update-attribution" ||
+                args.Any(arg => arg == "--continuum-callback-attribution" || (arg == "--continuum-flight-integrator-update-attribution" && mode != "query") ||
                     arg == "--continuum-live-setdrag-provider" || arg == "--continuum-setdrag-stress-candidate" ||
                     (arg.StartsWith("--continuum-convection-replacement=", StringComparison.Ordinal) && arg != "--continuum-convection-replacement=query")))
                 throw new InvalidOperationException("Aero step context requires one verify/query/compare environment mode and excludes competing aero/broad/provider observers or convection verification.");
@@ -301,6 +301,26 @@ namespace KspContinuum
                     !SameMethod(info.Finalizers[0].PatchMethod, AccessTools.DeclaredMethod(typeof(AeroStepContext), "Finalizer")))) return false;
             }
             return true;
+        }
+        internal void RequireAttributionQueryGraph()
+        {
+            Require(ReferenceEquals(active, this) && !disposed && !HasFault && Report.status == "installed" && Report.mode == "query" &&
+                Report.patchedMethods == Targets.Length && Report.shapeAdmissions == Targets.Length && OwnedGraph(),
+                "Narrow attribution requires the exact installed aero query graph.");
+            Require(graph.All(method => !FlightIntegratorUpdateAttribution.IsTarget(method)),
+                "Aero reachable graph unexpectedly overlaps a narrow thermal/occlusion target.");
+            foreach (MethodInfo target in Targets)
+            {
+                Patches patches = Harmony.GetPatchInfo(target);
+                foreach (Patch patch in patches.Prefixes.Concat(patches.Postfixes).Concat(patches.Transpilers).Concat(patches.Finalizers))
+                    Require(patch.owner == Owner && patch.priority == Priority.Normal && patch.before.Length == 0 && patch.after.Length == 0,
+                        "Aero query callback ordering differs.");
+            }
+        }
+        internal string[] AttributionGraphEvidence()
+        {
+            return graph.OrderBy(method => method.Module.ModuleVersionId).ThenBy(method => method.MetadataToken)
+                .SelectMany(method => FlightIntegratorUpdateAttribution.DescribeGraph(method, Harmony.GetPatchInfo(method))).ToArray();
         }
         static int Role(CodeInstruction[] code, int index, MethodBase method)
         {
