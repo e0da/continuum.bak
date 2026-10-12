@@ -38,11 +38,11 @@ fn proof(b:&[Vec<u8>])->Result<Value> {
  let focus=vec3(&plan["focus"])?;let yr=yaw.to_radians();let pr=pitch.to_radians();
  let forward=[pr.cos()*yr.sin(),-pr.sin(),pr.cos()*yr.cos()];let right=[yr.cos(),0.,-yr.sin()];let up=[forward[1]*right[2]-forward[2]*right[1],forward[2]*right[0]-forward[0]*right[2],forward[0]*right[1]-forward[1]*right[0]];
  let camera=[focus[0]-distance*forward[0],focus[1]-distance*forward[1],focus[2]-distance*forward[2]];
- for (s,kind) in [(&o,"orthographic"),(&p,"perspective")] {
+ for (s,kind) in [(&o,"ortho"),(&p,"perspective")] {
   check(s["schema"]=="continuum-multiscale-workbench/v1"&&s["status"]=="resident"&&(s["error"].is_null()||s["error"]==""),"Native status failed")?;
   check(s["projection"]==kind&&s["width"]==w&&s["height"]==h,"Native lens/viewport differs")?;
   for (k,v,t) in [("yaw",yaw,1e-5),("pitch",pitch,1e-5),("distance",distance,1e-8),("fov",fov,1e-5)] {close(n(&s[k])?,v,t)?;}
-  if kind=="orthographic" {close(n(&s["verticalSpanMeters"])?,span,1e-5)?;}
+  if kind=="ortho" {close(n(&s["verticalSpanMeters"])?,span,1e-5)?;}
   for (a,e) in vec3(&s["cameraAnchorMeters"])?.iter().zip(camera) {close(*a,e,1e-5)?;}
   for (a,e) in vec3(&s["focusTargetMeters"])?.iter().zip(focus) {close(*a,e,1e-5)?;}
   check(s["sceneSha256"]==plan["sceneSha256"]&&s["trailInstalled"]==true&&s["trail"]["paused"]==true&&s["trail"]["recordingSha256"]==plan["sourceRecordingSha256"],"Source/history admission differs")?;
