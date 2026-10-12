@@ -130,6 +130,7 @@ pub fn summarize(d:&Diagnostics,p:&Value,pid:u32)->Result<Value>{
             "stateOwners":owners,"singletonOwners":singletons,"vesselOwners":vessels,"moduleOwners":modules,
             "scope":"Ten named bulk boundaries; inclusive rows overlap, self removes directly observed children. Actual loaded/packed admission flags and active/other instances are retained. Offset flags/fields are observations, not independent world-shift proof. Remaining phase includes unobserved callbacks/native work/observer overhead and is not removable-time evidence."});
     }
+    if d.fixed_dispatch_attribution { result["fixedDispatch"]=dispatch_summary(&p["fixedDispatchAttribution"],run,pid,vessel,start,end,frequency)?; }
     if let Some(selection)=&d.trail_emitter{
         let r=&p["trailEmitterCapture"];
         check(r["schema"]=="continuum-trail-emitter-capture/v1"&&r["status"]=="complete"&&r["cleanupStatus"]=="readonly-owner-released-no-hooks-or-physics-writes"
@@ -147,4 +148,93 @@ pub fn summarize(d:&Diagnostics,p:&Value,pid:u32)->Result<Value>{
             "scope":"Measured part motion with artistic births; binary time/coordinate decoding and native visible consumer remain separate gates."});
     }
     Ok(result)
+}
+
+fn dispatch_summary(r:&Value,run:&str,pid:u32,vessel:&Value,start:u64,end:u64,frequency:u64)->Result<Value>{
+    check(r["schema"]=="continuum-fixed-dispatch-attribution/v1"&&r["status"]=="observed"&&r["cleanupStatus"]=="removed-owned-hooks"
+        &&r["hooksRemoved"]==true&&r["runId"]==run&&r["processId"]==pid&&&r["vesselId"]==vessel&&n(r,"clockFrequency")?==frequency
+        &&r["phase"]=="UnityEngine.PlayerLoop.FixedUpdate+ScriptRunBehaviourFixedUpdate","fixed dispatch owner absent/foreign/incomplete")?;
+    for key in ["errors","originalExceptions","ignoredForeignCalls","droppedWindows","droppedShifts"]{check(n(r,key)?==0,"fixed dispatch faults or missing coverage")?;}
+    for key in ["preinstallPatchGraph","installedPatchGraph","precleanupPatchGraph","restoredPatchGraph"]{
+        check(r[key].as_array().is_some_and(|rows|!rows.is_empty()&&rows.iter().all(|x|x.as_str().is_some_and(|s|!s.is_empty()))),"fixed dispatch graph missing")?;
+    }
+    check(r["preinstallPatchGraph"]==r["restoredPatchGraph"]&&r["installedPatchGraph"]==r["precleanupPatchGraph"],"fixed dispatch graph drift")?;
+    let targets=r["targets"].as_array().filter(|a|a.len()==4).ok_or("dispatch targets missing")?;
+    for (i,row) in targets.iter().enumerate(){
+        check(row["slot"]==i&&row["assemblySha256"]=="8a20892953fc14c02f352b393eb6712c665156d94a7d846d16c20a7de3e22f27"
+            &&row["assemblyMvid"]=="10657063-2fc3-43a7-84fa-d39e75e877bf"&&n(row,"metadataToken")?>0
+            &&row["method"]==["FixedUpdate","FixedUpdate","setOffset","Fire"][i]
+            &&row["declaringType"].as_str().is_some_and(|s| if i<3{s==["Part","Vessel","FloatingOrigin"][i]}else{s.starts_with("EventData`2[[Vector3d,")})
+            &&row["ilSha256"].as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_hexdigit())),"dispatch target identity differs")?;
+    }
+    let windows=r["windows"].as_array().filter(|a|!a.is_empty()&&a.len()<=1024).ok_or("dispatch windows missing")?;
+    check(n(r,"startedWindows")?==windows.len() as u64&&n(r,"completedWindows")?==windows.len() as u64,"dispatch window closure differs")?;
+    let mut calls=[0u64;4];let mut ticks=[0u64;4];let mut own=[0u64;4];let mut last=start;
+    for (i,w) in windows.iter().enumerate(){
+        let a=n(w,"startedTicks")?;let b=n(w,"endedTicks")?;
+        check(w["sequence"]==i&&w["captureActiveAtEnd"]==true&&a>=last&&b>=a&&b<=end&&n(w,"frame")?>0
+            &&w["fixedTimeSeconds"].as_f64().is_some_and(|v|v.is_finite()),"dispatch window outside capture")?;last=b;
+        let metrics=w["metrics"].as_array().filter(|a|a.len()==4).ok_or("dispatch metrics missing")?;let mut total_own=0u64;
+        for (slot,m) in metrics.iter().enumerate(){let count=n(m,"calls")?;let inc=n(m,"inclusiveTicks")?;let ex=n(m,"selfTicks")?;
+            check(m["slot"]==slot&&ex<=inc&&inc<=(b-a).saturating_mul(count)&&(count>0||inc==0),"dispatch call/clock mismatch")?;
+            if slot<2 {check(n(m,"activeVesselCalls")?+n(m,"otherVesselCalls")?==count,"dispatch instance partition differs")?;}
+            calls[slot]+=count;ticks[slot]+=inc;own[slot]+=ex;total_own+=ex;
+        }
+        check(total_own<=b-a,"dispatch observed self exceeds phase")?;
+    }
+    let identities=r["instances"].as_array().filter(|a|!a.is_empty()&&a.len()<=8192).ok_or("dispatch instance ledger missing")?;
+    let mut instance_calls=[0u64;2];
+    for (i,row) in identities.iter().enumerate(){
+        let kind=row["kind"].as_str().ok_or("dispatch kind missing")?;
+        check(row["slot"]==i&&row["instanceId"].as_i64().is_some_and(|v|v!=0)&&row["vesselId"].as_str().is_some_and(|v|!v.is_empty())
+            &&row["loaded"].is_boolean()&&row["packed"].is_boolean()&&(kind=="part"||kind=="vessel"),"dispatch instance identity malformed")?;
+        if kind=="part"{check(n(row,"partFlightId")?>0,"dispatch part ID missing")?;}
+        instance_calls[if kind=="part"{0}else{1}]+=n(row,"calls")?;
+    }
+    check(instance_calls==[calls[0],calls[1]]&&calls[0]>0&&calls[1]>0,"dispatch envelope execution/ledger mismatch")?;
+    let subscribers=r["subscribers"].as_array().filter(|a|a.len()<=128).ok_or("dispatch subscriber ledger missing")?;
+    for w in windows {
+        let samples=w["subscribers"].as_array().filter(|a|a.len()==subscribers.len()).ok_or("window subscriber coverage missing")?;
+        let mut total=0u64;
+        for (i,sample) in samples.iter().enumerate(){let c=n(sample,"calls")?;let t=n(sample,"ticks")?;
+            check(sample["slot"]==i&&n(sample,"exceptions")?==0&&(c>0||t==0)&&c<=n(&w["metrics"][3],"calls")?,"window subscriber call/slot/failure differs")?;
+            total=total.checked_add(t).ok_or("subscriber wall overflow")?;
+        }
+        check(total<=n(&w["metrics"][3],"inclusiveTicks")?,"window subscriber wall exceeds event envelopes")?;
+    }
+    let mut subscriber_ticks=0u64;
+    for (i,row) in subscribers.iter().enumerate(){
+        check(row["slot"]==i&&row["managedTargetIdentity"].as_i64().is_some()&&n(row,"metadataToken")?>0
+            &&row["type"].as_str().is_some_and(|s|!s.is_empty())&&row["method"].as_str().is_some_and(|s|!s.is_empty())
+            &&row["assemblyMvid"].as_str().is_some_and(|s|!s.is_empty())&&n(row,"exceptions")?==0,"dispatch subscriber malformed/exception")?;
+        let count=n(row,"calls")?;let t=n(row,"ticks")?;check(count>0||t==0,"unexecuted subscriber has timing")?;subscriber_ticks+=t;
+        check(row["assemblySha256"].as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_hexdigit())),"subscriber file identity missing")?;
+        let mut wc=0;let mut wt=0;
+        for w in windows { let rows=w["subscribers"].as_array().filter(|a|a.len()==subscribers.len()).ok_or("window subscriber ledger missing")?;let sample=&rows[i];
+            check(sample["slot"]==i&&n(sample,"exceptions")?==0,"window subscriber failure/slot differs")?;wc+=n(sample,"calls")?;wt+=n(sample,"ticks")?;
+        }
+        check(wc==count&&wt==t,"subscriber window/global totals differ")?;
+    }
+    check(subscriber_ticks<=ticks[3],"subscriber wall exceeds event envelope")?;
+    let shifts=r["shifts"].as_array().filter(|a|a.len()<=2048).ok_or("dispatch shift tape missing")?;
+    check(shifts.len() as u64==calls[2],"setter tape/call totals differ")?;
+    let mut events=0u64;let mut event_ticks=0u64;let mut body_changes=0;let mut transform_changes=0;
+    for (i,row) in shifts.iter().enumerate(){
+        let w=n(row,"window")? as usize;check(w<windows.len(),"shift window missing")?;
+        let a=n(row,"startedTicks")?;let b=n(row,"endedTicks")?;
+        check(row["sequence"]==i&&row["completed"]==true&&row["finite"]==true&&&row["vesselId"]==vessel&&row["frame"]==windows[w]["frame"]
+            &&a>=n(&windows[w],"startedTicks")?&&b<=n(&windows[w],"endedTicks")?&&b>=a
+            &&["originInstanceId","bodyInstanceId","vesselInstanceId"].iter().all(|k|row[k].as_i64().is_some_and(|id|id!=0)),"shift binding/completion differs")?;
+        for key in ["requestedOffset","nonFrameOffset","vesselBefore","vesselAfter","bodyBefore","bodyAfter"]{
+            check(row[key].as_array().is_some_and(|a|a.len()==3&&a.iter().all(|v|v.as_f64().is_some_and(|f|f.is_finite()))),"shift vector malformed")?;
+        }
+        let changed=|before:&str,after:&str| (0..3).any(|j|row[before][j].as_f64()!=row[after][j].as_f64());
+        check(row["selectedTransformChanged"]==changed("vesselBefore","vesselAfter")&&row["selectedBodyChanged"]==changed("bodyBefore","bodyAfter"),"shift sentinel classification differs")?;
+        transform_changes+=u64::from(changed("vesselBefore","vesselAfter"));body_changes+=u64::from(changed("bodyBefore","bodyAfter"));
+        events+=n(row,"eventCalls")?;event_ticks+=n(row,"eventTicks")?;check(n(row,"eventTicks")?<=b-a,"event exceeds setter envelope")?;
+    }
+    check(events<=calls[3]&&event_ticks<=ticks[3]&&r["coverageStatus"]==if shifts.is_empty(){"dispatch-observed-no-setter-execution"}else{"dispatch-and-setter-observed"},"dispatch event/coverage accounting differs")?;
+    Ok(json!({"phaseWindows":windows.len(),"targets":targets,"calls":calls,"meanInclusiveMillisecondsPerStep":ticks.map(|t|t as f64*1000./frequency as f64/windows.len() as f64),
+        "meanObservedSelfMillisecondsPerStep":own.map(|t|t as f64*1000./frequency as f64/windows.len() as f64),"setterCalls":shifts.len(),"selectedTransformChangedCalls":transform_changes,
+        "selectedBodyChangedCalls":body_changes,"subscribers":subscribers,"scope":"Original complete Part/Vessel dispatch and relocation/event/subscriber envelopes. Self excludes only this observer's descendants; existing fixed-owner timings still overlap. Sentinel changes are selected movement, not global displacement or removable work proof. Intrusive overhead remains unqualified."}))
 }
