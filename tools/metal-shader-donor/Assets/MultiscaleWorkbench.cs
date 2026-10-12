@@ -578,7 +578,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         bool controlsAllowed=!capturing&&!state.benchmarkActive&&!quitRequested&&(trail==null||!trail.Status.probeInstalled);
         if(cameraControls.Initialized)cameraControls.Draw(new Rect(450,230,340,354),controlsAllowed,true,state.projection=="ortho",state.fov,state.verticalSpanMeters>0?state.verticalSpanMeters:(float)Math.Max(.001,distance*.8),CameraUI);
         GUI.Box(new Rect(10,10,430,150),generation!=null&&generation.Whole!=null?"Whole craft snapshot / "+state.wholeRenderMode:"Captured material-family subset"); GUI.Label(new Rect(20,35,410,20),state.preset+" / "+state.distance.ToString("G5")+" m / "+state.view);
-        float log=GUI.HorizontalSlider(new Rect(20,65,400,20),(float)Math.Log10(Math.Max(.25,distance)),-.6f,10); if(controlsAllowed) distance=Math.Pow(10,log);
+        float currentLog=(float)Math.Log10(Math.Max(.25,distance));float log=GUI.HorizontalSlider(new Rect(20,65,400,20),currentLog,-.6f,10);if(controlsAllowed&&log!=currentLog)distance=Math.Pow(10,log);
         if(GUI.Button(new Rect(20,90,100,22),"low")&&controlsAllowed) { state.preset="low"; policyDirty=true; } if(GUI.Button(new Rect(130,90,100,22),"balanced")&&controlsAllowed) { state.preset="balanced"; policyDirty=true; } if(GUI.Button(new Rect(240,90,100,22),"high")&&controlsAllowed) { state.preset="high"; policyDirty=true; }
         GUI.Label(new Rect(20,120,410,30),generation!=null&&generation.Whole!=null?state.wholeCapturedRenderers+" captured / "+state.wholeOmittedRenderers+" omitted / "+state.fixtureInstances+" slots":state.fixtureInstances+" rows / "+state.fixtureMeshes+" meshes / "+state.materialMode);
         GUI.Label(new Rect(450,10,Screen.width-460,70),state.debugLegend);
