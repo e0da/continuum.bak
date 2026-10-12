@@ -318,7 +318,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     ScientificView CurrentScientificView()
     {
         Vector3 right=present.transform.right,up=present.transform.up,forward=present.transform.forward;
-        return new ScientificView(new ScientificVector3(cameraAnchor[0],cameraAnchor[1],cameraAnchor[2]),new ScientificVector3(right.x,right.y,right.z),new ScientificVector3(up.x,up.y,up.z),new ScientificVector3(forward.x,forward.y,forward.z),Screen.width,Screen.height,present.orthographic?ScientificProjectionKind.Orthographic:ScientificProjectionKind.Perspective,present.fieldOfView,present.orthographicSize*2,present.nearClipPlane,present.farClipPlane);
+        double far=Math.Max(present.farClipPlane,Math.Max(craftCamera.farClipPlane,bodyCamera.farClipPlane));
+        return new ScientificView(new ScientificVector3(cameraAnchor[0],cameraAnchor[1],cameraAnchor[2]),new ScientificVector3(right.x,right.y,right.z),new ScientificVector3(up.x,up.y,up.z),new ScientificVector3(forward.x,forward.y,forward.z),Screen.width,Screen.height,present.orthographic?ScientificProjectionKind.Orthographic:ScientificProjectionKind.Perspective,present.fieldOfView,present.orthographicSize*2,.001,far);
     }
     void TrailCommand(string[] words)
     {
