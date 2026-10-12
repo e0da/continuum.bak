@@ -6,6 +6,14 @@ using UnityEngine;
 
 public sealed class ScientificOverlay : IDisposable
 {
+    [Serializable] public sealed class AnnotationData
+    {
+        public string id,kind,label,unit,validity,plane,positionPolicy;
+        public double value,radius,spacing;
+        public int cells;
+        public bool valid;
+        public double[] a,b,axisU,axisV;
+    }
     [Serializable] public sealed class StatusData
     {
         public string schema="continuum-scientific-overlay/v1",depthPolicy="overlay-first-unoccluded",status="installed",lastError="",gridPlane="view",ringPolicy="64 world-plane chords; no projected circle-error guarantee",annotationScope="Authored diagnostics only; no simulation, physical culling or reentry prediction";
@@ -13,6 +21,8 @@ public sealed class ScientificOverlay : IDisposable
         public long generation,drawCalls;
         public bool gridEnabled;
         public double gridSpacingMeters,gridExtentMeters,gridRequestedExtentMeters;
+        public double[] focusPosition=new double[3];
+        public AnnotationData[] rows=new AnnotationData[0];
     }
     public readonly StatusData Status=new StatusData();
     readonly AnnotationStore store=new AnnotationStore(256);
@@ -25,7 +35,7 @@ public sealed class ScientificOverlay : IDisposable
 
     public void SetFocus(ScientificVector3 position)
     {
-        Finite(position.x);Finite(position.y);Finite(position.z);if(Math.Abs(position.x)>1e15||Math.Abs(position.y)>1e15||Math.Abs(position.z)>1e15)throw new ArgumentException("Focus exceeds coordinate bounds.");focus=position;
+        Finite(position.x);Finite(position.y);Finite(position.z);if(Math.Abs(position.x)>1e15||Math.Abs(position.y)>1e15||Math.Abs(position.z)>1e15)throw new ArgumentException("Focus exceeds coordinate bounds.");focus=position;Status.focusPosition[0]=position.x;Status.focusPosition[1]=position.y;Status.focusPosition[2]=position.z;
     }
     public void Publish(ScientificAnnotation annotation)
     {
@@ -80,7 +90,20 @@ public sealed class ScientificOverlay : IDisposable
         }
         catch(Exception e) {Status.rejectedCommands++;Status.lastError=e.Message;throw;}
     }
-    void Refresh() {Status.annotations=store.Count;Status.generation=store.Generation;}
+    void Refresh()
+    {
+        Status.annotations=store.Count;Status.generation=store.Generation;
+        var rows=new AnnotationData[store.Count];
+        for(int i=0;i<rows.Length;i++)
+        {
+            ScientificAnnotation item=store.At(i);string plane;bool selectedPlane=planes.TryGetValue(item.id,out plane);
+            if(item.id=="~grid")plane=Status.gridPlane;
+            ScientificVector3 u=item.axisU,v=item.axisV;if(plane!=null&&plane!="view")Axes(plane,null,out u,out v);
+            rows[i]=new AnnotationData {id=item.id,kind=item.kind.ToString(),label=item.label,unit=item.unit,value=item.value,valid=item.valid,validity=item.valid?"valid":"stale",a=Coordinates(item.a),b=Coordinates(item.b),axisU=Coordinates(u),axisV=Coordinates(v),radius=item.radius,spacing=item.spacing,cells=item.cells,plane=plane??"explicit-axes",positionPolicy=item.id=="~grid"?"focus-relative; origin is current status.focusPosition; view plane axes follow scientific view":selectedPlane&&plane=="view"?"world-center; axes follow current scientific view right/up":"absolute-world; explicit plane axes"};
+        }
+        Status.rows=rows;
+    }
+    static double[] Coordinates(ScientificVector3 p) {return new[] {p.x,p.y,p.z};}
     public void Draw(ScientificView view)
     {
         if(disposed||view==null||Event.current==null||Event.current.type!=EventType.Repaint)return;
