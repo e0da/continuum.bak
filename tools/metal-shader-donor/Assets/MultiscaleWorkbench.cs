@@ -169,9 +169,9 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         Command cmd; while(queue.TryDequeue(out cmd)) { Interlocked.Decrement(ref queued); bool quitting=false; try { Execute(cmd.Text); cmd.Reply=JsonUtility.ToJson(state); quitting=cmd.Text=="quit"; } catch(Exception e) { cmd.Reply="{\"error\":\""+e.Message.Replace("\"","'")+"\"}"; } finally { if(trail!=null) trail.HoldClock(); } cmd.Done=true; if(quitting) StartCoroutine(QuitAfterReply(cmd)); }
         if(quitRequested) return;
         if(trail!=null) try { trail.Tick(capturing||state.benchmarkActive); } catch(Exception error) { trail.Pause(); state.error="Trail paused: "+error.Message; Write(); }
-        if(replay!=null&&!capturing&&!state.benchmarkActive) try { replay.Tick(); state.replay=replay.Status; } catch(Exception error) { replay.Fault(error); state.replay=replay.Status; Write(); }
-        if(replay==null&&!capturing&&!state.benchmarkActive&&Time.realtimeSinceStartup>=pollAt) { pollAt=Time.realtimeSinceStartup+1; try { if(Hash(state.scenePath)!=seen) Reload(state.scenePath,false); } catch(Exception e) { state.error="Rejected reload: "+e.Message; Write(); } finally { if(trail!=null) trail.HoldClock(); } }
-        if(!capturing&&!state.benchmarkActive&&Input.mouseScrollDelta.y!=0) distance=Math.Max(.25,Math.Min(1e10,distance*Math.Exp(-Input.mouseScrollDelta.y*.15)));
+        if(replay!=null&&!capturing&&!state.benchmarkActive&&(trail==null||!trail.Status.probeInstalled)) try { replay.Tick(); state.replay=replay.Status; } catch(Exception error) { replay.Fault(error); state.replay=replay.Status; Write(); }
+        if(replay==null&&!capturing&&!state.benchmarkActive&&(trail==null||!trail.Status.probeInstalled)&&Time.realtimeSinceStartup>=pollAt) { pollAt=Time.realtimeSinceStartup+1; try { if(Hash(state.scenePath)!=seen) Reload(state.scenePath,false); } catch(Exception e) { state.error="Rejected reload: "+e.Message; Write(); } finally { if(trail!=null) trail.HoldClock(); } }
+        if(!capturing&&!state.benchmarkActive&&(trail==null||!trail.Status.probeInstalled)&&Input.mouseScrollDelta.y!=0) distance=Math.Max(.25,Math.Min(1e10,distance*Math.Exp(-Input.mouseScrollDelta.y*.15)));
     }
     void LateUpdate()
     {
@@ -242,6 +242,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     void Execute(string text)
     {
         string[] words=text.Split(new[] {' '},StringSplitOptions.RemoveEmptyEntries); if(words.Length==0) return; if(capturing) throw new InvalidOperationException("Capture controls frozen."); if(quitRequested) throw new InvalidOperationException("Owned shutdown pending."); if(state.benchmarkActive) { if(benchmarkCapturing) benchmark.commandsDuringCapture++; if(words[0]!="status"&&words[0]!="quit"&&words[0]!="cancelbenchmark") throw new InvalidOperationException("Benchmark freezes controls/captures/HMR."); } state.commands++;
+        if(trail!=null&&trail.Status.probeInstalled&&words[0]!="status"&&words[0]!="quit"&&words[0]!="captureframe"&&words[0]!="viewport"&&!(words[0]=="trail"&&((words.Length==3&&words[1]=="probe"&&words[2]=="off")||(words.Length==2&&words[1]=="remove")))) throw new InvalidOperationException("Depth/UV probe freezes scene, camera and history controls; turn probe off first.");
         if(words[0]=="quit"&&words.Length==1) { if(state.benchmarkActive) EndBenchmark("interrupted","operator-quit"); quitRequested=true; state.status="stopping"; Write(); return; }
         if(words[0]=="status") { if(!state.benchmarkActive) Write(); return; }
         if(words[0]=="benchmark"&&words.Length==3) { BeginBenchmark(Number(words[1]),Number(words[2])); return; }
@@ -291,13 +292,14 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
             var old=trail; trail=next; state.trail=next.Status; state.trailInstalled=true; if(old!=null) old.Dispose(); return;
         }
         if(trail==null) throw new InvalidOperationException("Create trail fixture first.");
-        if(words.Length==2&&words[1]=="reset") trail.Reset();
+        if(words.Length==3&&words[1]=="probe"&&(words[2]=="on"||words[2]=="off")) { if(words[2]=="on"&&(replay!=null||state.view!="composed")) throw new InvalidOperationException("Synthetic depth/UV probe requires composed static scene without replay."); trail.Probe(words[2]=="on"); }
+        else if(words.Length==2&&words[1]=="reset") trail.Reset();
         else if(words.Length==2&&words[1]=="pause") trail.Pause();
         else if((words.Length==2||words.Length==3)&&words[1]=="play") trail.Play(words.Length==3?Number(words[2]):1);
         else if(words.Length==3&&words[1]=="step") trail.Step(Number(words[2]));
         else if(words.Length==5&&words[1]=="wind") trail.Wind(Number(words[2]),Number(words[3]),Number(words[4]));
         else if(words.Length==3&&words[1]=="emission"&&(words[2]=="on"||words[2]=="off")) trail.Emission(words[2]=="on");
-        else throw new InvalidDataException("trail fixture|remove|reset|pause|play [RATE]|step SECONDS|wind X Y Z|emission on/off");
+        else throw new InvalidDataException("trail fixture|remove|probe on/off|reset|pause|play [RATE]|step SECONDS|wind X Y Z|emission on/off");
     }
     void BeginBenchmark(double warmup,double seconds)
     {

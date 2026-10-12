@@ -47,3 +47,22 @@ The portable check command is `dotnet run --project tests/KspContinuum.Trails.Te
 The private matching-2019 Metal consumer has rendered visible parcels beside the captured craft and Kerbin. Exact live readbacks establish emission-off persistence, future wind without teleporting, analytical two-second transport, view-origin history preservation, advancement in 4x mode, lifetime expiry and debug-shader HMR history. A viewport change from 1920x1080 to 1280x720 preserved the clock/history and rebuilt the retained command batch once without another history upload. Rejected viewport inputs preserved the admitted request. Shutdown acknowledged the reply, requested owned resource destruction, restored host settings/hooks, and exited.
 
 Native craft/body occlusion, general Metal/OpenGL UV orientation and GPU-fence completion remain unqualified. The body-hidden scene's parcel radius was only 0.000679 pixels, so its absence cannot prove GPU occlusion. Visible composition and readbacks establish neither weather realism nor live KSP exhaust integration, exact wall-time warp rate, visual fidelity or runtime performance.
+
+## Resolvable synthetic depth and UV probe
+
+In a static composed view without a bound replay, `trail probe on` temporarily replaces only trail draw parcels/depth inputs with a fixed witness. It keeps the same mesh, retained clear/draw commands, shader occlusion pass, radial alpha, and final overlay pass. Regular history stays frozen and unchanged. Scene/camera/history controls and automatic scene reload freeze; status, capture, viewport, quit, probe-off and removal remain available. `trail probe off` restores normal drawing and the previous paused/emission/time/generation values, recording `historyRestored` and resetting the wall clock. Probe state has an authoritative `probeInstalled` boolean independent of nested JSON defaults.
+
+Two actual uploaded 64×64 RFloat textures use Point/Clamp/no mips, zero for no geometry. Craft depth is 10 m in texture-UV rectangle `[.125,.375) × [.25,.75)`; body depth is 20 m in `[.625,.875) × [.125,.625)`. The probe background samples these same textures: craft occupancy is dark red, body occupancy dark blue. It does not encode expected parcel outcomes or bypass the real occlusion comparisons.
+
+| Parcel | Texture UV center | Eye depth | Expected center |
+| --- | --- | --- | --- |
+| Green | (.25,.375) | 8 m | Visible before craft |
+| Red | (.25,.625) | 12 m | Hidden by craft |
+| Cyan | (.75,.25) | 18 m | Visible before body |
+| Yellow | (.75,.5) | 22 m | Hidden by body |
+| Magenta | (.5,.875) | 15 m | Visible, upper empty region |
+| White | (.5,.125) | 15 m | Visible, lower empty region |
+
+UV is normalized from the bottom left; a top-left PNG center is `(u*width,(1-v)*height)`. Billboard radius is 4.5% of image height, rebuilt from actual FOV/aspect so centers remain resolvable after resize. Prefer at least 1280×720 to keep HUD text away from center neighborhoods. Metadata records actual camera-relative centers, measured eye depths, row-major view/GPU-projection matrices, texture IDs/format/regions, FOV/aspect, viewport, RGBA inputs and expected visibility. A full-viewport PNG should show four saturated visible centers and only dark domain backgrounds at hidden red/yellow centers. Asymmetric region heights plus magenta/white vertical ordering reject a flipped UV path. Small center neighborhoods avoid soft edges and UI text.
+
+This synthetic witness qualifies only these explicit positive-depth/UV inputs on the actual admitted backend. Captured scene-depth correctness, transparent scene occluders and broader atmospheric effects remain separate gates. It is not a physics or performance observation.

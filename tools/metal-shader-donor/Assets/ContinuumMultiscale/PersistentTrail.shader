@@ -41,6 +41,21 @@ Shader "Hidden/Continuum/PersistentTrail"
    float4 composite(v2f_img i):SV_Target { float4 b=tex2D(_MainTex,i.uv),t=tex2D(_TrailColor,i.uv); return float4(b.rgb*(1-t.a)+t.rgb,1); }
    ENDCG
   }
+  Pass
+  {
+   Cull Off ZWrite Off ZTest Always
+   CGPROGRAM
+   #pragma vertex vert_img
+   #pragma fragment probeBackground
+   #include "UnityCG.cginc"
+   sampler2D _CraftDepth,_BodyDepth;
+   float4 probeBackground(v2f_img i):SV_Target
+   {
+    float craft=tex2D(_CraftDepth,i.uv).r,body=tex2D(_BodyDepth,i.uv).r;
+    return float4(craft>0?.2:.015,.02,body>0?.2:.035,1);
+   }
+   ENDCG
+  }
  }
  Fallback Off
 }

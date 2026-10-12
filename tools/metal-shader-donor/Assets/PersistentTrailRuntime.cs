@@ -15,10 +15,26 @@ public sealed class PersistentTrailRuntime : IDisposable
         public double oldestAgeSeconds,newestAgeSeconds;
         public bool paused = true, emission;
         public bool compositionMainTextureProperty,compositionTrailTextureProperty;
+        public bool probeInstalled;
+        public ProbeData probe;
         public int live, capacity = 1024, uploadCount;
         public long expired, capacityEvictions, emitted, generation, uploadBytes, renderedFrames;
         public long submissionTicks, commandBuilds,preparationTicks,simulationTicks,uploadTicks,viewSetupTicks,renderTicks,compositionTicks,clockFrequency=System.Diagnostics.Stopwatch.Frequency;
         public string renderScope = "Reusable bounded billboard mesh; explicit dual scene-depth testing and premultiplied overlay; upload bytes estimate vertex/color payload, not driver allocation";
+    }
+    [Serializable] public sealed class ProbeData
+    {
+        public string scope="Synthetic positive-eye-depth/texture-UV witness using actual trail occlusion and composition passes; not live-scene occlusion qualification",uvConvention="Normalized bottom-left texture UV; PNG top-left rows invert Y";
+        public float[] craftRegion={.125f,.25f,.375f,.75f,10},bodyRegion={.625f,.125f,.875f,.625f,20};
+        public float[] centerUvDepth={.25f,.375f,8,.25f,.625f,12,.75f,.25f,18,.75f,.5f,22,.5f,.875f,15,.5f,.125f,15};
+        public float[] rgba={0,1,0,1,1,0,0,1,0,1,1,1,1,1,0,1,1,0,1,1,1,1,1,1};
+        public bool[] expectedVisible={true,false,true,false,true,true};
+        public int textureSize=64,craftTextureId,bodyTextureId,width,height;
+        public string textureFormat="RFloat",sampler="Point/Clamp/no-mips";
+        public float radiusScreenHeight=.045f,actualFov,actualAspect;
+        public float[] actualCentersCameraRelative=new float[18],actualEyeDepths=new float[6],actualGpuProjection=new float[16],actualView=new float[16];
+        public double historyTimeOnInstall; public long historyGenerationOnInstall;
+        public bool pausedOnInstall,emissionOnInstall,historyRestored;
     }
     public readonly StatusData Status = new StatusData();
     readonly PersistentTrailOwner owner;
@@ -42,7 +58,9 @@ public sealed class PersistentTrailRuntime : IDisposable
     long uploadedGeneration = -1;
     readonly double[] lastOrigin = new double[3];
     Quaternion lastRotation;
+    float lastProbeFov,lastProbeAspect;
     RenderTexture target, composed;
+    Texture2D probeCraft,probeBody;
     double lastWall;
     bool disposed;
     public PersistentTrailRuntime(double[] anchor)
@@ -79,8 +97,32 @@ public sealed class PersistentTrailRuntime : IDisposable
     public void Step(double seconds) { long started=System.Diagnostics.Stopwatch.GetTimestamp(); try { owner.Advance(owner.Time + seconds); Refresh(); } finally { Status.simulationTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-started; } }
     public void Wind(double x, double y, double z) { owner.SetWind(x, y, z); Status.windX=x; Status.windY=y; Status.windZ=z; Refresh(); }
     public void Emission(bool enabled) { owner.SetEmission(enabled); Refresh(); }
+    public void Probe(bool enabled)
+    {
+        if(enabled==Status.probeInstalled) return;
+        if(enabled)
+        {
+            if(probeCraft==null||probeBody==null)
+            {
+                Texture2D craft=null,body=null;
+                try { var recipe=new ProbeData(); craft=DepthMap(recipe.craftRegion); body=DepthMap(recipe.bodyRegion); probeCraft=craft; probeBody=body; }
+                catch { if(craft!=null) UnityEngine.Object.Destroy(craft); if(body!=null) UnityEngine.Object.Destroy(body); throw; }
+            }
+            Status.probe=new ProbeData {craftTextureId=probeCraft.GetInstanceID(),bodyTextureId=probeBody.GetInstanceID(),historyTimeOnInstall=owner.Time,historyGenerationOnInstall=owner.Generation,pausedOnInstall=Status.paused,emissionOnInstall=owner.Emission};
+        }
+        else Status.probe.historyRestored=owner.Time==Status.probe.historyTimeOnInstall&&owner.Generation==Status.probe.historyGenerationOnInstall&&Status.paused==Status.probe.pausedOnInstall&&owner.Emission==Status.probe.emissionOnInstall;
+        Status.probeInstalled=enabled; uploadedGeneration=-1; HoldClock();
+    }
+    static Texture2D DepthMap(float[] region)
+    {
+        var values=new float[64*64];
+        for(int y=0;y<64;y++) for(int x=0;x<64;x++) { float u=(x+.5f)/64,v=(y+.5f)/64; if(u>=region[0]&&u<region[2]&&v>=region[1]&&v<region[3]) values[y*64+x]=region[4]; }
+        var bytes=new byte[values.Length*4]; Buffer.BlockCopy(values,0,bytes,0,bytes.Length);
+        var texture=new Texture2D(64,64,TextureFormat.RFloat,false,true) {filterMode=FilterMode.Point,wrapMode=TextureWrapMode.Clamp,name="Synthetic trail positive depth"};
+        try { texture.LoadRawTextureData(bytes); texture.Apply(false,true); return texture; } catch { UnityEngine.Object.Destroy(texture); throw; }
+    }
     public void Tick(bool frozen)
-    { double now = Time.realtimeSinceStartup, delta = Math.Max(0, Math.Min(.25, now - lastWall)); lastWall = now; if (!frozen && !Status.paused) Step(delta * Status.playbackRate); }
+    { double now = Time.realtimeSinceStartup, delta = Math.Max(0, Math.Min(.25, now - lastWall)); lastWall = now; if (!frozen && !Status.paused&&!Status.probeInstalled) Step(delta * Status.playbackRate); }
     void Refresh()
     { Status.simulationTime = owner.Time; Status.live = owner.Count; Status.expired = owner.Expired; Status.capacityEvictions = owner.CapacityEvictions; Status.emitted = owner.Emitted; Status.generation = owner.Generation; Status.emission = owner.Emission;
         if(owner.Count>0) { var a=owner.At(0); var b=owner.At(owner.Count-1); Status.oldestPositionMeters[0]=a.x; Status.oldestPositionMeters[1]=a.y; Status.oldestPositionMeters[2]=a.z; Status.newestPositionMeters[0]=b.x; Status.newestPositionMeters[1]=b.y; Status.newestPositionMeters[2]=b.z; Status.oldestAgeSeconds=a.age; Status.newestAgeSeconds=b.age; }
@@ -97,8 +139,10 @@ public sealed class PersistentTrailRuntime : IDisposable
         { ReleaseTarget(); target = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear) { filterMode = FilterMode.Point, name = "Trail premultiplied overlay" }; composed = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear) { filterMode = FilterMode.Point, name = "Trail scene composition" }; if (!target.Create() || !composed.Create()) throw new InvalidOperationException("Trail target creation failed."); }
         Quaternion rotation = camera.transform.rotation;
         bool changed = uploadedGeneration != owner.Generation || rotation.x != lastRotation.x || rotation.y != lastRotation.y || rotation.z != lastRotation.z || rotation.w != lastRotation.w;
+        if(Status.probeInstalled) changed|=lastProbeFov!=camera.fieldOfView||lastProbeAspect!=camera.aspect;
         for (int i = 0; i < 3; i++) changed |= lastOrigin[i] != origin[i];
         Matrix4x4 view=camera.worldToCameraMatrix;
+        if(Status.probeInstalled) { Status.probe.width=width; Status.probe.height=height; Status.probe.actualFov=camera.fieldOfView; Status.probe.actualAspect=camera.aspect; }
         Status.viewSetupTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-setupStarted;
         float far = camera.farClipPlane;
         if (changed)
@@ -107,27 +151,36 @@ public sealed class PersistentTrailRuntime : IDisposable
             try
             {
             Vector3 right = rotation * Vector3.right, up = rotation * Vector3.up;
-            for(int i=0;i<owner.Count;i++) { parcels[i]=owner.RelativeAt(i,origin); order[i]=i; ids[i]=parcels[i].id; depths[i]=-view.MultiplyPoint3x4(new Vector3((float)parcels[i].x,(float)parcels[i].y,(float)parcels[i].z)).z; }
-            Array.Sort(order,0,owner.Count,depthOrder);
+            int drawCount=Status.probeInstalled?6:owner.Count;
+            for(int i=0;i<drawCount;i++)
+            {
+                if(Status.probeInstalled) { var recipe=Status.probe; float d=recipe.centerUvDepth[i*3+2],half=d*Mathf.Tan(camera.fieldOfView*Mathf.Deg2Rad*.5f); Vector3 c=rotation*new Vector3((recipe.centerUvDepth[i*3]*2-1)*half*camera.aspect,(recipe.centerUvDepth[i*3+1]*2-1)*half,d); parcels[i]=new PersistentTrailParcel {id=i+1,x=c.x,y=c.y,z=c.z,width=half*recipe.radiusScreenHeight*2,opacity=1}; }
+                else parcels[i]=owner.RelativeAt(i,origin);
+                order[i]=i; ids[i]=parcels[i].id; depths[i]=-view.MultiplyPoint3x4(new Vector3((float)parcels[i].x,(float)parcels[i].y,(float)parcels[i].z)).z;
+                if(Status.probeInstalled) { Status.probe.actualCentersCameraRelative[i*3]=(float)parcels[i].x; Status.probe.actualCentersCameraRelative[i*3+1]=(float)parcels[i].y; Status.probe.actualCentersCameraRelative[i*3+2]=(float)parcels[i].z; Status.probe.actualEyeDepths[i]=(float)depths[i]; }
+            }
+            Array.Sort(order,0,drawCount,depthOrder);
             for (int i = 0; i < Status.capacity; i++)
             {
                 int v = i * 4;
-                if (i >= owner.Count) { for (int j = 0; j < 4; j++) { vertices[v + j] = Vector3.zero; colors[v + j] = Color.clear; } continue; }
+                if (i >= drawCount) { for (int j = 0; j < 4; j++) { vertices[v + j] = Vector3.zero; colors[v + j] = Color.clear; } continue; }
                 var p = parcels[order[i]]; var center = new Vector3((float)p.x, (float)p.y, (float)p.z);
                 Vector3 r = right * (float)p.width, u = up * (float)p.width;
                 vertices[v] = center - r - u; vertices[v + 1] = center + r - u; vertices[v + 2] = center + r + u; vertices[v + 3] = center - r + u;
-                Color c = new Color(.8f, .85f, 1, (float)p.opacity * .35f); for (int j = 0; j < 4; j++) colors[v + j] = c;
+                Color c = Status.probeInstalled?new Color(Status.probe.rgba[order[i]*4],Status.probe.rgba[order[i]*4+1],Status.probe.rgba[order[i]*4+2],1):new Color(.8f, .85f, 1, (float)p.opacity * .35f); for (int j = 0; j < 4; j++) colors[v + j] = c;
             }
             mesh.vertices = vertices; mesh.colors = colors; mesh.RecalculateBounds();
             Status.uploadCount++; Status.uploadBytes += vertices.Length * (12 + 16);
             uploadedGeneration = owner.Generation; lastRotation = rotation; Array.Copy(origin, lastOrigin, 3);
+            lastProbeFov=camera.fieldOfView; lastProbeAspect=camera.aspect;
             }
             finally { Status.uploadTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-uploadStarted; }
         }
         setupStarted=System.Diagnostics.Stopwatch.GetTimestamp();
         far = Math.Max(far, mesh.bounds.center.magnitude + mesh.bounds.extents.magnitude + 1);
         Matrix4x4 projection = GL.GetGPUProjectionMatrix(Matrix4x4.Perspective(camera.fieldOfView, camera.aspect, .001f, far), true);
-        material.SetMatrix("_TrailVP", projection * view); material.SetMatrix("_TrailView", view); material.SetTexture("_CraftDepth", craftDepth); material.SetTexture("_BodyDepth", bodyDepth);
+        if(Status.probeInstalled) for(int r=0;r<4;r++) for(int c=0;c<4;c++) { Status.probe.actualGpuProjection[r*4+c]=projection[r,c]; Status.probe.actualView[r*4+c]=view[r,c]; }
+        material.SetMatrix("_TrailVP", projection * view); material.SetMatrix("_TrailView", view); material.SetTexture("_CraftDepth", Status.probeInstalled?(Texture)probeCraft:craftDepth); material.SetTexture("_BodyDepth", Status.probeInstalled?(Texture)probeBody:bodyDepth);
         if(!commandsRecorded) { commands.Clear(); commands.SetRenderTarget(target); commands.SetViewport(new Rect(0,0,width,height)); commands.ClearRenderTarget(false,true,Color.clear); commands.DrawMesh(mesh,Matrix4x4.identity,material,0,0); commandsRecorded=true; Status.commandBuilds++; }
         Status.viewSetupTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-setupStarted;
         long before = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -137,8 +190,8 @@ public sealed class PersistentTrailRuntime : IDisposable
         finally { RenderTexture.active=old; Status.renderTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-renderStarted; }
     }
     public void Compose(RenderTexture source, RenderTexture destination, Material worldComposite)
-    { long started=System.Diagnostics.Stopwatch.GetTimestamp(); RenderTexture old=RenderTexture.active; try { if(target==null||composed==null) { Graphics.Blit(source,destination,worldComposite); return; } Graphics.Blit(source,composed,worldComposite); material.SetTexture("_MainTex",composed); material.SetTexture("_TrailColor", target); Graphics.Blit(composed, destination, material, 1); } finally { RenderTexture.active=old; Status.compositionTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-started; } }
+    { long started=System.Diagnostics.Stopwatch.GetTimestamp(); RenderTexture old=RenderTexture.active; try { if(target==null||composed==null) { Graphics.Blit(source,destination,worldComposite); return; } if(Status.probeInstalled) Graphics.Blit(source,composed,material,2); else Graphics.Blit(source,composed,worldComposite); material.SetTexture("_MainTex",composed); material.SetTexture("_TrailColor", target); Graphics.Blit(composed, destination, material, 1); } finally { RenderTexture.active=old; Status.compositionTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-started; } }
     void ReleaseTarget() { commandsRecorded=false; if(commands!=null) commands.Clear(); if (target != null) { target.Release(); UnityEngine.Object.Destroy(target); target = null; } if(composed!=null) { composed.Release(); UnityEngine.Object.Destroy(composed); composed=null; } }
     public void Dispose()
-    { if (disposed) return; disposed = true; ReleaseTarget(); if (commands != null) commands.Release(); if (mesh != null) UnityEngine.Object.Destroy(mesh); if (material != null) UnityEngine.Object.Destroy(material); Status.cleanupStatus = "owned-resources-destruction-requested"; Status.status = "disposed"; }
+    { if (disposed) return; disposed = true; Status.probeInstalled=false; if(probeCraft!=null) UnityEngine.Object.Destroy(probeCraft); if(probeBody!=null) UnityEngine.Object.Destroy(probeBody); ReleaseTarget(); if (commands != null) commands.Release(); if (mesh != null) UnityEngine.Object.Destroy(mesh); if (material != null) UnityEngine.Object.Destroy(material); Status.cleanupStatus = "owned-resources-destruction-requested"; Status.status = "disposed"; }
 }
