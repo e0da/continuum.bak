@@ -247,7 +247,14 @@ namespace KspContinuum
                 FlightIntegratorUpdateAttribution.SameMethod(code[getter].operand as MethodBase, Item) && Equals(code[seam + 1].operand, RowFields[kind]) &&
                 LoadLocal(code[seam + 2]) && Enumerable.Range(seam + 1, 3).All(i => code[i].labels.Count == 0), "Cylinder empty-stack fold entry differs.");
             // A conditional sort may branch to this entry, never into its receiver/index stack expression.
-            Require(code[seam].labels.Count <= 2 && getter + 1 < code.Count && code[getter + 1].opcode.Name.StartsWith("stloc", StringComparison.Ordinal),
+            int store = getter + 1;
+            if (store < code.Count && code[store].opcode == OpCodes.Dup)
+            {
+                Require(store + 1 < code.Count && code[store + 1].opcode == OpCodes.Pop &&
+                    code[store].labels.Count == 0 && code[store + 1].labels.Count == 0, "Cylinder first row neutral stack pair differs.");
+                store += 2;
+            }
+            Require(code[seam].labels.Count <= 2 && store < code.Count && code[store].opcode.Name.StartsWith("stloc", StringComparison.Ordinal),
                 "Cylinder first row store differs.");
             return seam;
         }
