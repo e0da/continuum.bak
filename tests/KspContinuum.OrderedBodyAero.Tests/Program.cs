@@ -46,6 +46,10 @@ class Program
         Require(!OrderedBodyAeroGate.TryValidate(p, reference, out token, out reason), "Application point drift accepted.");
         reference = Oracle(p); reference.rows[0].dragScalar *= 1.001f;
         Require(!OrderedBodyAeroGate.TryValidate(p, reference, out token, out reason), "Frozen numerical gate widened.");
+        var boundary = Input(); boundary.rows[0].originalDragValue = 10;
+        var boundaryReference = Oracle(boundary); boundaryReference.rows[0].dragScalar = 1.0000205f;
+        boundaryReference.rows[0].commands[2].force.x = -1;
+        Require(!OrderedBodyAeroGate.TryValidate(boundary, boundaryReference, out token, out reason), "Additive absolute tolerance widened the original donor bound above magnitude one.");
         p.rows[0].submergedPortion = .1;
         Require(!OrderedBodyAeroGate.TryValidate(p, Oracle(p), out token, out reason), "Unsupported water path admitted.");
         p = Input(); p.rows[0].originalDragValue = double.NaN; p.rows[0].bodyLiftEligible = false;

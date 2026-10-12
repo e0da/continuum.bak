@@ -138,7 +138,7 @@ impl Camera {
         )?;
         Ok([
             (clip[0] / clip[3] * 0.5 + 0.5) * self.width as f64,
-            (0.5 - clip[1] / clip[3] * 0.5) * self.height as f64,
+            (0.5 + clip[1] / clip[3] * 0.5) * self.height as f64,
             -eye[2],
         ])
     }
@@ -383,7 +383,7 @@ fn proof(paths: &[String], bytes: &[Vec<u8>]) -> Result<Value> {
     let slope = 1. / (fov.to_radians() / 2.).tan();
     require(
         (projection[0] - slope * h as f64 / w as f64).abs() <= 1e-5
-            && (projection[5] - slope).abs() <= 1e-5
+            && (projection[5] + slope).abs() <= 1e-5
             && projection[11].is_finite()
             && projection[14] == -1.
             && projection[15] == 0.,
@@ -591,7 +591,7 @@ fn proof(paths: &[String], bytes: &[Vec<u8>]) -> Result<Value> {
             }
         }
     }
-    let passed = matched >= 32 && interior >= 16;
+    let passed = matched >= 32 && interior >= 16 && matched == changed;
     Ok(
         json!({"status":if passed{"passed"}else{"failed"},"error":if passed{""}else{"Insufficient measured-path/interior pixel coverage"},"ownedPid":on["processId"],"assemblySha256":on["assemblySha256"],"sceneSha256":on["sceneSha256"],"wholeCraftSha256":on["wholeCraftSha256"],"recordingSha256":trail["recordingSha256"],"sourceRunId":wire["runId"],"sourceProcessId":wire["processId"],"simulationTime":time,"cursor":cursor,"sourceRows":rows.len(),"sourceVisibleSpans":covered,"segments":checks,"width":w,"height":h,"maximumIndependentScreenErrorPixels":max_screen,"maximumIndependentDepthErrorMeters":max_depth,"changedRgbPixelsOutsideHud":changed,"matchedSourcePathPixels":matched,"unmatchedSourcePathPixels":changed-matched,"connectedInteriorPixels":interior,"changes":changes,"changesTruncated":changed>4096,"incidentalTopFieldsExcluded":top_incidental,"incidentalTrailFieldsExcluded":trail_incidental}),
     )

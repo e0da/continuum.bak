@@ -80,7 +80,7 @@ namespace KspContinuum
         }
         static int Bits(float value) { return BitConverter.ToInt32(BitConverter.GetBytes(value), 0); }
         static void Number(double a, double b)
-        { Require(BodyAeroVector.Number(a) && BodyAeroVector.Number(b) && Math.Abs(a - b) <= AbsoluteTolerance + RelativeTolerance * Math.Abs(b), "Body-aero scalar/force tolerance exceeded."); }
+        { Require(BodyAeroVector.Number(a) && BodyAeroVector.Number(b) && Math.Abs(a - b) <= Math.Min(AbsoluteTolerance + RelativeTolerance * Math.Abs(b), RelativeTolerance * Math.Max(1, Math.Abs(b))), "Body-aero scalar/force tolerance exceeded."); }
         static void Require(bool value, string reason) { if (!value) throw new ArgumentException(reason); }
     }
 }
