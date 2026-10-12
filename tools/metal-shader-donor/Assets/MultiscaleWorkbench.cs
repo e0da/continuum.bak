@@ -44,6 +44,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         public float yaw,pitch,fov,bodyNear,bodyFar,craftNear,craftFar;
         public string projection="perspective"; public float verticalSpanMeters; public double pixelsPerMeterAtFocus;
         public ScientificOverlay.StatusData scientificOverlay;
+        public ScientificCameraControls.StatusData cameraControls;
+        public float[] cameraRotation;
         public float bodyWorldScale,craftWorldScale,bodyMipBias,craftMipBias,bodyGeometryErrorPixels,craftGeometryErrorPixels;
         public string bodyPolicy,craftPolicy,bodyShadowPolicy,craftShadowPolicy;
         public bool reversedZ,uiNativeResolution=true,opaqueOnly=true,splashFinishedAtCapture,quitReplyWritten;
@@ -51,6 +53,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     sealed class Generation : IDisposable
     {
         public MultiscaleSceneManifest Scene; public ResidentMaterialRuntime Craft; public WholeCraftRuntime Whole; public Mesh Body; public Texture2D Texture; public Material Material,DebugMaterial; public string Hash;
+        public ScientificAnchorCatalog Anchors; public ScientificCameraControls.Anchor[] CameraAnchors;
         public Bounds CraftBounds { get { return Whole==null?Craft.Bounds:Whole.Bounds; } }
         public Vector3 Center(string id,out float radius) { return Whole==null?Craft.PresentationInstanceCenter(id,out radius):Whole.PresentationInstanceCenter(id,out radius); }
         public void Debug(string mode) { if(Whole!=null) Whole.SetGeometryDebug(mode); else Craft.SetGeometryDebug(mode); }
@@ -66,6 +69,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     VesselReplaySession replay;
     PersistentTrailRuntime trail;
     readonly ScientificOverlay scientificOverlay=new ScientificOverlay();
+    readonly ScientificCameraControls cameraControls=new ScientificCameraControls();
     float? perspectiveFov;
     PresentationQualityOverride[] overrides=new PresentationQualityOverride[0]; Generation generation; Camera present,craftCamera,bodyCamera; Target craftTarget,bodyTarget; Material composite,depthCopy;
     EffectivePresentationQuality craftQuality,bodyQuality; bool policyDirty=true;
@@ -156,15 +160,65 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     void Reload(string path,bool initial)
     {
         if(replay!=null) throw new InvalidOperationException("Scene reload frozen while a recording is bound.");
-        var next=Prepare(path); try { if(generation!=null) generation.Craft.ValidateActivationTransferTo(next.Craft); next.Craft.Activate(craftCamera,false); if(generation!=null) generation.Craft.TransferActivationTo(next.Craft); }
+        var next=Prepare(path); try { PrepareCameraAnchors(next);cameraControls.ValidateReplacement(next.CameraAnchors);if(generation!=null) generation.Craft.ValidateActivationTransferTo(next.Craft); next.Craft.Activate(craftCamera,false); if(generation!=null) generation.Craft.TransferActivationTo(next.Craft); }
         catch { next.Dispose(); throw; }
         var previous=generation; generation=next; policyDirty=true; if(previous!=null) previous.Dispose(); state.scenePath=path; state.sceneSha256=seen=next.Hash; state.vesselFixtureSha256=next.Scene.vesselFixtureSha256; state.bodyGeometrySha256=next.Scene.bodyGeometrySha256; state.bodyTextureSha256=next.Scene.bodyTexture.payloadSha256; state.bodyRecipe=next.Scene.bodyMaterialRecipe; state.bodyTextureCapture=next.Scene.bodyTextureCapture; state.partBundleSha256=next.Craft.BundleSha256; state.originalBundleSha256=next.Craft.OriginalBundleSha256; state.sceneReloads++;
         if(trail!=null) { trail.Dispose(); trail=null; state.trail=null; } state.trailInstalled=false;
-        if(initial) { state.focus=next.Scene.initialCameraTarget; var o=next.Scene.initialCameraOffsetMeters; distance=Math.Sqrt(o[0]*o[0]+o[1]*o[1]+o[2]*o[2]); yaw=(float)(Math.Atan2(-o[0],-o[2])*180/Math.PI); pitch=(float)(Math.Asin(o[1]/distance)*180/Math.PI); }
+        string preferred=next.Scene.initialCameraTarget==next.Scene.bodyId?next.Scene.bodyId:next.Anchors==null?next.Scene.vesselId:next.Anchors.preferredId;
+        cameraControls.SetAnchors(next.CameraAnchors,preferred);
+        if(initial) { state.focus=next.Scene.initialCameraTarget; var o=next.Scene.initialCameraOffsetMeters; distance=Math.Sqrt(o[0]*o[0]+o[1]*o[1]+o[2]*o[2]); yaw=(float)(Math.Atan2(-o[0],-o[2])*180/Math.PI); pitch=(float)(Math.Asin(o[1]/distance)*180/Math.PI);cameraControls.SetWorldUpOrbit(yaw,pitch); }
+        SyncCameraSelection();
         SelectView(state.view);
         state.fixtureInstances=generation.Craft.InstanceCount; state.fixtureMeshes=generation.Craft.MeshCount; state.fixtureTextures=generation.Craft.Manifest.textures.Length; state.fixtureFamily=generation.Craft.Manifest.family;
         state.materialMode=generation.Whole==null?generation.Craft.Mode:generation.Whole.RenderMode+"-diagnostic";
         if(generation.Whole!=null) { var w=generation.Whole; state.craftConsumer="whole-craft-diagnostic"; state.wholeCraftSha256=w.ManifestSha256; state.wholeGeometrySha256=w.GeometrySha256; state.fixtureInstances=w.Manifest.draws.Length; state.fixtureMeshes=w.MeshCount; state.fixtureTextures=w.Manifest.textures.Length; state.fixtureFamily="multiple original families, approximate diagnostic"; state.fixtureScope="Whole captured triangle fixture; explicit omissions, not faithful whole craft"; state.wholeAppearance="two-sided opaque approximate MainTex/ST*tint*actual vertexRGB; no normal-map/specular/transparency parity"; state.wholeDependency="Mapped subset retained only for captured camera/light/global lease; no subset draws"; state.wholeRendererInventory=w.Manifest.rendererInventory; state.wholeCapturedRenderers=w.Manifest.capturedRenderers; state.wholeOmittedRenderers=w.Manifest.omittedRenderers; state.wholeDrawSlots=w.Manifest.drawSlots; state.wholeMissingNormals=w.MissingNormals; state.wholeMissingUV=w.MissingUV; state.wholeDefaultWhiteColors=w.DefaultWhiteColors; state.wholeUnknownCull=w.UnknownCull; state.wholeApproximateTransparency=w.ApproximateTransparency; state.wholeNoAlbedoTexture=w.NoAlbedoTexture; state.wholeNonvisibleDraws=w.NonvisibleDraws; state.wholeRawTexturePayloadBudgetBytes=WholeCraftRuntime.RawTexturePayloadBudgetBytes; state.wholeRawTexturePayloadBytes=w.RawTexturePayloadBytes; state.wholeForceRenderingOffObserved=w.ForceRenderingOffObserved; state.wholePropertyBlockObserved=w.PropertyBlockObserved; state.wholeFrozenSkinObserved=w.FrozenSkinObserved; state.debugInputs="Whole actual geometry/colors/poses; captured material properties and MainTex/ST; property blocks are observed but not reproduced"; state.wholeCoverage="Captured geometry draws only; omissions/nonvisible rows retained in immutable manifest"; } else { state.craftConsumer="mapped-subset"; state.fixtureScope="Captured material-family subset; not whole craft"; }
+    }
+    static ScientificVector3 Point(double[] p) {return new ScientificVector3(p[0],p[1],p[2]);}
+    static Vector3 FloatVector(ScientificVector3 p) {return new Vector3((float)p.x,(float)p.y,(float)p.z);}
+    void PrepareCameraAnchors(Generation next)
+    {
+        var s=next.Scene;var rows=new List<ScientificCameraControls.Anchor>();
+        if(s.scientificAnchors!=null)
+        {
+            next.Anchors=ScientificAnchors.Admit(s.scientificAnchors,s.runId,s.processId,s.vesselId,s.bodyId,s.sourceFrame);
+            for(int i=0;i<next.Anchors.Count;i++) {var a=next.Anchors.At(i);Quaternion q=Quaternion.identity;if(a.axesAvailable&&!ScientificCameraControls.TryBasis(FloatVector(a.right),FloatVector(a.up),FloatVector(a.forward),out q))throw new InvalidDataException("Captured scientific anchor axes cannot form a right-handed camera frame: "+a.id);rows.Add(new ScientificCameraControls.Anchor(a.kind,a.id,a.label,ScientificAnchors.Resolve(a,Point(s.vesselAnchorMeters)),q,a.axesAvailable));}
+        }
+        else
+        {
+            Quaternion basis;bool axes=ScientificCameraControls.TryBasis(next.Whole==null?next.Craft.Manifest.rootToWorld:next.Whole.Manifest.rootToWorld,out basis);
+            rows.Add(new ScientificCameraControls.Anchor("vessel-origin",s.vesselId,"Captured vessel origin / capture-epoch vessel axes",Point(s.vesselAnchorMeters),basis,axes));
+        }
+        rows.Add(new ScientificCameraControls.Anchor("body",s.bodyId,"Captured body origin / world axes",Point(s.bodyAnchorMeters),Quaternion.identity));
+        if(cameraControls.Initialized)
+        {
+            AddRetainedInstanceAnchor(next,rows,cameraControls.Focus);if(cameraControls.GridReference!=cameraControls.Focus)AddRetainedInstanceAnchor(next,rows,cameraControls.GridReference);
+            if(cameraControls.AxisReference!=null&&cameraControls.AxisReference!=cameraControls.Focus&&cameraControls.AxisReference!=cameraControls.GridReference)AddRetainedInstanceAnchor(next,rows,cameraControls.AxisReference);
+        }
+        next.CameraAnchors=rows.ToArray();
+    }
+    void AddRetainedInstanceAnchor(Generation next,List<ScientificCameraControls.Anchor> rows,ScientificCameraControls.Anchor previous)
+    {
+        if(previous.kind!="instance")return;float radius;Vector3 local=next.Center(previous.id,out radius);double[] origin=next.Scene.vesselAnchorMeters;Quaternion basis;bool axes=ScientificCameraControls.TryBasis(next.Whole==null?next.Craft.Manifest.rootToWorld:next.Whole.Manifest.rootToWorld,out basis);
+        rows.Add(new ScientificCameraControls.Anchor("instance",previous.id,"Captured draw instance "+previous.id+" / vessel axes",new ScientificVector3(origin[0]+local.x,origin[1]+local.y,origin[2]+local.z),basis,axes));
+    }
+    void UpdateCameraAnchors(double[] vesselOrigin)
+    {
+        var s=generation.Scene;
+        if(generation.Anchors!=null)for(int i=0;i<generation.Anchors.Count;i++) {var a=generation.Anchors.At(i);Quaternion q=Quaternion.identity;if(a.axesAvailable&&!ScientificCameraControls.TryBasis(FloatVector(a.right),FloatVector(a.up),FloatVector(a.forward),out q))throw new InvalidDataException("Captured anchor frame changed.");cameraControls.UpdateAnchor(a.kind,a.id,ScientificAnchors.Resolve(a,Point(vesselOrigin)),q,a.axesAvailable);}
+        else {var a=generation.CameraAnchors[0];cameraControls.UpdateAnchor(a.kind,a.id,Point(vesselOrigin),a.basis,a.axesAvailable);}
+        if(cameraControls.Focus.kind=="instance")UpdateInstanceAnchor(cameraControls.Focus,vesselOrigin);
+        if(cameraControls.GridReference.kind=="instance"&&cameraControls.GridReference!=cameraControls.Focus)UpdateInstanceAnchor(cameraControls.GridReference,vesselOrigin);
+        if(cameraControls.AxisReference!=null&&cameraControls.AxisReference.kind=="instance"&&cameraControls.AxisReference!=cameraControls.Focus&&cameraControls.AxisReference!=cameraControls.GridReference)UpdateInstanceAnchor(cameraControls.AxisReference,vesselOrigin);
+    }
+    void UpdateInstanceAnchor(ScientificCameraControls.Anchor a,double[] origin)
+    {float radius;Vector3 local=generation.Center(a.id,out radius);cameraControls.UpdateAnchor(a.kind,a.id,new ScientificVector3(origin[0]+local.x,origin[1]+local.y,origin[2]+local.z),a.basis,a.axesAvailable);}
+    void SyncCameraSelection()
+    {state.focus=cameraControls.Focus.kind=="body"?generation.Scene.bodyId:generation.Scene.vesselId;state.focusInstance=cameraControls.Focus.kind=="instance"?cameraControls.Focus.id:null;state.cameraControls=cameraControls.Status;state.cameraRotation=cameraControls.Status.rotation;}
+    void SelectInstance(string id)
+    {
+        float radius;Vector3 local=generation.Center(id,out radius);var s=generation.Scene;Quaternion q;bool axes=ScientificCameraControls.TryBasis(generation.Whole==null?generation.Craft.Manifest.rootToWorld:generation.Whole.Manifest.rootToWorld,out q);
+        cameraControls.Upsert(new ScientificCameraControls.Anchor("instance",id,"Captured draw instance "+id+" / vessel axes",new ScientificVector3(s.vesselAnchorMeters[0]+local.x,s.vesselAnchorMeters[1]+local.y,s.vesselAnchorMeters[2]+local.z),q,axes));
+        cameraControls.Handle(new[] {"camera","focus","instance",id});distance=Math.Max(.25,radius*3);SyncCameraSelection();
     }
     void Update()
     {
@@ -183,12 +237,11 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         try
         {
             var s=generation.Scene; double[] vesselAnchor=trail!=null&&!string.IsNullOrEmpty(trail.Status.recordingPath)?trail.Status.recordedRootScene:s.vesselAnchorMeters;
-            bool bodyFocus=state.focus==s.bodyId; double[] anchor=bodyFocus?s.bodyAnchorMeters:vesselAnchor;
-            if(state.focusInstance!=null) { float instanceRadius; Vector3 local=generation.Center(state.focusInstance,out instanceRadius); for(int i=0;i<3;i++) focusAnchor[i]=vesselAnchor[i]+local[i]; anchor=focusAnchor; } state.focusTargetMeters=anchor;
-            if(bodyFocus) distance=Math.Max(distance,s.bodyRadiusMeters*1.01); Vector3 offset=Quaternion.Euler(pitch,yaw,0)*Vector3.back;
+            UpdateCameraAnchors(vesselAnchor);SyncCameraSelection();var selected=cameraControls.Focus.position;focusAnchor[0]=selected.x;focusAnchor[1]=selected.y;focusAnchor[2]=selected.z;double[] anchor=focusAnchor;state.focusTargetMeters=anchor;
+            bool bodyFocus=cameraControls.Focus.kind=="body";if(bodyFocus) distance=Math.Max(distance,s.bodyRadiusMeters*1.01);Quaternion rotation=cameraControls.Rotation;Vector3 offset=rotation*Vector3.back;
             for(int i=0;i<3;i++) cameraAnchor[i]=anchor[i]+offset[i]*distance;
             float x,y,z; MultiscaleSceneFormat.RelativePosition(vesselAnchor,cameraAnchor,out x,out y,out z); if(generation.Whole==null) generation.Craft.SetPresentationAnchor(new Vector3(x,y,z)); else generation.Whole.SetPresentationAnchor(new Vector3(x,y,z));
-            Quaternion rotation=Quaternion.LookRotation(-offset,Vector3.up); present.transform.SetPositionAndRotation(Vector3.zero,rotation);
+            present.transform.SetPositionAndRotation(Vector3.zero,rotation);
             craftCamera.transform.SetPositionAndRotation(Vector3.zero,rotation); bodyCamera.transform.SetPositionAndRotation(Vector3.zero,rotation);
             float fov=perspectiveFov??s.fov; bool ortho=state.projection=="ortho";
             present.orthographic=craftCamera.orthographic=bodyCamera.orthographic=ortho;
@@ -266,6 +319,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         if(words[0]=="captureframe") { if(replay!=null) replay.Pause(); StartCoroutine(Capture()); return; }
         if(words[0]=="trail") { TrailCommand(words); return; }
         if(words[0]=="projection") { Projection(words); Write(); return; }
+        if(words[0]=="camera") {if(words.Length>=3&&words[1]=="focus"&&words[2]=="instance"&&words.Length==4)SelectInstance(words[3]);else cameraControls.Handle(words);SyncCameraSelection();Write();return;}
         if(words[0]=="cad") { scientificOverlay.Handle(words); state.scientificOverlay=scientificOverlay.Status; Write(); return; }
         if(words[0]=="viewport"&&words.Length==3)
         {
@@ -284,9 +338,9 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         else if(words[0]=="view"&&words.Length==2) SelectView(words[1]);
         else if(words[0]=="debugshaderreload") ReloadDebugShader(Absolute(text.Substring(words[0].Length).Trim()));
         else if(words[0]=="zoom"&&words.Length==2) distance=Math.Max(.25,Math.Min(1e10,Math.Pow(10,Number(words[1]))));
-        else if(words[0]=="orbit"&&words.Length==3) { yaw=(float)Number(words[1]); pitch=Mathf.Clamp((float)Number(words[2]),-89,89); }
-        else if(words[0]=="focusinstance"&&words.Length==2) { float radius; generation.Center(words[1],out radius); state.focus=generation.Scene.vesselId; state.focusInstance=words[1]; distance=Math.Max(.25,radius*3); }
-        else if(words[0]=="focus"&&words.Length==2&&(words[1]==generation.Scene.vesselId||words[1]==generation.Scene.bodyId)) { state.focus=words[1]; state.focusInstance=null; }
+        else if(words[0]=="orbit"&&words.Length==3) { yaw=(float)Number(words[1]); pitch=Mathf.Clamp((float)Number(words[2]),-89,89);cameraControls.SetWorldUpOrbit(yaw,pitch); }
+        else if(words[0]=="focusinstance"&&words.Length==2)SelectInstance(words[1]);
+        else if(words[0]=="focus"&&words.Length==2&&(words[1]==generation.Scene.vesselId||words[1]==generation.Scene.bodyId)) {cameraControls.Handle(new[] {"camera","focus",words[1]==generation.Scene.bodyId?"body":"vessel-origin"});SyncCameraSelection();}
         else if(words[0]=="preset"&&words.Length==2) { PresentationQualityPolicy.Resolve(words[1],state.context,"craft","world",generation.Scene.vesselId,overrides); state.preset=words[1]; }
         else if(words[0]=="override"&&words.Length==5) { string id=words[1]; if(id!=generation.Scene.bodyId&&id!=generation.Scene.vesselId) throw new InvalidDataException("Known asset ID required."); var next=overrides.Where(o=>o.assetId!=id).Concat(new[] {new PresentationQualityOverride {scope="asset",assetId=id,pass="world",scaleSet=true,worldScale=(float)Number(words[2]),mipSet=true,textureMipBias=(float)Number(words[3]),geometrySet=true,geometryErrorPixels=(float)Number(words[4])}}).ToArray(); PresentationQualityPolicy.Resolve(state.preset,state.context,id==generation.Scene.bodyId?"body":"craft","world",id,next); overrides=next; }
         else if(words[0]=="fixturehotreload") Reload(Absolute(text.Substring(words[0].Length).Trim()),false);
@@ -518,9 +572,11 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         {
             var focus=state.focusTargetMeters;
             if(focus!=null)scientificOverlay.SetFocus(new ScientificVector3(focus[0],focus[1],focus[2]));
+            var grid=cameraControls.GridReference;Quaternion gridBasis=cameraControls.GridBasis;scientificOverlay.SetReference(grid.position,VectorPoint(gridBasis*Vector3.right),VectorPoint(gridBasis*Vector3.up),VectorPoint(gridBasis*Vector3.forward),cameraControls.GridLabel);
             scientificOverlay.Draw(CurrentScientificView()); state.scientificOverlay=scientificOverlay.Status;
         }
         bool controlsAllowed=!capturing&&!state.benchmarkActive&&!quitRequested&&(trail==null||!trail.Status.probeInstalled);
+        if(cameraControls.Initialized)cameraControls.Draw(new Rect(450,230,340,354),controlsAllowed,true,state.projection=="ortho",state.fov,state.verticalSpanMeters>0?state.verticalSpanMeters:(float)Math.Max(.001,distance*.8),CameraUI);
         GUI.Box(new Rect(10,10,430,150),generation!=null&&generation.Whole!=null?"Whole craft snapshot / "+state.wholeRenderMode:"Captured material-family subset"); GUI.Label(new Rect(20,35,410,20),state.preset+" / "+state.distance.ToString("G5")+" m / "+state.view);
         float log=GUI.HorizontalSlider(new Rect(20,65,400,20),(float)Math.Log10(Math.Max(.25,distance)),-.6f,10); if(controlsAllowed) distance=Math.Pow(10,log);
         if(GUI.Button(new Rect(20,90,100,22),"low")&&controlsAllowed) { state.preset="low"; policyDirty=true; } if(GUI.Button(new Rect(130,90,100,22),"balanced")&&controlsAllowed) { state.preset="balanced"; policyDirty=true; } if(GUI.Button(new Rect(240,90,100,22),"high")&&controlsAllowed) { state.preset="high"; policyDirty=true; }
@@ -531,6 +587,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         GUI.Label(new Rect(450,200,Screen.width-460,22),state.projection+(state.projection=="ortho"?" / vertical "+state.verticalSpanMeters.ToString("G6")+" m":" / FOV "+state.fov.ToString("G5")+" degrees")+" / "+state.pixelsPerMeterAtFocus.ToString("G5")+" px/m at focus");
         for(int i=0;i<debugViews.Length;i++) if(GUI.Button(new Rect(10+(i%2)*215,170+(i/2)*23,210,22),debugViews[i])&&controlsAllowed) { SelectView(debugViews[i]); Write(); }
     }
+    static ScientificVector3 VectorPoint(Vector3 v) {return new ScientificVector3(v.x,v.y,v.z);}
+    void CameraUI(string[] words) {try {Execute(string.Join(" ",words));}catch(Exception e) {cameraControls.Status.lastError=e.Message;}}
     void SocketLoop()
     {
         while(!stopping) try { using(var client=listener.AcceptTcpClient()) using(var stream=client.GetStream()) { stream.ReadTimeout=2000; stream.WriteTimeout=2000; var bytes=new List<byte>(); int b; while((b=stream.ReadByte())>=0&&b!='\n') { if(bytes.Count>=4096) throw new InvalidDataException("Command bound."); bytes.Add((byte)b); } if(Interlocked.Increment(ref queued)>16) { Interlocked.Decrement(ref queued); continue; } var c=new Command {Text=Encoding.UTF8.GetString(bytes.ToArray()).Trim()}; queue.Enqueue(c); for(int i=0;i<500&&!c.Done&&!stopping;i++) Thread.Sleep(10); if(c.Done) { byte[] reply=Encoding.UTF8.GetBytes(c.Reply+"\n"); stream.Write(reply,0,reply.Length); stream.Flush(); c.ReplyWritten=true; } } } catch { if(stopping) return; }

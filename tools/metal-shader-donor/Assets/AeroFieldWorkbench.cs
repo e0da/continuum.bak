@@ -42,6 +42,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         public bool materialPixelProof;
         public string projection="perspective"; public float fov,verticalSpanMeters,near,far; public double pixelsPerMeterAtFocus; public int viewportWidth,viewportHeight;
         public ScientificOverlay.StatusData scientificOverlay;
+        public ScientificCameraControls.StatusData cameraControls;
         public string orthographicShaderContract="continuum-aero-field-orthographic/v1",orthographicShaderAdmission;
         public bool orthographicShadersSupported;
         public string[] orthographicShaderNames; public bool[] orthographicShaderPropertyPresent; public float[] orthographicShaderContractValues;
@@ -91,6 +92,8 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     readonly Matrix4x4[] seeds = new Matrix4x4[256];
     Camera view, field, flow; GameObject geometryRoot;
     readonly ScientificOverlay scientificOverlay=new ScientificOverlay();
+    readonly ScientificCameraControls cameraControls=new ScientificCameraControls();
+    float cameraFocusDistance;
     Bounds geometryBounds; Material opaque, coverage, flowMaterial, sheath, ribbon, depthCopy;
     AssetBundle bundle; Mesh quad; Texture2D noise;
     RenderTexture fieldMap, flowMap, sceneMap;
@@ -149,6 +152,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             for(int i=0;i<seeds.Length;i++) seeds[i]=Matrix4x4.identity;
             fixturePath = Environment.GetEnvironmentVariable("CONTINUUM_AERO_FIXTURE");
             if (!string.IsNullOrEmpty(fixturePath)) LoadFixture(Absolute(fixturePath), true); else Analytic();
+            BindCameraAnchors(true);
             publicationPath = Environment.GetEnvironmentVariable("CONTINUUM_AERO_PUBLICATION");
             if (!string.IsNullOrEmpty(publicationPath)) { publicationPath=Absolute(publicationPath); ReloadPublication(); }
             else ReloadBundle(Absolute(Environment.GetEnvironmentVariable("CONTINUUM_AERO_WORKBENCH_BUNDLE") ?? Environment.GetEnvironmentVariable("CONTINUUM_AERO_SHADER_BUNDLE")), null, "direct");
@@ -219,6 +223,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         {
             case "status": break;
             case "projection": Projection(words); break;
+            case "camera": cameraControls.Handle(words);ApplyCameraControls();break;
             case "cad": scientificOverlay.Handle(words); state.scientificOverlay=scientificOverlay.Status; break;
             case "pause": state.paused=true; break;
             case "resume": state.paused=false; break;
@@ -228,10 +233,10 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             case "rendermode": if(words.Length!=2||!(words[1]=="full"||words[1]=="geometry"||words[1]=="fields")||(resident!=null&&words[1]!="geometry")) throw new InvalidDataException("rendermode full|geometry|fields; resident material admits geometry only."); state.pipelineMode=words[1]; ribbonCommands?.Clear(); sceneCommands?.Clear(); break;
             case "materialmode": if(resident==null||words.Length!=2) throw new InvalidDataException("Loaded material fixture and original|reference|instanced required."); resident.SetMode(words[1]); state.materialPixelProof=false; state.materialOccupiedPixels=0; break;
             case "materialdiagnostic": if(resident==null||words.Length!=2) throw new InvalidDataException("Loaded material fixture and off|defaults|single required."); resident.SetDiagnostic(words[1]); state.materialPixelProof=false; state.materialOccupiedPixels=0; break;
-            case "snapshotreload": if(resident==null) throw new InvalidDataException("Loaded material fixture required."); resident.ReloadSnapshot(Absolute(text.Substring(words[0].Length).Trim())); geometryBounds=resident.Bounds; state.materialPixelProof=false; state.materialOccupiedPixels=0; break;
+            case "snapshotreload": if(resident==null) throw new InvalidDataException("Loaded material fixture required."); resident.ReloadSnapshot(Absolute(text.Substring(words[0].Length).Trim())); geometryBounds=resident.Bounds;BindCameraAnchors(false);state.materialPixelProof=false; state.materialOccupiedPixels=0; break;
             case "benchmark": if(words.Length!=3) throw new InvalidDataException("benchmark warmupSeconds captureSeconds"); BeginBenchmark(Number(words[1]),Number(words[2])); break;
             case "cancelbenchmark": if(!state.benchmarkActive) throw new InvalidOperationException("No active benchmark."); EndBenchmark("interrupted","operator-cancelled"); break;
-            case "cameraorbit": if(words.Length!=4) throw new InvalidDataException("cameraorbit yaw pitch distance"); Quaternion orbit=Quaternion.Euler(Mathf.Clamp(Number(words[2]),-89,89),Number(words[1]),0); view.transform.position=geometryBounds.center+orbit*Vector3.back*Mathf.Clamp(Number(words[3]),.1f,10000); view.transform.LookAt(geometryBounds.center); break;
+            case "cameraorbit": if(words.Length!=4) throw new InvalidDataException("cameraorbit yaw pitch distance");cameraControls.Handle(new[] {"camera","focus","geometry-center"});cameraFocusDistance=Mathf.Clamp(Number(words[3]),.1f,10000);cameraControls.SetWorldUpOrbit(Number(words[1]),Number(words[2]));ApplyCameraControls();break;
             case "bundlehotreload": ReloadBundle(Absolute(text.Substring(words[0].Length).Trim()),null,"manual-"+DateTime.UtcNow.Ticks); break;
             case "fixturehotreload": LoadFixture(Absolute(text.Substring(words[0].Length).Trim()),false); break;
             case "captureframe": StartCoroutine(Capture(false)); break;
@@ -264,14 +269,40 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         Vector3 origin=view.transform.position,right=view.transform.right,up=view.transform.up,forward=view.transform.forward;
         return new ScientificView(new ScientificVector3(origin.x,origin.y,origin.z),new ScientificVector3(right.x,right.y,right.z),new ScientificVector3(up.x,up.y,up.z),new ScientificVector3(forward.x,forward.y,forward.z),Screen.width,Screen.height,view.orthographic?ScientificProjectionKind.Orthographic:ScientificProjectionKind.Perspective,view.fieldOfView,view.orthographicSize*2,view.nearClipPlane,view.farClipPlane);
     }
+    ScientificCameraControls.Anchor[] CameraAnchors(Bounds bounds,ResidentMaterialRuntime materialOwner)
+    {
+        Quaternion basis=Quaternion.identity;bool axes=materialOwner==null||ScientificCameraControls.TryBasis(materialOwner.Manifest.rootToWorld,out basis);
+        Vector3 origin=Vector3.zero;
+        if(materialOwner!=null) {var m=materialOwner.Manifest.rootToWorld;origin=new Vector3(m[3],m[7],m[11]);}
+        string label=materialOwner!=null?"Captured vessel origin / capture-epoch vessel axes":state.geometrySource=="analytic-concave-shielded-not-KSP"?"Analytic fixture origin / analytic axes":"Frozen geometry origin / world axes (no ship basis captured)";
+        return new[] {new ScientificCameraControls.Anchor(materialOwner==null?"fixture-origin":"vessel-origin","origin",label,ScientificPoint(origin),basis,axes),new ScientificCameraControls.Anchor("geometry-center","geometry-center","Geometry bounds center / world axes",ScientificPoint(bounds.center),Quaternion.identity)};
+    }
+    void BindCameraAnchors(bool initial)
+    {
+        var rows=CameraAnchors(geometryBounds,resident);cameraControls.SetAnchors(rows,"origin");
+        if(initial) {cameraControls.SetRotation(view.transform.rotation,"Retained fixture camera quaternion; orbit centered on labelled focus");cameraFocusDistance=Mathf.Max(.1f,(view.transform.position-UnityPoint(cameraControls.Focus.position)).magnitude);}
+        ApplyCameraControls();
+        state.cameraControls=cameraControls.Status;
+    }
+    static ScientificVector3 ScientificPoint(Vector3 p) {return new ScientificVector3(p.x,p.y,p.z);}
+    static Vector3 UnityPoint(ScientificVector3 p) {if(Math.Abs(p.x)>float.MaxValue||Math.Abs(p.y)>float.MaxValue||Math.Abs(p.z)>float.MaxValue)throw new InvalidDataException("Aero camera coordinate exceeds native float range.");return new Vector3((float)p.x,(float)p.y,(float)p.z);}
+    void ApplyCameraControls()
+    {
+        Quaternion q=cameraControls.Rotation;view.transform.SetPositionAndRotation(UnityPoint(cameraControls.Focus.position)+q*Vector3.back*cameraFocusDistance,q);
+        state.fieldPixelProof=state.materialPixelProof=false;state.viewOccupiedPixels=state.flowOccupiedPixels=state.sceneOccupiedPixels=state.materialOccupiedPixels=0;ribbonCommands?.Clear();sceneCommands?.Clear();state.cameraControls=cameraControls.Status;
+    }
+    void CameraUI(string[] words) {try {Execute(string.Join(" ",words));}catch(Exception e) {cameraControls.Status.lastError=e.Message;}}
     void OnGUI()
     {
         if(view==null)return;
-        Vector3 focus=geometryBounds.center;
+        Vector3 focus=cameraControls.Initialized?UnityPoint(cameraControls.Focus.position):geometryBounds.center;
         var scientificView=CurrentScientificView();
-        scientificOverlay.SetFocus(new ScientificVector3(focus.x,focus.y,focus.z)); scientificOverlay.Draw(scientificView); state.scientificOverlay=scientificOverlay.Status;
+        scientificOverlay.SetFocus(new ScientificVector3(focus.x,focus.y,focus.z));
+        if(cameraControls.Initialized) {var grid=cameraControls.GridReference;Quaternion basis=cameraControls.GridBasis;scientificOverlay.SetReference(grid.position,ScientificPoint(basis*Vector3.right),ScientificPoint(basis*Vector3.up),ScientificPoint(basis*Vector3.forward),cameraControls.GridLabel);}
+        scientificOverlay.Draw(scientificView); state.scientificOverlay=scientificOverlay.Status;
         double focusDepth=Vector3.Dot(focus-view.transform.position,view.transform.forward);
         GUI.Label(new Rect(12,12,Screen.width-24,24),(view.orthographic?"ortho":"perspective")+(view.orthographic?" / vertical "+(view.orthographicSize*2).ToString("G6")+" m":" / FOV "+view.fieldOfView.ToString("G5")+" degrees")+" / "+(focusDepth>0?scientificView.PixelsPerMeter(focusDepth).ToString("G5")+" px/m at focus":"focus behind camera"));
+        if(cameraControls.Initialized)cameraControls.Draw(new Rect(12,45,340,354),!state.benchmarkActive&&capturesPending==0,state.orthographicShadersSupported,view.orthographic,view.fieldOfView,view.orthographic?view.orthographicSize*2:Mathf.Max(.001f,cameraFocusDistance*.8f),CameraUI);
     }
     void BeginBenchmark(double warmup,double duration)
     {
@@ -433,6 +464,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             var nextResident=new ResidentMaterialRuntime(path,Absolute(bundlePath),string.IsNullOrEmpty(originalBundlePath)?null:Absolute(originalBundlePath));
             try
             {
+                if(cameraControls.Initialized)cameraControls.ValidateReplacement(CameraAnchors(nextResident.Bounds,nextResident));
                 if(resident!=null) { resident.ValidateActivationTransferTo(nextResident); nextResident.SetMode(resident.Mode); nextResident.SetDiagnostic(resident.Diagnostic); }
                 // Candidate activation can roll back to the still-live owner's camera and settings.
                 nextResident.Activate(view,initial);
@@ -442,6 +474,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
                 resident=nextResident; geometryBounds=resident.Bounds;
                 state.pipelineMode="geometry"; sceneCommands?.Clear(); ribbonCommands?.Clear();
                 fixturePath=path; fixtureSeen=resident.ManifestSha256; state.fixtureSha256=fixtureSeen; state.geometrySource="private-resident-material-v2"; state.fixtureReloads++; state.materialPixelProof=false; state.materialOccupiedPixels=0;
+                if(cameraControls.Initialized)BindCameraAnchors(false);
                 return;
             }
             catch { nextResident.Dispose(); throw; }
@@ -468,6 +501,11 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
                 if(reader.BaseStream.Position!=reader.BaseStream.Length||metadata.vertices!=totalV||metadata.indices!=totalI) throw new InvalidDataException("Chunk trailing bytes/counts.");
             }
             if(HashFile(path)!=manifestHash||HashFile(chunk)!=metadata.geometrySha256) throw new InvalidDataException("Fixture changed during read.");
+            if(cameraControls.Initialized)
+            {
+                bool first=true;Bounds nextBounds=new Bounds();foreach(Mesh mesh in loaded) {if(first) {nextBounds=mesh.bounds;first=false;}else nextBounds.Encapsulate(mesh.bounds);}
+                cameraControls.ValidateReplacement(CameraAnchors(nextBounds,null));
+            }
             if(initial)
             {
                 Vector3 position=Vector(metadata.cameraPosition); Vector4 rotation=Vector4Of(metadata.cameraRotation); Quaternion q=new Quaternion(rotation.x,rotation.y,rotation.z,rotation.w); if(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w<.9f) throw new InvalidDataException("Camera rotation.");
@@ -478,6 +516,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             if(resident!=null) { resident.Dispose(); resident=null; }
             if(geometryRoot!=null) { geometryRoot.SetActive(false); Destroy(geometryRoot); } foreach(Mesh mesh in meshes) Destroy(mesh); meshes.Clear(); meshes.AddRange(loaded); geometryRoot=next; next.SetActive(true); ComputeBounds();
             fixturePath=path; fixtureSeen=manifestHash; state.fixtureSha256=manifestHash; state.geometrySource="private-frozen-geometry"; state.fixtureReloads++;
+            if(cameraControls.Initialized)BindCameraAnchors(false);
         }
         catch { Destroy(next); foreach(Mesh mesh in loaded) Destroy(mesh); throw; }
     }
@@ -632,16 +671,17 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     {
         if(view!=null)
         {
-            Vector3 offset=view.transform.position-geometryBounds.center;
+            Vector3 focus=cameraControls.Initialized?UnityPoint(cameraControls.Focus.position):geometryBounds.center;Vector3 offset=view.transform.position-focus;
             state.cameraDistance=offset.magnitude;
             state.cameraYaw=Mathf.Atan2(-offset.x,-offset.z)*Mathf.Rad2Deg;
             state.cameraPitch=Mathf.Asin(Mathf.Clamp(offset.y/Mathf.Max(offset.magnitude,.00001f),-1,1))*Mathf.Rad2Deg;
             Vector3 position=view.transform.position; Quaternion rotation=view.transform.rotation;
             state.cameraPosition=new[] {position.x,position.y,position.z}; state.cameraRotation=new[] {rotation.x,rotation.y,rotation.z,rotation.w};
             state.projection=view.orthographic?"ortho":"perspective"; state.fov=view.fieldOfView; state.verticalSpanMeters=view.orthographic?view.orthographicSize*2:0; state.near=view.nearClipPlane; state.far=view.farClipPlane; state.viewportWidth=Screen.width; state.viewportHeight=Screen.height;
-            double focusDepth=Vector3.Dot(geometryBounds.center-position,view.transform.forward);
+            double focusDepth=Vector3.Dot(focus-position,view.transform.forward);
             state.pixelsPerMeterAtFocus=focusDepth>0?CurrentScientificView().PixelsPerMeter(focusDepth):0; state.scientificOverlay=scientificOverlay.Status;
             Vector3 forward=view.transform.forward; state.viewForward=new[]{forward.x,forward.y,forward.z};
+            if(cameraControls.Initialized) {cameraControls.Refresh();state.cameraControls=cameraControls.Status;}
         }
         state.flowDirection=new[] {direction.x,direction.y,direction.z}; state.intensity=effect.x; state.effectClock=clock;
         if(resident!=null) { state.materialMode=resident.Mode; state.materialDiagnostic=resident.Diagnostic; state.materialTopologyId=resident.TopologyId; state.materialStateSha256=resident.StateSha256; state.materialBundleSha256=resident.BundleSha256; state.materialOriginalBundleSha256=resident.OriginalBundleSha256; state.materialGeneration=resident.Generation; state.materialInstances=resident.InstanceCount; state.materialMeshes=resident.MeshCount; state.materialPackets=resident.PacketCount; state.materialDrawCalls=resident.DrawCalls; state.materialSubmittedFrames=resident.SubmittedFrames; state.materialSnapshotPublications=resident.SnapshotPublications; state.contract="Resident real-material fixture; optional shipped shader reference, native comparisons qualify only their captured dependencies."; }
