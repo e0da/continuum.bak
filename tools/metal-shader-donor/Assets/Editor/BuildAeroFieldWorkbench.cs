@@ -15,6 +15,7 @@ public static class BuildAeroFieldWorkbench
         public string qualification = "Player built; actual rendering, fixture loading and persistent reload require native consumer proof.";
         public string wholeCraftRuntimeSourceSha256,wholeCraftFormatSourceSha256;
         public string vesselReplaySourceSha256,vesselRuntimeFormatSourceSha256;
+        public string persistentTrailRuntimeSourceSha256,persistentTrailFormatSourceSha256,persistentTrailShaderSourceSha256;
         public string instancingStrippingName; public int instancingStrippingValue,diagnosticVariantCount;
     }
     static string Hash(string path) { using(var stream=File.OpenRead(path)) using(var sha=SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-","").ToLowerInvariant(); }
@@ -34,7 +35,7 @@ public static class BuildAeroFieldWorkbench
         string scenePath="Assets/ContinuumWorkbenchScene-"+Guid.NewGuid().ToString("N")+".unity";
         string materialPath=scenePath+".mat";
         string variantsPath=scenePath+".shadervariants"; SerializedObject graphicsSettings=null; int priorStripping=-1,effectiveStripping=-1; string strippingName=null; int variantCount=0;
-        string[] multiscaleShaders={"BodyDiffuse","DepthCopy","Composite","DebugGeometry","DebugDepth"};
+        string[] multiscaleShaders={"BodyDiffuse","DepthCopy","Composite","DebugGeometry","DebugDepth","PersistentTrail"};
         var scene=EditorSceneManager.NewScene(NewSceneSetup.EmptyScene,NewSceneMode.Single);
         try
         {
@@ -65,6 +66,7 @@ public static class BuildAeroFieldWorkbench
                 multiscaleSourceSha256=File.Exists("Assets/MultiscaleWorkbench.cs")?Hash("Assets/MultiscaleWorkbench.cs"):null,multiscaleFormatSourceSha256=File.Exists("Assets/MultiscaleSceneFormat.cs")?Hash("Assets/MultiscaleSceneFormat.cs"):null,
                 wholeCraftRuntimeSourceSha256=File.Exists("Assets/WholeCraftRuntime.cs")?Hash("Assets/WholeCraftRuntime.cs"):null,wholeCraftFormatSourceSha256=File.Exists("Assets/WholeCraftSceneFormat.cs")?Hash("Assets/WholeCraftSceneFormat.cs"):null,
                 vesselReplaySourceSha256=File.Exists("Assets/VesselReplaySession.cs")?Hash("Assets/VesselReplaySession.cs"):null,vesselRuntimeFormatSourceSha256=File.Exists("Assets/VesselRuntimeRecording.cs")?Hash("Assets/VesselRuntimeRecording.cs"):null,
+                persistentTrailRuntimeSourceSha256=File.Exists("Assets/PersistentTrailRuntime.cs")?Hash("Assets/PersistentTrailRuntime.cs"):null,persistentTrailFormatSourceSha256=File.Exists("Assets/PersistentTrailOwner.cs")?Hash("Assets/PersistentTrailOwner.cs"):null,persistentTrailShaderSourceSha256=File.Exists("Assets/ContinuumMultiscale/PersistentTrail.shader")?Hash("Assets/ContinuumMultiscale/PersistentTrail.shader"):null,
                 instancingStrippingName=strippingName,instancingStrippingValue=effectiveStripping,diagnosticVariantCount=variantCount,
                 toolAssemblySha256=Hash(typeof(BuildAeroFieldWorkbench).Assembly.Location),playerAssemblySha256=Hash(Path.Combine(output,"Contents/Resources/Data/Managed/Assembly-CSharp.dll")),packagesSha256=Hash("Packages/manifest.json") };
             using(var writer=new StreamWriter(new FileStream(output+".build.json",FileMode.CreateNew,FileAccess.Write))) writer.Write(JsonUtility.ToJson(receipt,true));
