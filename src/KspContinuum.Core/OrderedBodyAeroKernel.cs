@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 
 namespace KspContinuum
 {
@@ -20,8 +19,19 @@ namespace KspContinuum
         static bool Finite(double value) { return BodyAeroVector.Number(value); }
         static OrderedBodyAeroResult EvaluateRow(OrderedBodyAeroRow row)
         {
-            Require(!row.servoBody && !row.shielded && row.submergedPortion == 0 && row.atmosphericDensity > 0 && row.applyDrag &&
-                (row.ownBody || row.applyParentDrag), "Unsupported servo, shielded, submerged, vacuum or disabled dry-body owner.");
+            var commands=new BodyAeroCommand[4];var retained=new RetainedOrderedBodyAeroResult();EvaluateInto(row,ref retained,commands,0);
+            Array.Resize(ref commands,retained.commandCount);
+            return new OrderedBodyAeroResult {ordinal=retained.ordinal,partId=retained.partId,speedSquared=retained.speedSquared,speed=retained.speed,direction=retained.direction,dynamicPressure=retained.dynamicPressure,dragScalar=retained.dragScalar,bodyLiftScalar=retained.bodyLiftScalar,bodyLiftScalarWritten=retained.bodyLiftScalarWritten,commands=commands};
+        }
+        internal static bool Supported(OrderedBodyAeroRow row,out string reason)
+        {
+            reason=null;
+            if(row==null||row.servoBody||row.shielded||row.submergedPortion!=0||!(row.atmosphericDensity>0)||!row.applyDrag||!(row.ownBody||row.applyParentDrag)) {reason="unsupported-dry-body-owner-regime";return false;}
+            return true;
+        }
+        internal static void EvaluateInto(OrderedBodyAeroRow row,ref RetainedOrderedBodyAeroResult result,BodyAeroCommand[] commands,int offset)
+        {
+            string reason;Require(Supported(row,out reason),reason);Require(commands!=null&&offset>=0&&offset<=commands.Length-4,"Retained command span absent.");
             Require(row.velocity.Finite && row.dragApplicationPoint.Finite && row.liftApplicationPoint.Finite && Finite(row.atmosphericDensity) &&
                 Finite(row.pseudoReMultiplier) && Finite(row.angularDrag) && Finite(row.angularDragMultiplier) && Finite(row.dragMultiplier) &&
                 Finite(row.bodyLiftMultiplier) && Finite(row.globalBodyLiftMultiplier) && Finite(row.liftMachSample) && !double.IsInfinity(row.originalDragValue),
@@ -34,23 +44,22 @@ namespace KspContinuum
             double value = row.originalDragValue * row.pseudoReMultiplier;
             float drag = double.IsNaN(value) || value == 0 ? 0 : (float)(pressure * value * 1.0) * row.dragMultiplier;
             Require(Finite(pressure) && Finite(drag), "Overflow body-aero result.");
-            var result = new OrderedBodyAeroResult { ordinal = row.ordinal, partId = row.partId, speedSquared = square,
-                speed = speed, direction = direction, dynamicPressure = pressure, dragScalar = drag };
-            var commands = new List<BodyAeroCommand>(4);
+            result = new RetainedOrderedBodyAeroResult { ordinal = row.ordinal, partId = row.partId, speedSquared = square,
+                speed = speed, direction = direction, dynamicPressure = pressure, dragScalar = drag,commandOffset=offset };
             if (row.ownBody && row.angularDragByIntegrator)
             {
-                commands.Add(Command(row, BodyAeroCommandKind.AngularDrag, 0));
+                commands[offset+result.commandCount++]=Command(row, BodyAeroCommandKind.AngularDrag, 0);
                 double angularPressure = pressure * 0.009869232667160128;
                 if (angularPressure <= 0) angularPressure = 0;
                 BodyAeroCommand update = Command(row, BodyAeroCommandKind.AngularDrag, 0);
                 update.angularDrag = row.angularDrag * (float)angularPressure * row.angularDragMultiplier;
-                Require(Finite(update.angularDrag), "Overflow angular drag."); commands.Add(update);
+                Require(Finite(update.angularDrag), "Overflow angular drag.");commands[offset+result.commandCount++]=update;
             }
             if (!double.IsNaN(value) && value != 0)
             {
                 BodyAeroCommand command = Command(row, BodyAeroCommandKind.DragAtPosition, row.accelerationMode ? 5 : 0);
                 command.force = new BodyAeroVector(-direction.x * drag, -direction.y * drag, -direction.z * drag);
-                command.point = row.dragApplicationPoint; commands.Add(command);
+                command.point = row.dragApplicationPoint;commands[offset+result.commandCount++]=command;
             }
             if (row.bodyLiftEligible)
             {
@@ -69,10 +78,9 @@ namespace KspContinuum
                     command.force = norm < float.Epsilon ? vector : new BodyAeroVector(vector.x - normal.x * dot / norm,
                         vector.y - normal.y * dot / norm, vector.z - normal.z * dot / norm);
                     command.point = row.liftApplicationPoint;
-                    Require(command.force.Finite, "Overflow projected lift."); commands.Add(command);
+                    Require(command.force.Finite, "Overflow projected lift.");commands[offset+result.commandCount++]=command;
                 }
             }
-            result.commands = commands.ToArray(); return result;
         }
         static BodyAeroCommand Command(OrderedBodyAeroRow row, BodyAeroCommandKind kind, int mode)
         { return new BodyAeroCommand { ordinal = row.ordinal, partId = row.partId, recipientBodyId = row.recipientBodyId, kind = kind, forceMode = mode }; }
