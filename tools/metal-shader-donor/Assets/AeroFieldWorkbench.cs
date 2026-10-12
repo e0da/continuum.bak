@@ -46,6 +46,25 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         public bool orthographicShadersSupported;
         public string[] orthographicShaderNames; public bool[] orthographicShaderPropertyPresent; public float[] orthographicShaderContractValues;
         public float[] viewForward;
+        public bool fieldCaptureActive; public int fieldCaptures; public string fieldCaptureStatus,fieldCapturePrefix,lastFieldCapture,lastFieldCaptureSha256,fieldCaptureError;
+    }
+    [Serializable] sealed class FloatReadback
+    {
+        public string path,sha256,format,sourceFormat;
+        public int width,height,channels,sourceTextureId; public long byteLength;
+    }
+    [Serializable] sealed class FieldReadbackReceipt
+    {
+        public string schema="continuum-aero-field-readback/v1",status="completed",hostId,assemblySha256,bundlePath,bundleSha256,generation,renderer,unity,geometrySource,fixtureSha256,pipelineMode;
+        public string rawEncoding="IEEE754 binary32 little-endian; no header; tightly packed channel order RGBA or R",rawRowOrder="Unity ReadPixels bottom-left origin; rows bottom-to-top; columns left-to-right",matrixLayout="row-major 16 floats";
+        public string fieldChannels="RGB oriented geometric normal encoded normal*.5+.5; A positive eye depth in metres; zero depth unwritten",sceneChannels="R positive eye depth in metres; zero unwritten";
+        public string gpuProjectionScope="field camera into fieldMap RenderTexture",scope="Cold synchronous native texture readback only; no rendering-time or simulation-equivalence claim";
+        public int formatVersion=1,processId,unityFrame,fieldRenders,flowRenders,composites;
+        public bool orthographic,reversedZ,graphicsUVStartsAtTop,presentationRenderIntoTexture;
+        public float fov,verticalSpanMeters,near,far;
+        public float[] cameraPosition,cameraRotation,worldToView,cameraProjection,gpuProjection,gpuProjectionInverse,presentationGpuProjection,geometryCenter,geometryExtents;
+        public long startedTicks,endedTicks,clockFrequency=System.Diagnostics.Stopwatch.Frequency;
+        public FloatReadback field,scene;
     }
     [Serializable] sealed class Benchmark
     {
@@ -168,7 +187,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     {
         if(view==null||coverage==null) return;
         if(state.benchmarkActive) TickBenchmark();
-        if(!state.paused) clock+=Time.unscaledDeltaTime;
+        if(!state.paused&&!state.fieldCaptureActive) clock+=Time.unscaledDeltaTime;
         Command command; for(int i=0;i<8&&commands.TryDequeue(out command);i++)
         {
             Interlocked.Decrement(ref queued);
@@ -177,7 +196,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             catch(Exception error) { state.commandErrors++; command.response="{\"error\":\""+Escape(error.Message)+"\",\"hostId\":\""+state.hostId+"\"}"; }
             command.done=true;
         }
-        if(!state.benchmarkActive&&Time.realtimeSinceStartup>=nextPoll)
+        if(!state.benchmarkActive&&capturesPending==0&&Time.realtimeSinceStartup>=nextPoll)
         {
             nextPoll=Time.realtimeSinceStartup+1;
             try { if(!string.IsNullOrEmpty(publicationPath)&&HashFile(publicationPath)!=publicationSeen) ReloadPublication(); } catch(Exception e) { state.reloadError=e.Message; }
@@ -194,6 +213,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
     {
         string[] words=text.Split(new[] {' '},StringSplitOptions.RemoveEmptyEntries); if(words.Length==0) throw new InvalidDataException("Empty command.");
         string operation=words[0].ToLowerInvariant();
+        if(capturesPending!=0&&operation!="status"&&operation!="quit")throw new InvalidOperationException("Cold capture freezes controls and reloads; status and quit remain available.");
         if(state.benchmarkActive&&operation!="status"&&operation!="quit"&&operation!="cancelbenchmark") throw new InvalidOperationException("Benchmark freezes controls, captures, fixtures and shaders.");
         switch(operation)
         {
@@ -215,6 +235,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             case "bundlehotreload": ReloadBundle(Absolute(text.Substring(words[0].Length).Trim()),null,"manual-"+DateTime.UtcNow.Ticks); break;
             case "fixturehotreload": LoadFixture(Absolute(text.Substring(words[0].Length).Trim()),false); break;
             case "captureframe": StartCoroutine(Capture(false)); break;
+            case "capturefields": if(words.Length!=1||state.pipelineMode=="geometry"||resident!=null)throw new InvalidDataException("capturefields requires the rendered analytic/gray full or fields pipeline."); StartCoroutine(CaptureFields()); break;
             case "quit": if(state.benchmarkActive) EndBenchmark("interrupted","operator-quit"); Application.Quit(0); break;
             default: throw new InvalidDataException("Unknown command.");
         }
@@ -539,6 +560,65 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         catch(Exception error) { state.fieldPixelProof=false; state.materialPixelProof=false; state.materialOccupiedPixels=0; state.reloadError="capture: "+error.Message; WriteStatus(); if(quit) Application.Quit(2); }
         finally { RenderTexture.active=previous; Destroy(image); capturesPending--; }
         if(quit) Application.Quit(state.splashFinishedAtCapture&&state.renderPath=="Forward"&&(resident!=null?state.materialPixelProof:state.fieldPixelProof&&state.fieldRenders>0&&state.flowRenders>0&&state.composites>0&&state.ribbonSubmissions>0)?0:2);
+    }
+    static float[] MatrixRows(Matrix4x4 matrix)
+    {var result=new float[16];for(int r=0;r<4;r++)for(int c=0;c<4;c++)result[r*4+c]=matrix[r,c];return result;}
+    static bool ExactMatrix(Matrix4x4 a,Matrix4x4 b)
+    {for(int r=0;r<4;r++)for(int c=0;c<4;c++)if(a[r,c]!=b[r,c]||!Finite(a[r,c]))return false;return true;}
+    static FloatReadback ExportFloat(RenderTexture source,string path,bool rgba)
+    {
+        if(source==null||!source.IsCreated()||source.width<=0||source.height<=0||(long)source.width*source.height>16000000)throw new InvalidDataException("Created native field target at most16000000 pixels required.");
+        if(source.format!=(rgba?RenderTextureFormat.ARGBFloat:RenderTextureFormat.RFloat))throw new InvalidDataException("Native field texture format differs.");
+        long expected=checked((long)source.width*source.height*(rgba?4:1)*4);
+        if(expected>int.MaxValue)throw new InvalidDataException("Native readback byte bound exceeded.");
+        RenderTexture previous=RenderTexture.active;Texture2D image=null;
+        try
+        {
+            image=new Texture2D(source.width,source.height,rgba?TextureFormat.RGBAFloat:TextureFormat.RFloat,false,true);
+            RenderTexture.active=source;image.ReadPixels(new Rect(0,0,source.width,source.height),0,0,false);image.Apply(false,false);
+            byte[] bytes=image.GetRawTextureData();if(bytes.LongLength!=expected)throw new InvalidDataException("Native float readback packed length differs.");
+            if(!BitConverter.IsLittleEndian)for(int i=0;i<bytes.Length;i+=4){byte a=bytes[i],b=bytes[i+1];bytes[i]=bytes[i+3];bytes[i+1]=bytes[i+2];bytes[i+2]=b;bytes[i+3]=a;}
+            using(var stream=new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.None))stream.Write(bytes,0,bytes.Length);
+            if(new FileInfo(path).Length!=expected)throw new InvalidDataException("Written native float length differs.");
+            return new FloatReadback {path=path,sha256=HashFile(path),format=rgba?"RGBAFloat":"RFloat",sourceFormat=source.format.ToString(),width=source.width,height=source.height,channels=rgba?4:1,byteLength=expected,sourceTextureId=source.GetInstanceID()};
+        }
+        finally {RenderTexture.active=previous;if(image!=null)Destroy(image);}
+    }
+    IEnumerator CaptureFields()
+    {
+        capturesPending++;state.fieldCaptureActive=true;state.fieldCaptureStatus="pending";state.fieldCaptureError=null;state.fieldCapturePrefix=state.lastFieldCapture=state.lastFieldCaptureSha256=null;
+        try
+        {
+            float deadline=Time.realtimeSinceStartup+30;
+            while(!SplashScreen.isFinished&&Time.realtimeSinceStartup<deadline)yield return null;
+            yield return new WaitForEndOfFrame();
+            try
+            {
+                if(!SplashScreen.isFinished)throw new InvalidOperationException("Splash did not finish before field capture.");
+                if(state.benchmarkActive||state.pipelineMode=="geometry"||resident!=null||field==null||view==null)throw new InvalidOperationException("Field capture owner changed.");
+                if(state.fieldRenders<=0||field.orthographic!=view.orthographic||!ExactMatrix(field.worldToCameraMatrix,view.worldToCameraMatrix)||!ExactMatrix(field.projectionMatrix,view.projectionMatrix))throw new InvalidDataException("Native field producer does not match current main camera.");
+                if(HashFile(activeBundlePath)!=state.bundleSha256)throw new InvalidDataException("Bound shader bundle changed before readback.");
+                var receipt=new FieldReadbackReceipt {hostId=state.hostId,processId=state.processId,assemblySha256=HashFile(typeof(AeroFieldWorkbench).Assembly.Location),bundlePath=activeBundlePath,bundleSha256=state.bundleSha256,generation=state.generation,renderer=state.renderer,unity=state.unity,geometrySource=state.geometrySource,fixtureSha256=state.fixtureSha256,pipelineMode=state.pipelineMode,unityFrame=Time.frameCount,fieldRenders=state.fieldRenders,flowRenders=state.flowRenders,composites=state.composites,orthographic=view.orthographic,reversedZ=SystemInfo.usesReversedZBuffer,graphicsUVStartsAtTop=SystemInfo.graphicsUVStartsAtTop,presentationRenderIntoTexture=view.targetTexture!=null,fov=view.fieldOfView,verticalSpanMeters=view.orthographic?view.orthographicSize*2:0,near=view.nearClipPlane,far=view.farClipPlane,startedTicks=System.Diagnostics.Stopwatch.GetTimestamp()};
+                Vector3 position=view.transform.position;Quaternion rotation=view.transform.rotation;
+                receipt.cameraPosition=new[]{position.x,position.y,position.z};receipt.cameraRotation=new[]{rotation.x,rotation.y,rotation.z,rotation.w};receipt.worldToView=MatrixRows(view.worldToCameraMatrix);receipt.cameraProjection=MatrixRows(view.projectionMatrix);
+                Matrix4x4 gpuProjection=GL.GetGPUProjectionMatrix(field.projectionMatrix,true);receipt.gpuProjection=MatrixRows(gpuProjection);receipt.gpuProjectionInverse=MatrixRows(gpuProjection.inverse);receipt.presentationGpuProjection=MatrixRows(GL.GetGPUProjectionMatrix(view.projectionMatrix,receipt.presentationRenderIntoTexture));
+                Vector3 center=geometryBounds.center,extents=geometryBounds.extents;receipt.geometryCenter=new[]{center.x,center.y,center.z};receipt.geometryExtents=new[]{extents.x,extents.y,extents.z};
+                string prefix=Path.Combine(output,"fields-"+Guid.NewGuid().ToString("N"));
+                state.fieldCapturePrefix=prefix;
+                receipt.field=ExportFloat(fieldMap,prefix+"-field-rgba-f32le.bin",true);receipt.scene=ExportFloat(sceneMap,prefix+"-scene-r-f32le.bin",false);
+                if(HashFile(activeBundlePath)!=receipt.bundleSha256)throw new InvalidDataException("Bound shader bundle changed during readback.");
+                receipt.endedTicks=System.Diagnostics.Stopwatch.GetTimestamp();string path=prefix+".json";
+                using(var stream=new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.None))using(var writer=new StreamWriter(stream))writer.Write(JsonUtility.ToJson(receipt,true));
+                state.lastFieldCapture=path;state.lastFieldCaptureSha256=HashFile(path);state.fieldCaptures++;state.fieldCaptureStatus="completed";
+            }
+            catch(Exception error){state.fieldCaptureStatus="failed";state.fieldCaptureError=error.ToString();state.reloadError="field-capture: "+error.Message;}
+        }
+        finally
+        {
+            state.fieldCaptureActive=false;capturesPending--;
+            if(state.fieldCaptureStatus=="pending")state.fieldCaptureStatus="interrupted";
+            WriteStatus();
+        }
     }
     static int PixelProof(RenderTexture rt,bool normalDepth)
     {
