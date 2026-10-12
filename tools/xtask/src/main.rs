@@ -169,6 +169,7 @@ fn repository_root() -> Result<PathBuf> {
 }
 
 fn portable(root: &Path) -> Result {
+    checked(root, "cargo", &["test", "--locked", "--manifest-path", "tools/part-systems/Cargo.toml"])?;
     checked(
         root,
         "dotnet",

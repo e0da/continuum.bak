@@ -1,0 +1,10 @@
+[package]
+name = "continuum-part-systems"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+hecs = "=0.10.5"
+serde_json = "1"
+continuum-research-lab = { path = "../research-lab" }
