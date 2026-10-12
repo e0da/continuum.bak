@@ -45,6 +45,7 @@ fn run() -> Result<()> {
         "install-native-assets" => &["--instance", "--manifest", "--output"],
         "restore-native-assets" => &["--instance", "--installation", "--output"],
         "startup-timeline" => &["--log", "--output"],
+        "update-callback-summary" => &["--report", "--pid", "--output"],
         "prepare" => &["--output", "--variant"],
         "index" => &["--assembly", "--ilspy", "--output", "--project"],
         "recompose" => &[
@@ -170,6 +171,17 @@ fn run() -> Result<()> {
     };
     let output = Path::new(get("--output")?);
     match operation.as_str() {
+        "update-callback-summary" => {
+            let path = Path::new(get("--report")?);
+            let digest = hash(path)?;
+            let report: Value = read(path)?;
+            let pid = get("--pid")?.parse::<u32>().map_err(|_| "owned pid must be a positive integer")?;
+            let mut summary = continuum_research_lab::update_callbacks::summarize_owned(&report, pid)?;
+            if hash(path)? != digest { return Err("Update callback source changed during analysis".into()); }
+            summary["sourceSha256"] = json!(digest);
+            summary["ownedPid"] = json!(pid);
+            write_new(output, &summary)?;
+        }
         "program-catalog" => {
             write_new(output, &json!({"schema":"continuum-reference-program/v1","recipes":continuum_research_lab::reference_program::catalog()}))?;
         }

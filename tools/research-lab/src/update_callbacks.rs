@@ -24,6 +24,13 @@ fn add(total: &mut u64, next: u64) -> Result<()> {
     Ok(())
 }
 
+pub fn summarize_owned(report: &Value, pid: u32) -> Result<Value> {
+    if pid == 0 || report["updateCallbackAttribution"]["processId"].as_u64() != Some(pid as u64) {
+        return Err("Update callback observer differs from the owned process".into());
+    }
+    summarize(report)
+}
+
 pub fn summarize(report: &Value) -> Result<Value> {
     let observer = &report["updateCallbackAttribution"];
     if report["status"] != "complete"
@@ -34,7 +41,14 @@ pub fn summarize(report: &Value) -> Result<Value> {
     {
         return Err("Update attribution requires a matching completed owner and cleanup".into());
     }
-    for field in ["errors", "droppedWindows", "originalExceptions"] {
+    for field in [
+        "errors",
+        "scanErrors",
+        "ownershipErrors",
+        "contextErrors",
+        "droppedWindows",
+        "originalExceptions",
+    ] {
         if integer(observer, field)? != 0 {
             return Err(format!("Update attribution has {field}"));
         }
@@ -50,6 +64,10 @@ pub fn summarize(report: &Value) -> Result<Value> {
         || frames == 0
     {
         return Err("Update callback capture clock or denominator differs".into());
+    }
+    let observer_pid = integer(observer, "processId")?;
+    if observer_pid == 0 || observer_pid > u32::MAX as u64 {
+        return Err("Update callback process identity is invalid".into());
     }
     let targets = observer["targets"]
         .as_array()
@@ -88,10 +106,16 @@ pub fn summarize(report: &Value) -> Result<Value> {
     let windows = observer["windows"]
         .as_array()
         .ok_or("Update windows absent")?;
-    if windows.is_empty() || windows.len() > 1024 {
+    if windows.is_empty()
+        || windows.len() > 1024
+        || integer(observer, "startedWindows")? != windows.len() as u64
+        || integer(observer, "completedWindows")? != windows.len() as u64
+    {
         return Err("Update window bound differs".into());
     }
     let mut totals = vec![(0_u64, 0_u64, 0_u64); targets.len()];
+    let mut observed_slots = BTreeSet::new();
+    let (mut all_calls, mut enclosed_calls) = (0_u64, 0_u64);
     let (mut enclosed, mut omitted, mut previous_end, mut previous_frame, mut window_ticks) =
         (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
     for (sequence, window) in windows.iter().enumerate() {
@@ -114,6 +138,7 @@ pub fn summarize(report: &Value) -> Result<Value> {
             .as_array()
             .ok_or("Update entries absent")?;
         let mut slots = BTreeSet::new();
+        let mut previous_slot = None;
         let mut self_ticks = 0_u64;
         let captured = before >= start && after <= end;
         for entry in entries {
@@ -123,6 +148,7 @@ pub fn summarize(report: &Value) -> Result<Value> {
             let own = integer(entry, "selfTicks")?;
             if slot >= targets.len()
                 || !slots.insert(slot)
+                || previous_slot.is_some_and(|previous| slot <= previous)
                 || calls == 0
                 || calls > i32::MAX as u64
                 || own > inclusive
@@ -130,8 +156,12 @@ pub fn summarize(report: &Value) -> Result<Value> {
             {
                 return Err("Update row counters or nested clock bounds differ".into());
             }
+            previous_slot = Some(slot);
+            observed_slots.insert(slot);
+            add(&mut all_calls, calls)?;
             add(&mut self_ticks, own)?;
             if captured {
+                add(&mut enclosed_calls, calls)?;
                 add(&mut totals[slot].0, calls)?;
                 add(&mut totals[slot].1, inclusive)?;
                 add(&mut totals[slot].2, own)?;
@@ -147,8 +177,14 @@ pub fn summarize(report: &Value) -> Result<Value> {
             omitted += 1;
         }
     }
-    if enclosed == 0 {
-        return Err("Update has no fully enclosed capture windows".into());
+    if all_calls == 0
+        || integer(observer, "capturedCalls")? != all_calls
+        || integer(observer, "observedTargets")? != observed_slots.len() as u64
+    {
+        return Err("Update callback raw calls or reached-target totals differ".into());
+    }
+    if enclosed == 0 || enclosed_calls == 0 {
+        return Err("Update has no reached callbacks in fully enclosed capture windows".into());
     }
     let millis = 1000.0 / frequency as f64;
     let mut rows: Vec<_> = targets
@@ -171,7 +207,8 @@ pub fn summarize(report: &Value) -> Result<Value> {
     });
     Ok(
         json!({"schema":"continuum-update-callback-summary/v1","status":"capture-validated",
-        "runId":report["runId"],"enclosedWindows":enclosed,"omittedStraddlerWindows":omitted,
+        "runId":report["runId"],"processId":observer_pid,"enclosedWindows":enclosed,"omittedStraddlerWindows":omitted,
+        "enclosedCalls":enclosed_calls,"allRecordedCalls":all_calls,
         "renderedFrames":frames,"targetCount":targets.len(),"enclosedWindowMilliseconds":window_ticks as f64*millis,
         "rows":rows,"scope":"Capture-enclosed declared MonoBehaviour.Update method-body wall brackets. Self subtracts only nested observed methods; unobserved descendants and native work remain in self. Hook tax and phase gaps are not exclusive CPU. Zero-call targets have no cost coverage. One intrusive owner-identification flight is not a clean performance arm."}),
     )
@@ -184,7 +221,9 @@ mod tests {
         json!({"status":"complete","runId":"r","clockFrequency":1000,
             "captureStartClockTimestamp":100,"captureEndClockTimestamp":400,"completedFrames":2,
             "updateCallbackAttribution":{"schema":"continuum-update-callback-attribution/v1","runId":"r",
-                "status":"observed","cleanupStatus":"removed-owned-patches","errors":0,"droppedWindows":0,
+                "status":"observed","cleanupStatus":"removed-owned-patches","errors":0,"scanErrors":0,
+                "ownershipErrors":0,"contextErrors":0,"droppedWindows":0,"processId":7,
+                "startedWindows":2,"completedWindows":2,"capturedCalls":2,"observedTargets":1,
                 "originalExceptions":0,"clockFrequency":1000,"targetCount":1,"patchedMethods":1,
                 "targets":[{"slot":0,"assembly":"game","assemblyMvid":"10657063-2fc3-43a7-84fa-d39e75e877bf",
                     "assemblySha256":"a".repeat(64),"ilSha256":"b".repeat(64),"declaringType":"Owner",
@@ -214,5 +253,41 @@ mod tests {
         let mut no_capture = raw;
         no_capture["captureStartClockTimestamp"] = json!(300);
         assert!(summarize(&no_capture).is_err());
+    }
+
+    #[test]
+    fn binds_owned_lifecycle_and_requires_reached_enclosed_callbacks() {
+        let raw = valid();
+        assert!(summarize_owned(&raw, 7).is_ok());
+        assert!(summarize_owned(&raw, 8).is_err());
+        for field in ["scanErrors", "ownershipErrors", "contextErrors"] {
+            let mut fault = raw.clone();
+            fault["updateCallbackAttribution"][field] = json!(1);
+            assert!(summarize(&fault).is_err(), "hidden {field}");
+        }
+        for field in ["startedWindows", "completedWindows", "capturedCalls", "observedTargets"] {
+            let mut incomplete = raw.clone();
+            incomplete["updateCallbackAttribution"][field] = json!(0);
+            assert!(summarize(&incomplete).is_err(), "false {field}");
+        }
+
+        let mut straddler = raw;
+        let observer = &mut straddler["updateCallbackAttribution"];
+        observer["startedWindows"] = json!(3);
+        observer["completedWindows"] = json!(3);
+        observer["capturedCalls"] = json!(3);
+        observer["windows"].as_array_mut().unwrap().push(json!({
+            "sequence":2,"frame":5,"startedTicks":390,"endedTicks":410,
+            "entries":[{"slot":0,"calls":1,"inclusiveTicks":10,"selfTicks":10}]
+        }));
+        let summary = summarize(&straddler).unwrap();
+        assert_eq!(summary["omittedStraddlerWindows"], 1);
+        assert_eq!(summary["enclosedCalls"], 2);
+        assert_eq!(summary["allRecordedCalls"], 3);
+        assert_eq!(summary["rows"][0]["selfMillisecondsPerRenderedFrame"], 25.0);
+
+        straddler["updateCallbackAttribution"]["windows"][0]["entries"] = json!([]);
+        straddler["updateCallbackAttribution"]["capturedCalls"] = json!(1);
+        assert!(summarize(&straddler).is_err());
     }
 }

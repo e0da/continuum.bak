@@ -818,7 +818,7 @@ pub fn analyze(
         summary["intrusiveDiagnosticsRequested"] = Value::Bool(true);
     }
     if !report["updateCallbackAttribution"].is_null() {
-        summary["updateCallbackAttribution"] = crate::update_callbacks::summarize(report)?;
+        summary["updateCallbackAttribution"] = crate::update_callbacks::summarize_owned(report, pid)?;
         summary["intrusiveDiagnosticsRequested"] = Value::Bool(true);
         summary["comparisonEligibility"] = Value::String("intrusive-update-owner-trace; not-clean-performance-comparison".into());
     }
