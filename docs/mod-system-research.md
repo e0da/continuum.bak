@@ -1,0 +1,41 @@
+# Mod systems as research and replacement owners
+
+This is a primary-source admission audit, not an installation, performance result or compatibility qualification. FAR, MechJeb and Kerbal Engineer are whole-program research targets. Private inspection and reuse remain within the local research program; choosing an externally shared artifact is a later, concrete decision.
+
+## FAR and MFI: select an actual model owner
+
+The old `dkavolis/Ferram-Aerospace-Research` URL now redirects to [KSPModStewards/Ferram-Aerospace-Research](https://github.com/KSPModStewards/Ferram-Aerospace-Research). Its default branch resolves to `c769cbd3d23ec9fd22538c1eb8b57fd2fcd025c6`, dated 2023-06-28. This is the continued lineage to pin, rather than presenting ferram4's historical source as current. The README names Continued 0.16.1.2 and requires ModuleManager and MFI. This does not establish active maintenance in 2026, current binary compatibility or support on this Mac. Its experimental rendering-based exposure path is documented as disabled, not affecting physics and unsupported on OpenGL; it is not an immediately usable geometry replacement for our OpenGL reference.
+
+FAR's [registration owner](https://github.com/KSPModStewards/Ferram-Aerospace-Research/blob/c769cbd3d23ec9fd22538c1eb8b57fd2fcd025c6/FerramAerospaceResearch/FARAeroComponents/ModularFlightIntegratorRegisterer.cs#L53-L63) registers aerodynamic update, thermodynamic pre-update, exposed/radiative area and Sun/body-area providers. Its aerodynamic hook still delegates selected airbrakes/missile cases to stock and updates stock flow/drag-cube state for other parts. FAR therefore changes more than a force coefficient function.
+
+[MFI's exact owner slot](https://github.com/sarbian/ModularFlightIntegrator/blob/03f07cd6e498ed003f84ee97ce976430e6447256/ModularFlightIntegrator.cs#L794-L834) accepts the first aerodynamic registration and returns false for another. The space-center check logs a warning but does not enforce rejection. There is no corresponding unregister in this inspected seam. Continuum cannot safely install a competing override or advertise a hot stock/FAR toggle based on this API alone.
+
+[FARVesselAero](https://github.com/KSPModStewards/Ferram-Aerospace-Research/blob/c769cbd3d23ec9fd22538c1eb8b57fd2fcd025c6/FerramAerospaceResearch/FARAeroComponents/FARVesselAero.cs#L198-L284) performs vessel-level atmosphere/flow calculation, section evaluation and per-module force application in FixedUpdate. [FARAeroPartModule.ApplyForces](https://github.com/KSPModStewards/Ferram-Aerospace-Research/blob/c769cbd3d23ec9fd22538c1eb8b57fd2fcd025c6/FerramAerospaceResearch/FARAeroComponents/FARAeroPartModule.cs#L440-L510) publishes through `Part.AddForce` and `Part.AddTorque`. Owning MFI alone therefore does not own all FAR force channels. Wing/control-surface modules and other direct publishers must also be inventoried before changing models.
+
+The architectural donor is [VehicleAerodynamics.TryVoxelUpdate](https://github.com/KSPModStewards/Ferram-Aerospace-Research/blob/c769cbd3d23ec9fd22538c1eb8b57fd2fcd025c6/FerramAerospaceResearch/FARAeroComponents/VehicleAerodynamics.cs#L337-L383): main-thread transform capture precedes queued voxel processing. Reusable vessel geometry and section models can eliminate repeated part-level geometry work. This is a source-supported design, not a measured speed comparison. [FARAPI](https://github.com/KSPModStewards/Ferram-Aerospace-Research/blob/c769cbd3d23ec9fd22538c1eb8b57fd2fcd025c6/FerramAerospaceResearch/FARAPI.cs) supplies an aggregate aerodynamic prediction seam; thread safety, provider readiness and agreement with live per-part publication remain to be established.
+
+Use three explicit fidelity selections:
+
+| Selection | Authoritative behavior | Initial switching boundary |
+| --- | --- | --- |
+| Stock-compatible | Stock equations/order, or replacement verified against stock | Existing original-assembly capture/replay and original publication |
+| FAR | Actual pinned FAR/MFI/configuration, including geometry, controls, heating and force channels | Separate disposable launch/profile; fresh scene and provider admission |
+| Continuum model | Declared independently authored reduced/section model | Shadow prediction first; explicit new behavior contract before force authority |
+
+Do not compare stock and FAR outputs as a numerical-equivalence gate. Compare defined mission behavior, predicted force/moment, stability and complete cost under the same declared physical inputs. Do not mix labels without provider identity. A future in-process dispatcher would need ownership of registrations, geometry generations, all force publishers and thermal/control dependencies; changing only the override delegate is insufficient.
+
+## MechJeb and KER: separate observation, analysis and control
+
+[MechJeb's current dev](https://github.com/MuMech/MechJeb2/tree/c81ea74d40967f87dbc48e6e1b6afc04e366ffe3) resolves to `c81ea74`, dated 2026-10-10. This is not assumed to match the installed binary. [VesselState.Update](https://github.com/MuMech/MechJeb2/blob/c81ea74d40967f87dbc48e6e1b6afc04e366ffe3/MechJeb2/VesselState.cs#L464-L489) combines live vessel/CoM/velocity observations with engine, intake, RCS torque and inertia analysis. Its [StageStats](https://github.com/MuMech/MechJeb2/blob/c81ea74d40967f87dbc48e6e1b6afc04e366ffe3/MechJeb2/MechJebModuleStageStats.cs) has atmosphere/vacuum fuel-flow job state and explicit readiness/completion handling. These existing jobs are donors, not an untouched serial implementation to replace blindly.
+
+[KER's maintained lineage](https://github.com/jrbudda/KerbalEngineer/tree/54b8b73890b34a8342737f52e3062efc9fd21cc5) resolves to `54b8b73`, dated 2024-07-09; present maintenance activity remains unknown. [SimulationProcessor](https://github.com/jrbudda/KerbalEngineer/blob/54b8b73890b34a8342737f52e3062efc9fd21cc5/KerbalEngineer/Flight/Readouts/Vessel/SimulationProcessor.cs#L97-L105) requests simulation; [SimManager](https://github.com/jrbudda/KerbalEngineer/blob/54b8b73890b34a8342737f52e3062efc9fd21cc5/KerbalEngineer/VesselSimulator/SimManager.cs#L366-L400) prepares on the caller then queues simulation to the ThreadPool. [FlightEngineerCore](https://github.com/jrbudda/KerbalEngineer/blob/54b8b73890b34a8342737f52e3062efc9fd21cc5/KerbalEngineer/Flight/FlightEngineerCore.cs#L325-L385) updates sections and request-driven modules.
+
+Shared vessel-state capture and topology-bound fuel/stage dependency graphs are plausible consolidation boundaries. The two systems have different semantics, assumptions, refresh cadence and consumers; neither duplicate cost nor interchangeable results are proved. MechJeb's controller writes remain distinct from KER readouts. Preserve current installed-provider admission, enabled/request state and original consumers before moving calculations into a shared resident model.
+
+## One useful next study
+
+Start offline: pin installed MechJeb/KER/FAR identities separately from browsed heads, then capture one whole vessel observation/analysis transaction with topology, resources, engines, atmosphere and request cadence. Replay the original stage-analysis owners against that immutable input and measure capture, preparation, computation and publication separately. Compare outputs and invalidation behavior before deduplicating work. Existing typed capture/replay, force/moment summaries, original-assembly replay and bounded provider receipts are reusable; stock per-part labels do not serve as FAR labels.
+
+For actual FAR admission, use a separate private profile first: verify MFI registration results and all direct force/thermal publishers, wait for a current voxel generation, then run one defined winged-craft situation with actual FAR and stock references. Keep geometry preparation cost and steady-state cost separate. No speed claim is justified from the architecture alone. A physical model comparison needs a craft with meaningful lift/control behavior, not only the existing truss station.
+
+No mods were installed, no provider ownership changed and no native capture was performed for this audit. Existing historical ordered-MechJeb access-plan count reductions did not demonstrate a meaningful complete-frame gain; this proposal targets actual shared analysis ownership instead of repeating that cache experiment.
