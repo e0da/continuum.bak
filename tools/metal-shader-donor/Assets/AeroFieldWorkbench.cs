@@ -42,6 +42,10 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         public bool materialPixelProof;
         public string projection="perspective"; public float fov,verticalSpanMeters,near,far; public double pixelsPerMeterAtFocus; public int viewportWidth,viewportHeight;
         public ScientificOverlay.StatusData scientificOverlay;
+        public string orthographicShaderContract="continuum-aero-field-orthographic/v1",orthographicShaderAdmission;
+        public bool orthographicShadersSupported;
+        public string[] orthographicShaderNames; public bool[] orthographicShaderPropertyPresent; public float[] orthographicShaderContractValues;
+        public float[] viewForward;
     }
     [Serializable] sealed class Benchmark
     {
@@ -227,6 +231,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         else if(words.Length==3&&words[1]=="ortho")
         {
             float span=Number(words[2]); if(span<.001f||span>1e12f)throw new InvalidDataException("Orthographic full vertical span .001..1e12 metres required.");
+            if(!state.orthographicShadersSupported)throw new InvalidDataException("Orthographic mode requires recooked Sheath, Ribbon and SceneDepthCopy with _ContinuumOrthographicContract exactly1; current bundle is perspective-only.");
             view.orthographicSize=span*.5f; view.orthographic=true;
         }
         else throw new InvalidDataException("projection perspective [FOV_DEGREES] | projection ortho VERTICAL_SPAN_METRES");
@@ -374,6 +379,15 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
                 if(found==null||!found.isSupported) throw new InvalidDataException("Required supported shader absent: "+suffix);
                 materials.Add(new Material(found));
             }
+            var orthoNames=new string[3]; var orthoPresent=new bool[3]; var orthoValues=new float[3]; bool orthoSupported=true;
+            for(int i=0;i<3;i++)
+            {
+                Material material=materials[i+2]; orthoNames[i]=material.shader.name;
+                orthoPresent[i]=material.HasProperty("_ContinuumOrthographicContract");
+                orthoValues[i]=orthoPresent[i]?material.GetFloat("_ContinuumOrthographicContract"):0;
+                orthoSupported&=orthoPresent[i]&&orthoValues[i]==1;
+            }
+            if(view!=null&&view.orthographic&&!orthoSupported)throw new InvalidDataException("Orthographic bundle reload requires all three exact v1 contracts; previous supported owner retained.");
             materials[3].enableInstancing=true;
             if(HashFile(path)!=before) throw new InvalidDataException("Bundle changed during reload.");
             if(publicationHash!=null&&HashFile(publicationPath)!=publicationHash) throw new InvalidDataException("Publication changed during reload.");
@@ -382,6 +396,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             coverage=materials[0]; flowMaterial=materials[1]; sheath=materials[2]; ribbon=materials[3]; depthCopy=materials[4]; bundle=next;
             ribbonCommands?.Clear(); sceneCommands?.Clear(); foreach(Material material in old) if(material!=null) Destroy(material); if(previous!=null) previous.Unload(true);
             state.bundleSha256=before; state.generation=generation; state.shaders=Array.ConvertAll(materials.ToArray(),m=>m.shader.name); state.shaderReloads++; state.reloadError=null;
+            state.orthographicShadersSupported=orthoSupported; state.orthographicShaderNames=orthoNames; state.orthographicShaderPropertyPresent=orthoPresent; state.orthographicShaderContractValues=orthoValues; state.orthographicShaderAdmission=orthoSupported?"supported-exact-v1":"legacy-perspective-only";
             activeBundlePath=path;
         }
         catch { foreach(Material material in materials) Destroy(material); next.Unload(true); throw; }
@@ -490,6 +505,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
         Shader.SetGlobalVector("_ContinuumViewField_TexelSize",new Vector4(1f/fieldMap.width,1f/fieldMap.height,fieldMap.width,fieldMap.height));
         Shader.SetGlobalMatrix("_ContinuumViewInverseProjection",GL.GetGPUProjectionMatrix(view.projectionMatrix,true).inverse); Shader.SetGlobalMatrix("_ContinuumViewCameraToWorld",view.cameraToWorldMatrix);
         Shader.SetGlobalFloat("_ContinuumViewOrthographic",view.orthographic?1:0);
+        Shader.SetGlobalVector("_ContinuumViewForward",view.transform.forward);
         Shader.SetGlobalMatrix("_ContinuumFlowViewProjection",GL.GetGPUProjectionMatrix(flow.projectionMatrix,true)*flow.worldToCameraMatrix); Shader.SetGlobalMatrix("_ContinuumFlowWorldToView",flow.worldToCameraMatrix); Shader.SetGlobalFloat("_ContinuumFlowFar",flow.farClipPlane);
         Shader.SetGlobalVector("_ContinuumEffectDirection",direction); Shader.SetGlobalColor("_ContinuumEffectColor",effectColor); Shader.SetGlobalVector("_ContinuumEffectParameters",effect); texture.w=clock; Shader.SetGlobalVector("_ContinuumTextureParameters",texture); Shader.SetGlobalVector("_ContinuumFalloffs",falloffs);
         Shader.SetGlobalVector("_ContinuumSeedRect",new Vector4(0,0,1,1));
@@ -545,6 +561,7 @@ public sealed class AeroFieldWorkbench : MonoBehaviour
             state.projection=view.orthographic?"ortho":"perspective"; state.fov=view.fieldOfView; state.verticalSpanMeters=view.orthographic?view.orthographicSize*2:0; state.near=view.nearClipPlane; state.far=view.farClipPlane; state.viewportWidth=Screen.width; state.viewportHeight=Screen.height;
             double focusDepth=Vector3.Dot(geometryBounds.center-position,view.transform.forward);
             state.pixelsPerMeterAtFocus=focusDepth>0?CurrentScientificView().PixelsPerMeter(focusDepth):0; state.scientificOverlay=scientificOverlay.Status;
+            Vector3 forward=view.transform.forward; state.viewForward=new[]{forward.x,forward.y,forward.z};
         }
         state.flowDirection=new[] {direction.x,direction.y,direction.z}; state.intensity=effect.x; state.effectClock=clock;
         if(resident!=null) { state.materialMode=resident.Mode; state.materialDiagnostic=resident.Diagnostic; state.materialTopologyId=resident.TopologyId; state.materialStateSha256=resident.StateSha256; state.materialBundleSha256=resident.BundleSha256; state.materialOriginalBundleSha256=resident.OriginalBundleSha256; state.materialGeneration=resident.Generation; state.materialInstances=resident.InstanceCount; state.materialMeshes=resident.MeshCount; state.materialPackets=resident.PacketCount; state.materialDrawCalls=resident.DrawCalls; state.materialSubmittedFrames=resident.SubmittedFrames; state.materialSnapshotPublications=resident.SnapshotPublications; state.contract="Resident real-material fixture; optional shipped shader reference, native comparisons qualify only their captured dependencies."; }

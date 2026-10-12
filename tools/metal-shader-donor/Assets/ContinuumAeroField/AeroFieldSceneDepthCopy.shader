@@ -1,5 +1,6 @@
 Shader "Continuum/AeroFieldSceneDepthCopy"
 {
+ Properties { [HideInInspector] _ContinuumOrthographicContract("Orthographic view/depth contract",Float)=1 }
  SubShader
  {
   Pass

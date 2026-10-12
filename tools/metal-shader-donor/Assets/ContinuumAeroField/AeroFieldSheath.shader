@@ -1,5 +1,6 @@
 Shader "Continuum/AeroFieldSheath"
 {
+ Properties { [HideInInspector] _ContinuumOrthographicContract("Orthographic view/depth contract",Float)=1 }
  SubShader
  {
   Tags { "Queue"="Transparent" }
@@ -35,7 +36,7 @@ Shader "Continuum/AeroFieldSheath"
     float3 world=FieldWorld(anchor,field.a);
     if(center.a>0) { anchor=uv; world=FieldWorld(uv,field.a); }
     float exposure=Exposed(world,normal);
-    float3 view=normalize(_ContinuumViewCameraToWorld._m03_m13_m23-world);
+    float3 view=FieldToCamera(world);
     float edge=pow(saturate(1-abs(dot(normal,view))),max(.25,_ContinuumEffectParameters.z*_ContinuumFalloffs.y));
     float silhouette=center.a<=0?saturate(occupied/3):edge*.35;
     float noise=tex2D(_ContinuumNoiseTex,uv*max(.01,_ContinuumTextureParameters.y)+

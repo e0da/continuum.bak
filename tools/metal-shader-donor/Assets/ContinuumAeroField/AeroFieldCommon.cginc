@@ -6,6 +6,7 @@ float4 _ContinuumViewField_TexelSize;
 float4x4 _ContinuumViewInverseProjection, _ContinuumViewCameraToWorld;
 float4x4 _ContinuumFlowViewProjection, _ContinuumFlowWorldToView;
 float _ContinuumFlowFar, _ContinuumViewOrthographic;
+float4 _ContinuumViewForward;
 float4 _ContinuumDepthParams, _ContinuumEffectColor, _ContinuumEffectDirection;
 float4 _ContinuumEffectParameters, _ContinuumTextureParameters, _ContinuumFalloffs;
 float4 _ContinuumSeedRect;
@@ -36,6 +37,11 @@ float3 FieldWorld(float2 uv, float depth)
  float3 ray=q.xyz/q.w;
  if(_ContinuumViewOrthographic>0.5) return mul(_ContinuumViewCameraToWorld,float4(ray.xy,-depth,1)).xyz;
  return mul(_ContinuumViewCameraToWorld,float4(ray*(depth/max(-ray.z,.00001)),1)).xyz;
+}
+float3 FieldToCamera(float3 world)
+{
+ if(_ContinuumViewOrthographic>0.5) return -normalize(_ContinuumViewForward.xyz);
+ return normalize(_ContinuumViewCameraToWorld._m03_m13_m23-world);
 }
 float Exposed(float3 world, float3 normal)
 {

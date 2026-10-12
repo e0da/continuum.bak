@@ -1,6 +1,6 @@
 Shader "Continuum/AeroFieldRibbon"
 {
- Properties { _ContinuumNoiseTex("Noise",2D)="white"{} }
+ Properties { _ContinuumNoiseTex("Noise",2D)="white"{} [HideInInspector] _ContinuumOrthographicContract("Orthographic view/depth contract",Float)=1 }
  SubShader
  {
   Tags { "Queue"="Transparent" }
@@ -30,7 +30,7 @@ Shader "Continuum/AeroFieldRibbon"
     float3 anchor=FieldWorld(uv,max(field.a,.001));
     float exposed=field.a>0&&all(uv>=0)&&all(uv<=1)?Exposed(anchor,normal):0;
     float3 downstream=normalize(_ContinuumEffectDirection.xyz);
-    float3 toCamera=normalize(_ContinuumViewCameraToWorld._m03_m13_m23-anchor);
+    float3 toCamera=FieldToCamera(anchor);
     float3 crossAxis=cross(downstream,toCamera);
     float crossLength=length(crossAxis);
     crossAxis=crossLength>.0001?crossAxis/crossLength:_ContinuumViewCameraToWorld._m00_m10_m20;
