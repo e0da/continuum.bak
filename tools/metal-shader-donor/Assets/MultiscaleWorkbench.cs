@@ -20,6 +20,8 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     {
         public VesselReplaySession.Observation replay;
         public PersistentTrailRuntime.StatusData trail;
+        public bool trailInstalled;
+        public int viewportWidthRequested,viewportHeightRequested;
         public string schema="continuum-multiscale-workbench/v1",status="starting",error,hostId,unity,backend,assemblySha256,scenePath,sceneSha256,vesselFixtureSha256,bodyGeometrySha256,bodyTextureSha256,bodyRecipe,preset="balanced",context="flight",focus,crop="rejected-unqualified-selective-coverage",geometryFallback="Only captured original meshes exist; no geometric LOD hierarchy",shadowFallback="Shadow requests unsatisfied; directional shadow maps disabled for first two-domain composition",lastPng,lastPngSha256,cleanupStatus;
         public string partBundleSha256,originalBundleSha256,bodyTextureCapture,materialMode="instanced",view="composed";
         public string debugShader="Continuum/MultiscaleDiagnostic",debugBundleSha256,debugLegend="Diagnostic only; no material fidelity or performance qualification",debugInputs="Actual captured geometry, camera-relative matrices, explicit white craft vertex COLOR, captured MainTex and ST; material IDs ordered by captured material index",fixtureScope="Captured material-family subset; not whole craft",fixtureFamily;
@@ -153,6 +155,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         var next=Prepare(path); try { if(generation!=null) generation.Craft.ValidateActivationTransferTo(next.Craft); next.Craft.Activate(craftCamera,false); if(generation!=null) generation.Craft.TransferActivationTo(next.Craft); }
         catch { next.Dispose(); throw; }
         var previous=generation; generation=next; policyDirty=true; if(previous!=null) previous.Dispose(); state.scenePath=path; state.sceneSha256=seen=next.Hash; state.vesselFixtureSha256=next.Scene.vesselFixtureSha256; state.bodyGeometrySha256=next.Scene.bodyGeometrySha256; state.bodyTextureSha256=next.Scene.bodyTexture.payloadSha256; state.bodyRecipe=next.Scene.bodyMaterialRecipe; state.bodyTextureCapture=next.Scene.bodyTextureCapture; state.partBundleSha256=next.Craft.BundleSha256; state.originalBundleSha256=next.Craft.OriginalBundleSha256; state.sceneReloads++;
+        if(trail!=null) { trail.Dispose(); trail=null; state.trail=null; } state.trailInstalled=false;
         if(initial) { state.focus=next.Scene.initialCameraTarget; var o=next.Scene.initialCameraOffsetMeters; distance=Math.Sqrt(o[0]*o[0]+o[1]*o[1]+o[2]*o[2]); yaw=(float)(Math.Atan2(-o[0],-o[2])*180/Math.PI); pitch=(float)(Math.Asin(o[1]/distance)*180/Math.PI); }
         SelectView(state.view);
         state.fixtureInstances=generation.Craft.InstanceCount; state.fixtureMeshes=generation.Craft.MeshCount; state.fixtureTextures=generation.Craft.Manifest.textures.Length; state.fixtureFamily=generation.Craft.Manifest.family;
@@ -245,6 +248,12 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         if(words[0]=="cancelbenchmark"&&words.Length==1) { if(!state.benchmarkActive) throw new InvalidDataException("No active benchmark."); EndBenchmark("interrupted","operator-cancelled"); return; }
         if(words[0]=="captureframe") { if(replay!=null) replay.Pause(); StartCoroutine(Capture()); return; }
         if(words[0]=="trail") { TrailCommand(words); return; }
+        if(words[0]=="viewport"&&words.Length==3)
+        {
+            int width,height;
+            if(!int.TryParse(words[1],NumberStyles.None,CultureInfo.InvariantCulture,out width)||!int.TryParse(words[2],NumberStyles.None,CultureInfo.InvariantCulture,out height)||width<320||width>4096||height<240||height>4096||(long)width*height>16000000) throw new InvalidDataException("Viewport integer320..4096 by240..4096, at most16000000 pixels required.");
+            Screen.SetResolution(width,height,false); state.viewportWidthRequested=width; state.viewportHeightRequested=height; return;
+        }
         if(words[0]=="replay.open"&&words.Length>=2) { var next=VesselReplaySession.Open(Absolute(text.Substring(words[0].Length).Trim()),state.sceneSha256,generation.Whole); replay=next; state.replay=next.Status; }
         else if(words[0]=="replay.resume"&&words.Length>=2) { var next=VesselReplaySession.Resume(Absolute(text.Substring(words[0].Length).Trim()),state.sceneSha256,generation.Whole); replay=next; state.replay=next.Status; }
         else if(words[0]=="replay.seek"&&words.Length==2) { RequireReplay(); replay.Seek(int.Parse(words[1],CultureInfo.InvariantCulture)); }
@@ -273,13 +282,13 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     void RequireReplay() { if(replay==null) throw new InvalidOperationException("Open a bound replay first."); }
     void TrailCommand(string[] words)
     {
-        if(words.Length==2&&words[1]=="remove") { if(trail!=null) trail.Dispose(); trail=null; state.trail=null; return; }
+        if(words.Length==2&&words[1]=="remove") { if(trail!=null) trail.Dispose(); trail=null; state.trail=null; state.trailInstalled=false; return; }
         if(words.Length==2&&words[1]=="fixture")
         {
             PersistentTrailRuntime next=null;
             try { next=new PersistentTrailRuntime(generation.Scene.vesselAnchorMeters); next.Fixture(); }
             catch { if(next!=null) next.Dispose(); throw; }
-            var old=trail; trail=next; state.trail=next.Status; if(old!=null) old.Dispose(); return;
+            var old=trail; trail=next; state.trail=next.Status; state.trailInstalled=true; if(old!=null) old.Dispose(); return;
         }
         if(trail==null) throw new InvalidOperationException("Create trail fixture first.");
         if(words.Length==2&&words[1]=="reset") trail.Reset();
@@ -408,6 +417,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     void Fail(Exception e) { if(state.benchmarkActive) EndBenchmark("invalid","render-failed"); state.status="failed"; state.error=e.ToString(); if(present!=null) present.enabled=false; Write(); Debug.LogException(e); }
     void OnDestroy()
     {
+        state.trailInstalled=false;
         if(trail!=null) trail.Dispose();
         if(state.benchmarkActive) try { EndBenchmark("interrupted","owned-host-destroyed"); } catch(Exception e) { Debug.LogException(e); }
         if(debugDepth!=null) Destroy(debugDepth);

@@ -20,12 +20,15 @@ trail play 4
 trail emission off
 trail reset
 trail remove
+viewport 1280 720
 status
 captureframe
 quit
 ```
 
-`fixture` atomically replaces the previous trail with three simulated seconds of emitted history, then pauses with emission off. `play` accepts 0.01–100 simulated seconds per wall second; `step` uses explicit simulated seconds. The live wall driver caps a single wall interval at 0.25 s, so suspension or slow frames do not create a catch-up teleport. Explicit steps retain their full requested duration. Captures freeze advancement and commands; shader/fixture HMR pauses the wall clock without clearing history, changing its generation, or emitting duplicate births. Existing static-render benchmarks reject an installed trail; `remove` returns their original workload. This is not a trail-performance qualification.
+`fixture` atomically replaces the previous trail with three simulated seconds of emitted history, then pauses with emission off. `play` accepts 0.01–100 simulated seconds per wall second; `step` uses explicit simulated seconds. The live wall driver caps a single wall interval at 0.25 s, so suspension or slow frames do not create a catch-up teleport. Explicit steps retain their full requested duration. Captures freeze advancement and commands; debug-shader HMR pauses the wall clock without clearing history, changing its generation, or emitting duplicate births. A successful full scene/fixture-generation reload invalidates the old authored trail and removes it; failed reload preserves the previous owner. Existing static-render benchmarks reject an installed trail; `remove` returns their original workload. This is not a trail-performance qualification.
+
+Top-level `trailInstalled` is the authoritative installation flag, because Unity JSON can serialize a null nested class as a default-looking object. It becomes true only after a successful fixture commit and false on removal, committed scene reload, or cleanup. `viewport WIDTH HEIGHT` requests a windowed resolution, accepting integer dimensions 320–4096 by 240–4096 with at most 16,000,000 pixels. Resolution changes are asynchronous: requested dimensions are recorded separately from actual `width`/`height` and render-target sizes. The control preserves trail history and replay state and is rejected during captures/benchmarks. Only actual changed dimensions and command-lease counters prove a completed resize.
 
 ## Rendering and ownership
 
