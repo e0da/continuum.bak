@@ -143,7 +143,7 @@ namespace KspContinuum
             var root=new Matrix4x4(); for(int r=0;r<4;r++) for(int c=0;c<4;c++) root[r,c]=(float)rootWorld[r*4+c]; root.m03=root.m13=root.m23=0;
             var manifest=new WholeCraftSceneManifest {schema="continuum-whole-craft-scene/v1",runId=runId,processId=System.Diagnostics.Process.GetCurrentProcess().Id,vesselId=vessel.id.ToString("D"),engine=Application.unityVersion,colorSpace=QualitySettings.activeColorSpace.ToString(),geometry="geometry.bin",geometrySha256=Hash(geometryPath),rootToWorld=Matrix(root),rendererInventory=renderers.Count,capturedRenderers=draws.Select(d=>d.rendererId).Distinct().Count(),omittedRenderers=omissions.Count,drawSlots=draws.Count,materials=materials.ToArray(),textures=textures.ToArray(),textureCaptureModes=modes.ToArray(),draws=draws.ToArray(),omissions=omissions.ToArray()};
             WholeCraftSceneFormat.Validate(manifest,geometry); string json=ReportJson.Encode(manifest),manifestPath=Path.Combine(stage,"manifest.json");
-            bool retainRuntime=VesselRuntimeCapture.Requested;
+            bool retainRuntime=VesselRuntimeCapture.Requested || TrailEmitterCapture.Requested;
             File.WriteAllText(manifestPath,json,new UTF8Encoding(false)); string manifestSha256=retainRuntime?Hash(manifestPath):null; Directory.Move(stage,output);
             if(retainRuntime)
             {

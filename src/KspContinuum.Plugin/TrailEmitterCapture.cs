@@ -62,7 +62,7 @@ namespace KspContinuum
                 var orient=new double[16];for(int c=0;c<3;c++){Vector3d axis=c==0?(Vector3d)vessel.transform.right:c==1?(Vector3d)vessel.transform.up:(Vector3d)vessel.transform.forward;Vector3d v=body.GetRelSurfaceDirection(axis);orient[c]=v.x;orient[4+c]=v.y;orient[8+c]=v.z;}orient[15]=1;
                 var f=new TrailEmitterFrame{sequence=frames.Count,startedTicks=start,unityFrame=Time.frameCount,universalTime=Planetarium.GetUniversalTime(),rootBodyFixed=D(body.BodyFrame.WorldToLocal(root.xzy).xzy),emitterBodyFixed=D(body.BodyFrame.WorldToLocal(point.xzy).xzy),rootBodyFixedOrientation=orient,currentThrottle=engine==null?0:engine.currentThrottle,finalThrust=engine==null?0:engine.finalThrust,engineIgnited=engine!=null&&engine.EngineIgnited};f.emission=engine==null||(f.engineIgnited&&f.finalThrust>0&&f.currentThrottle>0);f.endedTicks=Stopwatch.GetTimestamp();TrailEmitterFormat.Frame(f);if(frames.Count>0)Need(f.universalTime>=frames[frames.Count-1].universalTime&&f.universalTime-frames[frames.Count-1].universalTime<=60,"Emitter time stale/gap.");frames.Add(f);Report.frames=frames.Count;
             }
-            catch(Exception e){Report.status="invalid";Report.reason=e.ToString();throw;}finally{Report.captureTicks+=Stopwatch.GetTimestamp()-start;}
+            catch(Exception e){Report.status="invalid";if(Report.reason==null)Report.reason=e.ToString();throw;}finally{Report.captureTicks+=Stopwatch.GetTimestamp()-start;}
         }
         public void Finish(bool complete,string reason)
         {

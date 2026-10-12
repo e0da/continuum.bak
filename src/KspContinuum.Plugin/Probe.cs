@@ -122,7 +122,11 @@ namespace KspContinuum
                     throw new InvalidOperationException("Runtime poses and emitter recording require distinct cold manifest leases; select one capture in this prototype.");
                 vesselRuntime = VesselRuntimeCapture.Create(FlightGlobals.ActiveVessel, report.runId);
                 trailEmitter = TrailEmitterCapture.Create(FlightGlobals.ActiveVessel, report.runId);
-                if (trailEmitter != null) report.trailEmitterCapture = trailEmitter.Report;
+                if (trailEmitter != null)
+                {
+                    report.trailEmitterCapture = trailEmitter.Report;
+                    if (trailEmitter.FailureReason != null) throw new InvalidOperationException("Trail emitter admission failed: " + trailEmitter.FailureReason);
+                }
                 foreach (MarkerReport row in report.markers) Acquire(row);
                 string[] arguments = Environment.GetCommandLineArgs();
                 if (Environment.GetEnvironmentVariable("CONTINUUM_PROCESS_CAPTURE") == "1")
