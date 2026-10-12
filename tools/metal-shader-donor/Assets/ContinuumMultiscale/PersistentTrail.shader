@@ -4,6 +4,7 @@ Shader "Hidden/Continuum/PersistentTrail"
  {
   [HideInInspector] _MainTex ("Composed opaque scene", 2D) = "black" {}
   [HideInInspector] _TrailColor ("Premultiplied trail", 2D) = "black" {}
+  [HideInInspector] _TrailStrip ("Measured strip representation", Float) = 0
  }
  SubShader
  {
@@ -16,6 +17,7 @@ Shader "Hidden/Continuum/PersistentTrail"
    #pragma target 3.0
    #include "UnityCG.cginc"
    float4x4 _TrailVP, _TrailView;
+   float _TrailStrip;
    sampler2D _CraftDepth, _BodyDepth;
    struct Input { float4 vertex:POSITION; float2 uv:TEXCOORD0; float4 color:COLOR; };
    struct Output { float4 position:SV_POSITION; float2 uv:TEXCOORD0; float4 color:COLOR; float4 screen:TEXCOORD1; float depth:TEXCOORD2; };
@@ -25,7 +27,7 @@ Shader "Hidden/Continuum/PersistentTrail"
     float2 uv=i.screen.xy/i.screen.w;
     float craft=tex2D(_CraftDepth,uv).r, body=tex2D(_BodyDepth,uv).r;
     if(i.depth<=0 || (craft>0 && i.depth>craft) || (body>0 && i.depth>body)) discard;
-    float2 p=i.uv*2-1; float alpha=i.color.a*saturate(1-dot(p,p));
+    float2 p=i.uv*2-1; float alpha=i.color.a*saturate(1-(_TrailStrip>.5?p.y*p.y:dot(p,p)));
     return float4(i.color.rgb*alpha,alpha);
    }
    ENDCG

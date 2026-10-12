@@ -7,6 +7,7 @@ static class Program
     static void Main()
     {
         MeasuredEmitterChecks.Run();
+        MeasuredSegmentChecks.Run();
         var a=Owner(); a.SetWind(2,0,0); a.SetEmission(true); a.Advance(1); a.SetEmission(false); a.Advance(3);
         var p=a.At(0); Near(p.x,1000000005); Near(p.width,Math.Sqrt(6)); Near(p.opacity,Math.Exp(-.2));
         a.SetWind(-1,0,0); Near(a.At(0).x,p.x); a.Advance(4); Near(a.At(0).x,p.x-1);

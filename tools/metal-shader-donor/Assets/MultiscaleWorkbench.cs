@@ -313,6 +313,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         else if(words.Length==5&&words[1]=="wind") trail.Wind(Number(words[2]),Number(words[3]),Number(words[4]));
         else if(words.Length==3&&words[1]=="emission"&&(words[2]=="on"||words[2]=="off")) trail.Emission(words[2]=="on");
         else if(words.Length==3&&words[1]=="visibility"&&(words[2]=="on"||words[2]=="off")) trail.SetVisible(words[2]=="on");
+        else if(words.Length==3&&words[1]=="representation") trail.SetRepresentation(words[2]);
         else throw new InvalidDataException("trail fixture|remove|probe on/scene/off|reset|pause|play [RATE]|step SECONDS|wind X Y Z|emission on/off");
     }
     void InstallSceneTrailProbe()
