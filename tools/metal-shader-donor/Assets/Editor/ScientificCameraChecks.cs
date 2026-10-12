@@ -19,6 +19,8 @@ public static class ScientificCameraChecks
         Need(camera.Focus.position.x==com.x&&camera.GridReference.position.x==origin.x,"Focus and grid parent were coupled.");
         Need(Vector3.Distance(camera.Rotation*Vector3.forward,Vector3.down)<1e-5f,"Top-down snap did not use independent reference axes.");
         Need(Vector3.Distance(camera.Rotation*Vector3.up,Vector3.forward)<1e-5f,"Top-down snap lost its defined up axis.");
+        camera.Handle(new[] {"camera","frame","center-of-mass"});
+        Need(camera.GridReference.position.x==com.x&&camera.AxisReference.id=="origin","CoM grid parent lost independent vessel axes.");
         Quaternion before=camera.Rotation;
         camera.Handle(new[] {"camera","drag","0","0","90"});
         Need(Vector3.Distance(before*Vector3.forward,camera.Rotation*Vector3.forward)<1e-5f,"Roll changed viewing direction.");
@@ -32,6 +34,6 @@ public static class ScientificCameraChecks
         Need(missing&&camera.Focus.id=="com"&&Math.Abs(Quaternion.Dot(before,camera.Rotation))>1-1e-6f,"Unavailable focus changed state.");
         bool removed=false;try {camera.ValidateReplacement(new[] {new ScientificCameraControls.Anchor("vessel-origin","origin","Fixture origin",origin,Quaternion.identity)});}catch(InvalidDataException){removed=true;}
         Need(removed&&camera.Focus.id=="com","Reload removed an active anchor silently.");
-        Debug.Log("Scientific camera checks passed: independent CoM focus/grid axes, pole snap, reversible roll, reflected/sheared rejection, missing selection and reload preservation.");
+        Debug.Log("Scientific camera checks passed: independent CoM focus/grid parent/axes, pole snap, reversible roll, reflected/sheared rejection, missing selection and reload preservation.");
     }
 }
