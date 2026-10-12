@@ -816,6 +816,7 @@ pub fn analyze(
     if !report["flightIntegratorUpdateAttribution"].is_null() {
         summary["flightIntegratorUpdateAttribution"] = crate::integrator_summary::summarize(report)?;
         summary["intrusiveDiagnosticsRequested"] = Value::Bool(true);
+        summary["comparisonEligibility"] = Value::String("intrusive-integrator-owner-and-replay-trace; not-clean-performance-comparison".into());
     }
     if !report["updateCallbackAttribution"].is_null() {
         summary["updateCallbackAttribution"] = crate::update_callbacks::summarize_owned(report, pid)?;

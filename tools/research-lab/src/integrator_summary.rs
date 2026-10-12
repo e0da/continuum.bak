@@ -69,6 +69,17 @@ fn accumulate(phase: &mut Phase, elapsed: u64, rows: &[Row; 6]) -> Result<()> {
 
 pub fn summarize(report: &Value) -> Result<Value> {
     let observer = &report["flightIntegratorUpdateAttribution"];
+    if !observer["patchGraphWitnessStatus"].is_null() {
+        if observer["patchGraphWitnessStatus"] != "passed"
+            || observer["runId"] != report["runId"]
+            || observer["preinstallPatchGraph"].as_array().is_none_or(|rows| rows.is_empty())
+            || observer["installedPatchGraph"].as_array().is_none_or(|rows| rows.is_empty())
+            || observer["preinstallPatchGraph"] != observer["restoredPatchGraph"]
+            || observer["installedPatchGraph"] != observer["precleanupPatchGraph"]
+        {
+            return Err("integrator exact coowner graph admission/cleanup differs".into());
+        }
+    }
     if report["status"] != "complete"
         || observer["schema"] != "continuum-flight-integrator-attribution/v1"
         || observer["status"] != "observed"
@@ -274,6 +285,8 @@ pub fn summarize(report: &Value) -> Result<Value> {
         json!({"schema":"continuum-flight-integrator-summary/v1","status":"observed",
         "runId":report["runId"],
         "assemblySha256":observer["assemblySha256"],"seamOrder":observer["seamOrder"],
+        "variant":observer["variant"],"knownOwners":observer["knownOwners"],
+        "patchGraphWitnessStatus":observer["patchGraphWitnessStatus"],
         "completedRenderFrames":frames,"clockFrequency":frequency,"captureStartClockTimestamp":start,"captureEndClockTimestamp":end,
         "rawWindows":raw.len(),"omittedOutsideOrStraddlingCaptureWindows":omitted,"phases":phases,
         "scope":"Only fully enclosed raw windows are selected. Method means per completed render frame use completedFrames; phase-window means and fractions use each phase's own denominator. Inclusive parents contain nested child rows and are nonadditive; outermost only removes same-method recursion. Zero calls mean no execution coverage, not zero cost. Intrusive observer tax remains unqualified; these are wall samples, not exclusive CPU or an uninstrumented speedup estimate."}),
@@ -323,6 +336,18 @@ mod tests {
             result["phases"][0]["methods"][0]["meanInclusiveMillisecondsPerCompletedRenderFrame"],
             0.75
         );
+        report["runId"] = json!("owned-run");
+        let observer = &mut report["flightIntegratorUpdateAttribution"];
+        observer["runId"] = json!("owned-run");
+        observer["patchGraphWitnessStatus"] = json!("passed");
+        observer["preinstallPatchGraph"] = json!(["query"]);
+        observer["restoredPatchGraph"] = json!(["query"]);
+        observer["installedPatchGraph"] = json!(["query", "narrow"]);
+        observer["precleanupPatchGraph"] = json!(["query", "narrow"]);
+        assert!(summarize(&report).is_ok());
+        report["flightIntegratorUpdateAttribution"]["precleanupPatchGraph"] = json!(["query", "foreign"]);
+        assert!(summarize(&report).is_err());
+        report["flightIntegratorUpdateAttribution"]["precleanupPatchGraph"] = json!(["query", "narrow"]);
         report["flightIntegratorUpdateAttribution"]["windows"][2]["inclusiveTicks"] = json!([3, 3]);
         assert!(summarize(&report).is_err());
     }

@@ -402,6 +402,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     }
     void OnGUI()
     {
+        if (trail != null && trail.Status.probeInstalled) return;
         bool controlsAllowed=!capturing&&!state.benchmarkActive&&!quitRequested&&(trail==null||!trail.Status.probeInstalled);
         GUI.Box(new Rect(10,10,430,150),generation!=null&&generation.Whole!=null?"Whole craft snapshot / "+state.wholeRenderMode:"Captured material-family subset"); GUI.Label(new Rect(20,35,410,20),state.preset+" / "+state.distance.ToString("G5")+" m / "+state.view);
         float log=GUI.HorizontalSlider(new Rect(20,65,400,20),(float)Math.Log10(Math.Max(.25,distance)),-.6f,10); if(controlsAllowed) distance=Math.Pow(10,log);

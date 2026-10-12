@@ -28,6 +28,7 @@ namespace KspContinuum
         FixedCallbackAttribution callbackAttribution;
         UpdateCallbackAttribution updateCallbackAttribution;
         FlightIntegratorUpdateAttribution integratorUpdateAttribution;
+        CylinderOcclusionCapture cylinderOcclusionCapture;
         ConvectionCapture convectionCapture;
         ConvectionReplacement convectionReplacement;
         AeroIntegrationAttribution aeroIntegrationAttribution;
@@ -165,9 +166,15 @@ namespace KspContinuum
                 if (Array.IndexOf(arguments, "--continuum-flight-integrator-update-attribution") >= 0)
                 {
                     if (callbackAttribution != null) throw new InvalidOperationException("Narrow integrator attribution excludes broad callback attribution.");
-                    integratorUpdateAttribution = new FlightIntegratorUpdateAttribution(); integratorUpdateAttribution.Start();
+                    cylinderOcclusionCapture = CylinderOcclusionCapture.Create(arguments, report.runId, () => captureActive);
+                    if (cylinderOcclusionCapture != null) report.cylinderOcclusionCapture = cylinderOcclusionCapture.Report;
+                    integratorUpdateAttribution = new FlightIntegratorUpdateAttribution(report.runId, aeroStepContext, convectionReplacement, cylinderOcclusionCapture); integratorUpdateAttribution.Start();
                     report.flightIntegratorUpdateAttribution = integratorUpdateAttribution.Report;
+                    if (integratorUpdateAttribution.Report.status != "installed")
+                        throw new InvalidOperationException("Narrow integrator attribution: " + integratorUpdateAttribution.Report.detail);
                 }
+                else if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_CYLINDER_OCCLUSION_CAPTURE")))
+                    throw new InvalidOperationException("Cylinder capture requires the narrow integrator diagnostic.");
                 bool explicitStock = dryBuoyancyStrategy == DryBuoyancyRuntime.Stock;
                 string requestedDryStrategy = explicitStock ? null : dryBuoyancyStrategy;
                 if (!explicitStock && requestedDryStrategy == null && Array.IndexOf(arguments, "--continuum-dry-buoyancy") >= 0)
@@ -415,6 +422,37 @@ namespace KspContinuum
                 catch (Exception error) { errors.Add("UpdateCallbackAttribution: " + error.GetType().Name); }
                 updateCallbackAttribution = null;
             }
+            if (integratorUpdateAttribution != null)
+            {
+                try
+                {
+                    if (playerLoop != null)
+                    {
+                        playerLoop.Audit();
+                        if (playerLoop.Report.integrityStatus != "verified-at-boundaries")
+                            integratorUpdateAttribution.Fault(typeof(UnityEngine.PlayerLoop.Update.ScriptRunBehaviourUpdate).FullName,
+                                new InvalidOperationException("Final integrator PlayerLoop integrity is unqualified."));
+                    }
+                    integratorUpdateAttribution.Dispose();
+                    if (integratorUpdateAttribution.Report.status != "observed" ||
+                        integratorUpdateAttribution.Report.patchGraphWitnessStatus != "passed" ||
+                        integratorUpdateAttribution.Report.cleanupStatus != "removed-owned-patches")
+                        errors.Add("IntegratorUpdateAttribution: closed witness " + integratorUpdateAttribution.Report.status);
+                }
+                catch (Exception error) { errors.Add("IntegratorUpdateAttribution: " + error.GetType().Name); }
+                integratorUpdateAttribution = null;
+            }
+            if (cylinderOcclusionCapture != null)
+            {
+                try
+                {
+                    cylinderOcclusionCapture.Dispose();
+                    if (cylinderOcclusionCapture.Report.status != "complete" || cylinderOcclusionCapture.Report.cleanupStatus != "removed-owned-patches")
+                        errors.Add("CylinderOcclusionCapture: " + cylinderOcclusionCapture.Report.detail);
+                }
+                catch (Exception error) { errors.Add("CylinderOcclusionCapture: " + error.GetType().Name); }
+                cylinderOcclusionCapture = null;
+            }
             if (aeroStepContext != null)
             {
                 try
@@ -482,13 +520,6 @@ namespace KspContinuum
                 try { writerCensus.Dispose(); }
                 catch (Exception error) { errors.Add("WriterCensus: " + error.GetType().Name); }
                 writerCensus = null;
-            }
-            if (integratorUpdateAttribution != null)
-            {
-                try { integratorUpdateAttribution.Dispose(); }
-                catch (Exception error) { errors.Add("IntegratorUpdateAttribution: " + error.GetType().Name); }
-                if (integratorUpdateAttribution.Report.cleanupStatus == "cleanup-error") errors.Add("IntegratorUpdateAttribution: cleanup-error");
-                integratorUpdateAttribution = null;
             }
             if (dryBuoyancy != null)
             {

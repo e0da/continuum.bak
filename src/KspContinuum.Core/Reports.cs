@@ -136,6 +136,7 @@ namespace KspContinuum
         public CallbackAttributionReport callbackAttribution;
         public object updateCallbackAttribution;
         public object flightIntegratorUpdateAttribution;
+        public object cylinderOcclusionCapture;
         public object convectionCapture;
         public object convectionReplacement;
         public object aeroIntegrationAttribution;

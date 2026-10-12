@@ -119,6 +119,12 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.ReloadMassInitialization+StateRow" ||
                  type.FullName == "KspContinuum.FlightIntegratorUpdateAttribution+ReportData" ||
                  type.FullName == "KspContinuum.FlightIntegratorUpdateAttribution+Window" ||
+                 type.FullName == "KspContinuum.CylinderOcclusionCapture+CaptureReport" ||
+                 type.FullName == "KspContinuum.CylinderOcclusionCapture+Recording" ||
+                 type.FullName == "KspContinuum.CylinderOcclusionCapture+Pass" ||
+                 type.FullName == "KspContinuum.CylinderOcclusionCapture+Row" ||
+                 type.FullName == "KspContinuum.CylinderOcclusionCapture+Pair" ||
+                 type.FullName == "KspContinuum.CylinderOcclusionCapture+Cylinder" ||
                  type.FullName == "KspContinuum.FlightAeroFieldRenderer+Report" ||
                  type.FullName == "KspContinuum.FlightPartBatcher+Report" ||
                  type.FullName == "KspContinuum.ResidentMaterialFixtureCapture+Topology" ||

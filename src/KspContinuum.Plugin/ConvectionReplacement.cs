@@ -245,7 +245,7 @@ namespace KspContinuum
             try
             {
                 var patches = Harmony.GetPatchInfo(Target);
-                if (attribution == null ? patches == null || patches.Owners.Any(id => id != Owner) : !MatchesAttributionGraph(Target, patches, true))
+                if (owner.attribution == null ? patches == null || patches.Owners.Any(id => id != Owner) : !owner.MatchesAttributionGraph(Target, patches, true))
                     throw new ConvectionSparseKernel.Unsupported("foreign-live-hook");
                 var rows = (List<OcclusionData>)Rows.GetValue(integrator);
                 if (rows == null || rows.Count < 1 || rows.Count > ConvectionFormat.MaxRows || (int)Count.GetValue(integrator) != rows.Count)
