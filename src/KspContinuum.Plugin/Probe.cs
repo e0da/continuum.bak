@@ -26,6 +26,7 @@ namespace KspContinuum
         ActiveVesselPhysicsSubstitutionCanary substitutionCanary;
         PartForceObservation partForces;
         FixedCallbackAttribution callbackAttribution;
+        UpdateCallbackAttribution updateCallbackAttribution;
         FlightIntegratorUpdateAttribution integratorUpdateAttribution;
         ConvectionCapture convectionCapture;
         ConvectionReplacement convectionReplacement;
@@ -131,6 +132,13 @@ namespace KspContinuum
                 }
                 aeroIntegrationAttribution = AeroIntegrationAttribution.Create(arguments, report.runId, () => captureActive);
                 if (aeroIntegrationAttribution != null) report.aeroIntegrationAttribution = aeroIntegrationAttribution.Report;
+                updateCallbackAttribution = UpdateCallbackAttribution.Create(arguments, report.runId, () => captureActive);
+                if (updateCallbackAttribution != null)
+                {
+                    report.updateCallbackAttribution = updateCallbackAttribution.Report;
+                    if (updateCallbackAttribution.Report.status != "installed")
+                        throw new InvalidOperationException("UpdateCallbackAttribution: " + updateCallbackAttribution.Report.detail);
+                }
                 convectionCapture = ConvectionCapture.Create(arguments, report.runId, () => captureActive);
                 if (convectionCapture != null) report.convectionCapture = convectionCapture.Report;
                 string canaryReason;
@@ -169,14 +177,17 @@ namespace KspContinuum
                     dryBuoyancy = new DryBuoyancyRuntime(requestedDryStrategy); dryBuoyancy.Start(); report.dryBuoyancy = dryBuoyancy.Report;
                     if (dryBuoyancy.Report.status != "installed") throw new InvalidOperationException("Dry buoyancy admission did not install: " + dryBuoyancy.Report.status);
                 }
-                if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || integratorUpdateAttribution != null || dryBuoyancy != null)
+                if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || updateCallbackAttribution != null || integratorUpdateAttribution != null || dryBuoyancy != null)
                 {
                     IPlayerLoopBracketObserver observer = writerCensus == null ? null : writerCensus.Census;
                     if (substitutionCanary != null) observer = new CompositePlayerLoopObserver(observer, substitutionCanary);
                     if (callbackAttribution != null) observer = new CompositePlayerLoopObserver(observer, callbackAttribution);
+                    if (updateCallbackAttribution != null) observer = new CompositePlayerLoopObserver(observer, updateCallbackAttribution);
                     if (integratorUpdateAttribution != null) observer = new CompositePlayerLoopObserver(observer, integratorUpdateAttribution);
                     if (dryBuoyancy != null) observer = new CompositePlayerLoopObserver(observer, dryBuoyancy);
                     playerLoop = new PlayerLoopTiming(observer); playerLoop.Start(); report.playerLoop = playerLoop.Report;
+                    if (updateCallbackAttribution != null && playerLoop.Report.integrityStatus != "verified-at-boundaries")
+                        throw new InvalidOperationException("Update attribution requires intact PlayerLoop brackets.");
                     if (substitutionCanary != null) substitutionCanary.Start();
                 }
                 if (Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-part-forces") >= 0)
@@ -234,6 +245,8 @@ namespace KspContinuum
                     if (playerLoop != null)
                     {
                         playerLoop.Audit();
+                        if (updateCallbackAttribution != null && playerLoop.Report.integrityStatus == "invalidated")
+                            throw new InvalidOperationException("Update attribution PlayerLoop integrity changed.");
                         if (dryBuoyancy != null && playerLoop.Report.integrityStatus == "invalidated")
                         {
                             dryBuoyancy.Dispose();
@@ -384,6 +397,24 @@ namespace KspContinuum
             if (finished) return;
             finished = true;
             var errors = new List<string>();
+            if (updateCallbackAttribution != null)
+            {
+                try
+                {
+                    if (playerLoop != null)
+                    {
+                        playerLoop.Audit();
+                        if (playerLoop.Report.integrityStatus != "verified-at-boundaries")
+                            updateCallbackAttribution.Fault(typeof(UnityEngine.PlayerLoop.Update.ScriptRunBehaviourUpdate).FullName,
+                                new InvalidOperationException("Final Update PlayerLoop integrity is unqualified."));
+                    }
+                    updateCallbackAttribution.Dispose();
+                    string reason;
+                    if (!updateCallbackAttribution.IsValidFinal(out reason)) errors.Add("UpdateCallbackAttribution: " + reason);
+                }
+                catch (Exception error) { errors.Add("UpdateCallbackAttribution: " + error.GetType().Name); }
+                updateCallbackAttribution = null;
+            }
             if (aeroStepContext != null)
             {
                 try

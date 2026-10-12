@@ -134,6 +134,7 @@ namespace KspContinuum
         public ForceObservationReport partForces;
         public PhysicsSubstitutionCanaryReport substitutionCanary;
         public CallbackAttributionReport callbackAttribution;
+        public object updateCallbackAttribution;
         public object flightIntegratorUpdateAttribution;
         public object convectionCapture;
         public object convectionReplacement;

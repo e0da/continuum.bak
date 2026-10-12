@@ -104,6 +104,10 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.AeroIntegrationAttribution+MethodRow" ||
                  type.FullName == "KspContinuum.AeroIntegrationAttribution+Window" ||
                  type.FullName == "KspContinuum.AeroIntegrationAttribution+CurveReuseRow" ||
+                 type.FullName == "KspContinuum.UpdateCallbackAttribution+ReportData" ||
+                 type.FullName == "KspContinuum.UpdateCallbackAttribution+Target" ||
+                 type.FullName == "KspContinuum.UpdateCallbackAttribution+Window" ||
+                 type.FullName == "KspContinuum.UpdateCallbackAttribution+Entry" ||
                  type.FullName == "KspContinuum.AeroStepContext+ReportData" ||
                  type.FullName == "KspContinuum.AeroStepContext+MethodRow" ||
                  type.FullName == "KspContinuum.AeroStepContext+Window" ||
