@@ -16,6 +16,7 @@ namespace KspContinuum
         public float fov;
         public ResidentTextureAsset bodyTexture;
         public float[] bodyColor, bodyTextureScaleOffset;
+        public ScientificAnchorSet scientificAnchors;
     }
 
     public static class MultiscaleSceneFormat
@@ -46,6 +47,7 @@ namespace KspContinuum
             Require(scene.processId > 0 && scene.bodyId != scene.vesselId, "Scene source/object identity differs.");
             Require(scene.colorSpace == "Gamma" || scene.colorSpace == "Linear", "Scene colour space differs.");
             Require(scene.sourceFrame == "body-centred-world-axes", "Scene reference frame unsupported.");
+            if(scene.scientificAnchors!=null) ScientificAnchors.Admit(scene.scientificAnchors,scene.runId,scene.processId,scene.vesselId,scene.bodyId,scene.sourceFrame);
             PortablePath(scene.vesselFixture); Digest(scene.vesselFixtureSha256); PortablePath(scene.bodyGeometry); Digest(scene.bodyGeometrySha256);
             Numbers(scene.vesselAnchorMeters, 3); Numbers(scene.bodyAnchorMeters, 3); Numbers(scene.initialCameraOffsetMeters, 3); Numbers(scene.bodyLocalToMeters, 16);
             Require(scene.bodyAnchorMeters[0] == 0 && scene.bodyAnchorMeters[1] == 0 && scene.bodyAnchorMeters[2] == 0, "Body-centred origin differs.");

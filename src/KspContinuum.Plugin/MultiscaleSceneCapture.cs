@@ -61,6 +61,7 @@ namespace KspContinuum
                     bodyRadiusMeters = body.Radius, initialCameraTarget = vessel.id.ToString("D"), initialCameraOffsetMeters = new[] { (double)cameraOffset.x, cameraOffset.y, cameraOffset.z }, fov = camera.fieldOfView,
                     bodyMaterialRecipe = "continuum-body-diffuse-v1", originalBodyShader = material.shader.name, bodyTextureProperty = "_MainTex", bodyTextureCapture = captureMode,
                     bodyTexture = bodyTexture, bodyColor = V(material.HasProperty("_Color") ? material.GetColor("_Color") : Color.white), bodyTextureScaleOffset = new[] { tiling.x,tiling.y,offset.x,offset.y } };
+                scene.scientificAnchors=CaptureAnchors(vessel,centreOfMass,scene);
                 MultiscaleSceneFormat.Validate(scene);
                 File.WriteAllText(Path.Combine(staging, "capture-evidence.json"), JsonUtility.ToJson(new Evidence { runId=runId, body=body.bodyName, mesh=mesh.name, shader=material.shader.name,
                     vertices=vertices.Length, triangles=geometry.indices.Length/3, derivedTangents=derivedTangents, textureCapture=captureMode, sourceTexture=texture.name,
@@ -72,6 +73,49 @@ namespace KspContinuum
             catch { Debug.LogError("[Continuum multiscale] failed staging retained=" + staging); throw; }
         }
         [Serializable] sealed class Evidence { public string schema="continuum-multiscale-capture/v1",runId,body,mesh,shader,textureCapture,sourceTexture; public int vertices,triangles,sourceTextureFormat,sourceTextureMips; public bool derivedTangents; public double scaledSpaceFactor; public string qualification="Actual source geometry and texture captured; body diffuse recipe omits original atmosphere/ocean/material parity. No simulation state mutation."; }
+        static ScientificAnchorSet CaptureAnchors(Vessel vessel,Vector3d centreOfMass,MultiscaleSceneManifest scene)
+        {
+            double[] origin=WholeCraftSceneCapture.World(vessel.transform);var rows=new List<ScientificAnchorData>();
+            var vesselOrigin=TransformAnchor("vessel-origin","vessel-origin","Captured vessel transform origin",0,vessel.transform,origin,"Vessel.transform; composed ancestor local TRS in double");rows.Add(vesselOrigin);
+            string preferred=vesselOrigin.id;
+            if(vessel.rootPart!=null&&vessel.parts.Contains(vessel.rootPart)) {var root=TransformAnchor("root-part/"+vessel.rootPart.flightID,"root-part","Root part origin",vessel.rootPart.flightID,vessel.rootPart.transform,origin,"Vessel.rootPart.transform; composed ancestor local TRS in double");rows.Add(root);preferred=root.id;}
+            Part controlPart=vessel.GetReferenceTransformPart();Transform control=controlPart==null?null:vessel.ReferenceTransform;
+            if(controlPart!=null&&control!=null&&vessel.parts.Contains(controlPart)) {var row=TransformAnchor("control/"+controlPart.flightID,"control","Control from here",controlPart.flightID,control,origin,"Vessel.GetReferenceTransformPart + actual Vessel.ReferenceTransform; composed ancestor local TRS in double");rows.Add(row);preferred=row.id;}
+            Vector3d offset=centreOfMass-(Vector3d)vessel.transform.position;
+            rows.Add(new ScientificAnchorData {id="center-of-mass",kind="center-of-mass",label="Captured vessel center of mass",source="Vessel.GetWorldPos3D/CoMD captured by scene producer",offsetMeters=D(offset),axesAvailable=false});
+            string selected=Environment.GetEnvironmentVariable("CONTINUUM_SCIENTIFIC_ATTACHMENT_NODES");
+            if(!string.IsNullOrEmpty(selected))
+            {
+                string[] selections=selected.Split(',');if(selections.Length>128)throw new InvalidDataException("Selected attachment anchor capacity exceeded.");
+                foreach(string selection in selections)
+                {
+                    int colon=selection.IndexOf(':');uint flightId;if(colon<=0||!uint.TryParse(selection.Substring(0,colon),out flightId)||flightId==0||colon==selection.Length-1)throw new InvalidDataException("Attachment selection requires flightId:actual-node-id.");
+                    string nodeId=selection.Substring(colon+1);Part part=null;foreach(Part p in vessel.parts)if(p.flightID==flightId) {if(part!=null)throw new InvalidDataException("Ambiguous selected part identity.");part=p;}
+                    if(part==null)throw new InvalidDataException("Selected attachment part is absent.");
+                    AttachNode node=null;foreach(AttachNode n in part.attachNodes)if(n!=null&&n.id==nodeId) {if(node!=null)throw new InvalidDataException("Ambiguous selected attachment identity.");node=n;}
+                    if(part.srfAttachNode!=null&&part.srfAttachNode.id==nodeId) {if(node!=null&&!ReferenceEquals(node,part.srfAttachNode))throw new InvalidDataException("Ambiguous selected surface attachment identity.");node=part.srfAttachNode;}
+                    if(node==null||!ReferenceEquals(node.owner,part))throw new InvalidDataException("Selected attachment owner is absent or differs.");
+                    double[] m=WholeCraftSceneCapture.World(part.transform);Vector3 local=node.position;
+                    var row=new ScientificAnchorData {id="attachment/"+flightId+"/"+nodeId,kind="attachment-node",label="Attachment "+nodeId,source="Actual AttachNode.position in owner-local coordinates; stock owner.TransformPoint convention, double composed TRS",partFlightId=flightId,nodeId=nodeId,offsetMeters=new[] {m[0]*local.x+m[1]*local.y+m[2]*local.z+m[3]-origin[3],m[4]*local.x+m[5]*local.y+m[6]*local.z+m[7]-origin[7],m[8]*local.x+m[9]*local.y+m[10]*local.z+m[11]-origin[11]}};
+                    Vector3 normal=node.orientation,secondary=node.secondaryAxis;
+                    double[] f=Direction(m,normal),u=Direction(m,secondary);double fl=Length(f),ul=Length(u);
+                    if(fl>0&&ul>0) {for(int i=0;i<3;i++)f[i]/=fl;double dot=Dot(u,f);for(int i=0;i<3;i++)u[i]-=dot*f[i];ul=Length(u);if(ul>1e-10) {for(int i=0;i<3;i++)u[i]/=ul;row.forward=f;row.up=u;row.right=Cross(u,f);row.axesAvailable=true;}}
+                    rows.Add(row);
+                }
+            }
+            return new ScientificAnchorSet {runId=scene.runId,processId=scene.processId,vesselId=scene.vesselId,bodyId=scene.bodyId,epochSeconds=Planetarium.GetUniversalTime(),preferredId=preferred,anchors=rows.ToArray()};
+        }
+        static ScientificAnchorData TransformAnchor(string id,string kind,string label,uint partId,Transform value,double[] origin,string source)
+        {
+            var m=WholeCraftSceneCapture.World(value);var row=new ScientificAnchorData {id=id,kind=kind,label=label,source=source,partFlightId=partId,offsetMeters=new[] {m[3]-origin[3],m[7]-origin[7],m[11]-origin[11]}};
+            double[] r={m[0],m[4],m[8]},u={m[1],m[5],m[9]},f={m[2],m[6],m[10]};double rl=Length(r),ul=Length(u),fl=Length(f);
+            if(rl>0&&ul>0&&fl>0) {for(int i=0;i<3;i++) {r[i]/=rl;u[i]/=ul;f[i]/=fl;}if(Math.Abs(Dot(r,u))<1e-6&&Math.Abs(Dot(r,f))<1e-6&&Math.Abs(Dot(u,f))<1e-6&&Dot(Cross(r,u),f)>1-1e-6) {row.axesAvailable=true;row.right=r;row.up=u;row.forward=f;}}
+            return row;
+        }
+        static double[] Direction(double[] m,Vector3 p) {return new[] {m[0]*p.x+m[1]*p.y+m[2]*p.z,m[4]*p.x+m[5]*p.y+m[6]*p.z,m[8]*p.x+m[9]*p.y+m[10]*p.z};}
+        static double Dot(double[] a,double[] b) {return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];}
+        static double Length(double[] a) {return Math.Sqrt(Dot(a,a));}
+        static double[] Cross(double[] a,double[] b) {return new[] {a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]};}
         static ResidentTextureAsset CaptureTexture(Texture2D source, string directory, out string captureMode)
         { return CaptureTexture(source,directory,"body-texture.bin",out captureMode); }
         internal static ResidentTextureAsset CaptureTexture(Texture2D source, string directory, string filename, out string captureMode)
