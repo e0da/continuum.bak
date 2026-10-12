@@ -150,6 +150,7 @@ fn run() -> Result<()> {
         "qualify" => &["--receipt", "--output"],
         "revalidate-live" => &["--run", "--output"],
         "summarize-integrator" => &["--markers", "--output"],
+        "summarize-cylinder" => &["--markers", "--mode", "--pid", "--output"],
         "verify-backend-proof" => &["--receipt", "--output"],
         "recovery" => &[
             "--catalog",
@@ -206,6 +207,18 @@ fn run() -> Result<()> {
                 value["requiredAction"] = json!("Execute the exact existing runArguments; frozen inputs are rechecked by the runner. Compare native outcome with this recipe's behavior contract and preserve parent linkage.");
             }
             write_new(output, &value)?;
+        }
+        "summarize-cylinder" => {
+            let path=Path::new(get("--markers")?);
+            let before=hash(path)?;
+            let report: Value=read(path)?;
+            let pid=get("--pid")?.parse::<u32>().map_err(|e|e.to_string())?;
+            let run=report["runId"].as_str().ok_or("enclosing run absent")?;
+            let mut summary=continuum_research_lab::cylinder_occlusion::summarize(
+                get("--mode")?,&report["cylinderOcclusionReplacement"],&report,run,pid)?;
+            if hash(path)?!=before {return Err("cylinder markers changed during analysis".into());}
+            summary["markersSha256"]=json!(before);
+            write_new(output,&summary)?;
         }
         "summarize-integrator" => {
             let path = Path::new(get("--markers")?);
@@ -1190,7 +1203,7 @@ fn smoke(
             }
             if let Some(mode) = selection.diagnostics.cylinder_occlusion_replacement.as_deref() {
                 summary["cylinderOcclusionReplacement"] = continuum_research_lab::cylinder_occlusion::summarize(
-                    mode, &report["cylinderOcclusionReplacement"], &run_id, child.id(),
+                    mode, &report["cylinderOcclusionReplacement"], &report, &run_id, child.id(),
                 )?;
             }
             continuum_research_lab::flight::validate_entry(

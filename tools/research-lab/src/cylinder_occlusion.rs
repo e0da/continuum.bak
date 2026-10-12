@@ -20,7 +20,7 @@ fn window(w: &Value) -> Result<()> {
     Ok(())
 }
 
-pub fn summarize(mode: &str, r: &Value, run: &str, pid: u32) -> Result<Value> {
+pub fn summarize(mode: &str, r: &Value, probe: &Value, run: &str, pid: u32) -> Result<Value> {
     check(matches!(mode,"verify"|"compare"|"query") && r["schema"] == "continuum-cylinder-occlusion-replacement/v1"
         && r["mode"] == mode && r["runId"] == run && r["processId"] == pid
         && r["status"] == "completed-experimental" && r["cleanupStatus"] == "removed-owned-hooks"
@@ -30,6 +30,14 @@ pub fn summarize(mode: &str, r: &Value, run: &str, pid: u32) -> Result<Value> {
         check(number(r,key)? == 0, "cylinder fault or incomplete evidence")?;
     }
     let frequency=number(r,"clockFrequency")?; check(frequency>0,"cylinder clock absent")?;
+    let capture_start=number(probe,"captureStartClockTimestamp")?;
+    let capture_end=number(probe,"captureEndClockTimestamp")?;
+    let completed=number(probe,"completedFrames")? as usize;
+    let frames=probe["frames"].as_array().ok_or("enclosing frames absent")?;
+    check(probe["status"]=="complete" && probe["runId"]==run && number(probe,"clockFrequency")?==frequency
+        && capture_start>0 && capture_end>capture_start && completed>0 && completed<=frames.len()
+        && r["vesselId"].as_str().is_some_and(|s|!s.is_empty())
+        && frames.iter().take(completed).all(|f|f["vesselId"]==r["vesselId"]),"cylinder enclosing capture/vessel differs")?;
     let ms=1000.0/frequency as f64;
     let passes=r["passes"].as_array().filter(|a|a.len()==2).ok_or("two cylinder passes required")?;
     let first=r["firstInvocations"].as_array().filter(|a|a.len()==2).ok_or("two original-return witnesses required")?;
@@ -45,13 +53,16 @@ pub fn summarize(mode: &str, r: &Value, run: &str, pid: u32) -> Result<Value> {
         window(&first[kind])?;
         check(first[kind]["kind"]==name && first[kind]["treatment"]=="verify-original-return" && first[kind]["firstInvocation"]==true
             && first[kind]["bitwiseMatch"]==true && first[kind]["indexPrepared"]==true,"cylinder original-return proof absent")?;
+        if mode!="verify" {check(number(&first[kind],"endedTicks")?<=capture_start,"cylinder qualification not before capture")?;}
         let rows=number(pass,"count")?; check(rows>0 && rows<=1024,"cylinder row count unsupported")?;
         let captured: Vec<_>=windows.iter().filter(|w|w["kind"]==name).collect();
         check(captured.len() as u64==number(pass,"captureCalls")?,"cylinder domain coverage differs")?;
         let mut controls=0; let mut queries=0; let mut control_cost=0.; let mut query_cost=0.; let mut pairs=Vec::new();
         for (sequence,w) in captured.iter().enumerate() {
             window(w)?;
-            check(w["captureActiveAtEnd"]==true && number(w,"rowCount")?==rows && number(w,"acceptedCylinders")?<=rows,"cylinder capture domain changed")?;
+            check(w["captureActiveAtEnd"]==true && number(w,"rowCount")?==rows && number(w,"acceptedCylinders")?>=1
+                && number(w,"acceptedCylinders")?<=rows && number(w,"startedTicks")?>=capture_start
+                && number(w,"endedTicks")?<=capture_end,"cylinder capture domain/enclosure changed")?;
             if mode=="compare" {
                 check(w["treatmentSequence"]==sequence && w["treatment"]==if sequence%2==0{"control-original"}else{"query"}
                     && w["indexPrepared"]==false && w["firstInvocation"]==false && number(w,"comparisonTicks")?==0,"cylinder alternating sequence differs")?;
@@ -67,7 +78,7 @@ pub fn summarize(mode: &str, r: &Value, run: &str, pid: u32) -> Result<Value> {
                     pairs.push(json!({"controlSequence":control["sequence"],"candidateSequence":w["sequence"],
                         "originalMilliseconds":original as f64*ms,"candidateMilliseconds":candidate as f64*ms,
                         "reductionFraction":1.-candidate as f64/original as f64,
-                        "orderMatched":control["orderFingerprint"]==w["orderFingerprint"],"geometryMatched":control["geometryFingerprint"]==w["geometryFingerprint"]}));
+                        "orderMatched":control["orderFingerprint"]==w["orderFingerprint"],"rectangleGeometryMatched":control["geometryFingerprint"]==w["geometryFingerprint"]}));
                 }
             } else {check(mode=="verify" && (w["treatment"]=="verify-original-return" || w["treatment"]=="original-qualified"),"unexpected cylinder treatment")?;}
         }
@@ -89,7 +100,7 @@ pub fn summarize(mode: &str, r: &Value, run: &str, pid: u32) -> Result<Value> {
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn refuses_missing_identity_and_truncated_cost() {
-        assert!(summarize("compare",&json!({}),"run",1).is_err());
+        assert!(summarize("compare",&json!({}),&json!({}),"run",1).is_err());
         let w=json!({"completed":true,"startedTicks":10,"seamTicks":20,"endedTicks":30,"completeTicks":19,"projectionTicks":10});
         assert!(window(&w).is_err());
     }

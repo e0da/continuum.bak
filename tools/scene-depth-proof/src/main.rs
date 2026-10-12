@@ -48,6 +48,8 @@ fn main()->Result<()> {
     let fov=p["actualFov"].as_f64().ok_or("FOV absent")?;let aspect=p["actualAspect"].as_f64().ok_or("Aspect absent")?;
     require(fov>0.&&fov<180.&&(aspect-width/height).abs()<0.01,"Camera controls differ")?;
     let triangles=p["triangles"].as_array().filter(|v|v.len()==2).ok_or("Two real scene triangles required")?;
+    let craft_bounds=values(&p["craftProjectedAabbPixels"],4)?;
+    require(p["bodyCraftExclusionMarginPixels"].as_f64().is_some_and(|v|v>=20.)&&craft_bounds[0]<=craft_bounds[2]&&craft_bounds[1]<=craft_bounds[3],"Body domain isolation bounds absent")?;
     let radius=p["radiusScreenHeight"].as_f64().ok_or("Radius absent")?*height;
     require(radius>=3.99&&radius<=5.,"Resolvable disk radius differs")?;
     let mut samples=Vec::new();let mut all_matched=true;
@@ -61,6 +63,8 @@ fn main()->Result<()> {
         let points:Vec<_>=projected.iter().map(|v|[v[0]*width,v[1]*height]).collect();
         for side in 0..2 {
             let marker=domain*2+side;let base=marker*3;let center=[centers[base]*width,centers[base+1]*height];
+            if domain==1 {require(center[0]+radius<craft_bounds[0]||center[0]-radius>craft_bounds[2]
+                ||center[1]+radius<craft_bounds[1]||center[1]-radius>craft_bounds[3],"Body marker overlaps reported craft coverage")?;}
             let edges:Vec<_>=(0..3).map(|i|edge_distance(points[i],points[(i+1)%3],center)).collect();
             require(edges.iter().all(|v|*v>radius+0.5)||edges.iter().all(|v|*v < -radius-0.5),"Marker disk not independently covered by real triangle")?;
             let projected_center=project(&actual[base..base+3],&view,fov,aspect);
