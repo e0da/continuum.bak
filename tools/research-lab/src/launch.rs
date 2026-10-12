@@ -87,6 +87,14 @@ pub struct Startup {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Diagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aero_step_context: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub aero_drag_transaction: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fixed_step_owner_attribution: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trail_emitter: Option<TrailEmitterSelection>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub checkpoint_reload: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -117,6 +125,13 @@ pub struct Diagnostics {
     #[serde(default, skip_serializing_if = "is_false")]
     pub part_construction_timing: bool,
     pub site_proof: Option<String>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TrailEmitterSelection {
+    pub recording: PathBuf,
+    pub part: String,
+    pub mode: String,
 }
 fn is_false(value: &bool) -> bool {
     !*value
@@ -234,6 +249,14 @@ impl ResolvedLaunch {
                 work_scheduler: boolean("--startup-work-scheduler")?,
             },
             diagnostics: Diagnostics {
+                aero_step_context: options.get("--flight-aero-step-context").cloned(),
+                aero_drag_transaction: boolean("--flight-aero-drag-transaction")?,
+                fixed_step_owner_attribution: boolean("--flight-fixed-step-owner-attribution")?,
+                trail_emitter: options.get("--flight-trail-emitter").map(|output| Ok::<TrailEmitterSelection,String>(TrailEmitterSelection {
+                    recording: PathBuf::from(output),
+                    part: options.get("--flight-trail-emitter-part").ok_or("explicit root or numeric trail emitter part required")?.clone(),
+                    mode: options.get("--flight-trail-emitter-mode").ok_or("explicit measured trajectory-tracer or engine-readback mode required")?.clone(),
+                })).transpose()?,
                 checkpoint_reload: boolean("--flight-checkpoint-reload")?,
                 convection_replacement: options.get("--flight-convection-replacement").cloned(),
                 cylinder_occlusion_replacement: options.get("--flight-cylinder-occlusion").cloned(),
@@ -265,6 +288,32 @@ impl ResolvedLaunch {
     }
 
     pub fn validate(&self) -> Result<()> {
+        let d=&self.diagnostics;
+        if d.aero_step_context.is_some() || d.fixed_step_owner_attribution || d.trail_emitter.is_some() {
+            let f=self.flight.as_ref().ok_or("fixed-owner/aero/emitter requires pinned flight")?;
+            if self.live_play || f.expected_parts.is_none() || f.warp!=1 || f.callback_attribution
+                || d.checkpoint_reload || d.docking.is_some() || d.convection_capture.is_some() {
+                return Err("fixed-owner/aero/emitter requires normal-time pinned diagnostic without broad attribution/reload/docking/capture".into());
+            }
+        }
+        if let Some(mode)=&d.aero_step_context {
+            if !["verify","query","compare"].contains(&mode.as_str())
+                || (d.integrator_update_attribution && mode!="query")
+                || d.convection_replacement.as_deref().is_some_and(|v|v!="query") {
+                return Err("aero step mode requires verify/query/compare; existing narrow/convection owners require query".into());
+            }
+        }
+        if d.aero_drag_transaction && d.aero_step_context.is_none() {
+            return Err("complete drag transaction requires an explicit aero step mode".into());
+        }
+        if let Some(emitter)=&d.trail_emitter {
+            if !(emitter.part=="root" || emitter.part.parse::<u32>().is_ok_and(|v|v>0))
+                || !["trajectory-tracer","engine-readback"].contains(&emitter.mode.as_str())
+                || d.multiscale_scene.is_none() || !emitter.recording.is_absolute()
+                || emitter.recording.exists() || !emitter.recording.parent().is_some_and(|p|p.is_dir()) {
+                return Err("emitter requires explicit part/mode, fresh cold scene and new absolute recording under existing directory".into());
+            }
+        }
         crate::play::validate(self)?;
         if self.schema != "continuum-resolved-launch/v1" {
             return Err("unsupported resolved launch schema".into());
@@ -864,5 +913,20 @@ mod tests {
         assert!(
             ResolvedLaunch::parse(&options(&[("--startup-prepared-bundles", "true")])).is_err()
         );
+    }
+    #[test]
+    fn aero_and_bulk_owner_treatments_are_frozen_and_reject_orphans() {
+        let seed=options(&[("--flight-save","Research"),("--flight-checkpoint","station"),("--flight-expected-parts","512"),("--flight-atmosphere","true")]);
+        let control=ResolvedLaunch::parse(&seed).unwrap();
+        let mut orphan=seed.clone(); orphan.insert("--flight-aero-drag-transaction".into(),"true".into());
+        assert!(ResolvedLaunch::parse(&orphan).is_err());
+        orphan.insert("--flight-aero-step-context".into(),"query".into());
+        let candidate=ResolvedLaunch::parse(&orphan).unwrap();
+        assert_ne!(candidate.identity_sha256().unwrap(),control.identity_sha256().unwrap());
+        assert!(candidate.diagnostics.aero_drag_transaction);
+        orphan.insert("--flight-fixed-step-owner-attribution".into(),"true".into());
+        let observed=ResolvedLaunch::parse(&orphan).unwrap();
+        assert_ne!(observed.identity_sha256().unwrap(),candidate.identity_sha256().unwrap());
+        assert_eq!(observed.identity_sha256().unwrap(),ResolvedLaunch::parse_from_json(&observed.identity_json().unwrap()).unwrap().identity_sha256().unwrap());
     }
 }

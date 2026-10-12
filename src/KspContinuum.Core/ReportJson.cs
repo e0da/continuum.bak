@@ -108,6 +108,12 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.UpdateCallbackAttribution+Target" ||
                  type.FullName == "KspContinuum.UpdateCallbackAttribution+Window" ||
                  type.FullName == "KspContinuum.UpdateCallbackAttribution+Entry" ||
+                 type.FullName == "KspContinuum.FixedStepOwnerAttribution+ReportData" ||
+                 type.FullName == "KspContinuum.FixedStepOwnerAttribution+Target" ||
+                 type.FullName == "KspContinuum.FixedStepOwnerAttribution+StateOwner" ||
+                 type.FullName == "KspContinuum.FixedStepOwnerAttribution+Window" ||
+                 type.FullName == "KspContinuum.FixedStepOwnerAttribution+Entry" ||
+                 type.FullName == "KspContinuum.TrailEmitterCapture+CaptureReport" ||
                  type.FullName == "KspContinuum.AeroStepContext+ReportData" ||
                  type.FullName == "KspContinuum.AeroStepContext+MethodRow" ||
                  type.FullName == "KspContinuum.AeroStepContext+Window" ||

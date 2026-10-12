@@ -29,6 +29,10 @@ pub fn validate(selection: &ResolvedLaunch) -> Result<()> {
         || d.docking.is_some()
         || d.convection_capture.is_some()
         || d.cylinder_occlusion_replacement.is_some()
+        || d.aero_step_context.is_some()
+        || d.aero_drag_transaction
+        || d.fixed_step_owner_attribution
+        || d.trail_emitter.is_some()
         || d.flight_lighting.is_some()
         || d.integrator_update_attribution
         || d.profile

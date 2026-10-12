@@ -30,6 +30,8 @@ namespace KspContinuum
         FlightIntegratorUpdateAttribution integratorUpdateAttribution;
         CylinderOcclusionCapture cylinderOcclusionCapture;
         CylinderOcclusionReplacement cylinderOcclusionReplacement;
+        FixedStepOwnerAttribution fixedStepOwnerAttribution;
+        TrailEmitterCapture trailEmitter;
         ConvectionCapture convectionCapture;
         ConvectionReplacement convectionReplacement;
         AeroIntegrationAttribution aeroIntegrationAttribution;
@@ -90,7 +92,7 @@ namespace KspContinuum
             started = true; owner = this; completion = complete;
             try
             {
-                int requestedFrames = simulationSeconds > 0 ? (VesselRuntimeCapture.Requested ? VesselRuntimeFormat.MaxFrames : 20000) : FrameCount;
+                int requestedFrames = simulationSeconds > 0 ? (VesselRuntimeCapture.Requested ? VesselRuntimeFormat.MaxFrames : TrailEmitterCapture.Requested ? 4096 : 20000) : FrameCount;
                 report = new ProbeReport {
                     requestedFrames = requestedFrames, frames = new ProfileFrame[requestedFrames], markers = new MarkerReport[Names.Length],
                     unity = Application.unityVersion, ksp = Versioning.GetVersionString(),
@@ -116,7 +118,11 @@ namespace KspContinuum
                 }
                 if (VesselRuntimeCapture.Requested && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-callback-attribution") >= 0)
                     throw new InvalidOperationException("Vessel runtime recording excludes broad callback attribution.");
+                if (VesselRuntimeCapture.Requested && TrailEmitterCapture.Requested)
+                    throw new InvalidOperationException("Runtime poses and emitter recording require distinct cold manifest leases; select one capture in this prototype.");
                 vesselRuntime = VesselRuntimeCapture.Create(FlightGlobals.ActiveVessel, report.runId);
+                trailEmitter = TrailEmitterCapture.Create(FlightGlobals.ActiveVessel, report.runId);
+                if (trailEmitter != null) report.trailEmitterCapture = trailEmitter.Report;
                 foreach (MarkerReport row in report.markers) Acquire(row);
                 string[] arguments = Environment.GetCommandLineArgs();
                 if (Environment.GetEnvironmentVariable("CONTINUUM_PROCESS_CAPTURE") == "1")
@@ -187,13 +193,20 @@ namespace KspContinuum
                     dryBuoyancy = new DryBuoyancyRuntime(requestedDryStrategy); dryBuoyancy.Start(); report.dryBuoyancy = dryBuoyancy.Report;
                     if (dryBuoyancy.Report.status != "installed") throw new InvalidOperationException("Dry buoyancy admission did not install: " + dryBuoyancy.Report.status);
                 }
-                if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || updateCallbackAttribution != null || integratorUpdateAttribution != null || cylinderOcclusionReplacement != null || dryBuoyancy != null)
+                fixedStepOwnerAttribution = FixedStepOwnerAttribution.Create(arguments, report.runId, () => captureActive);
+                if (fixedStepOwnerAttribution != null)
+                {
+                    report.fixedStepOwnerAttribution = fixedStepOwnerAttribution.Report;
+                    if (fixedStepOwnerAttribution.Report.status != "installed") throw new InvalidOperationException("Fixed step owner admission failed: " + fixedStepOwnerAttribution.Report.detail);
+                }
+                if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || updateCallbackAttribution != null || integratorUpdateAttribution != null || cylinderOcclusionReplacement != null || fixedStepOwnerAttribution != null || dryBuoyancy != null)
                 {
                     IPlayerLoopBracketObserver observer = writerCensus == null ? null : writerCensus.Census;
                     if (substitutionCanary != null) observer = new CompositePlayerLoopObserver(observer, substitutionCanary);
                     if (callbackAttribution != null) observer = new CompositePlayerLoopObserver(observer, callbackAttribution);
                     if (updateCallbackAttribution != null) observer = new CompositePlayerLoopObserver(observer, updateCallbackAttribution);
                     if (integratorUpdateAttribution != null) observer = new CompositePlayerLoopObserver(observer, integratorUpdateAttribution);
+                    if (fixedStepOwnerAttribution != null) observer = new CompositePlayerLoopObserver(observer, fixedStepOwnerAttribution);
                     if (dryBuoyancy != null) observer = new CompositePlayerLoopObserver(observer, dryBuoyancy);
                     playerLoop = new PlayerLoopTiming(observer); playerLoop.Start(); report.playerLoop = playerLoop.Report;
                     if (updateCallbackAttribution != null && playerLoop.Report.integrityStatus != "verified-at-boundaries")
@@ -274,6 +287,9 @@ namespace KspContinuum
                     if (vesselRuntime != null)
                         try { vesselRuntime.CaptureFrame(); }
                         catch { report.status = "invalid"; report.completionReason = "vessel-runtime-capture-invalid"; throw; }
+                    if (trailEmitter != null)
+                        try { trailEmitter.CaptureFrame(); }
+                        catch { report.status = "invalid"; report.completionReason = "trail-emitter-capture-invalid"; throw; }
                     double now = clock.Elapsed.TotalSeconds;
                     previous.observedFrame = Time.frameCount;
                     previous.markerFrame = Time.frameCount - 1;
@@ -414,6 +430,17 @@ namespace KspContinuum
             if (finished) return;
             finished = true;
             var errors = new List<string>();
+            if (fixedStepOwnerAttribution != null)
+            {
+                try
+                {
+                    fixedStepOwnerAttribution.Dispose();
+                    string reason;
+                    if (!fixedStepOwnerAttribution.IsValidFinal(out reason)) errors.Add("FixedStepOwnerAttribution: " + reason);
+                }
+                catch (Exception error) { errors.Add("FixedStepOwnerAttribution: " + error.GetType().Name); }
+                fixedStepOwnerAttribution = null;
+            }
             if (updateCallbackAttribution != null)
             {
                 try
@@ -614,6 +641,15 @@ namespace KspContinuum
                     vesselRuntime.Finish(report.status == "complete", report.completionReason);
                     if (vesselRuntime.Report.status != "complete")
                     { report.status = "invalid"; report.completionReason = "vessel-runtime-" + vesselRuntime.Report.status; }
+                }
+                if (trailEmitter != null)
+                {
+                    try
+                    {
+                        trailEmitter.Finish(report.status == "complete", report.completionReason);
+                        if (trailEmitter.Report.status != "complete") { report.status = "invalid"; report.completionReason = "trail-emitter-" + trailEmitter.Report.status; }
+                    }
+                    finally { trailEmitter.Dispose(); }
                 }
                 if (report.captureStartClockTimestamp > 0) Signal("capture-end", report.completionReason);
                 callback(report);

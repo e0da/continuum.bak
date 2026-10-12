@@ -58,6 +58,12 @@ fn run() -> Result<()> {
             "--project-sha256",
         ],
         "run" | "resolve" => &[
+            "--flight-aero-step-context",
+            "--flight-aero-drag-transaction",
+            "--flight-fixed-step-owner-attribution",
+            "--flight-trail-emitter",
+            "--flight-trail-emitter-part",
+            "--flight-trail-emitter-mode",
             "--flight-checkpoint-reload",
             "--flight-convection-replacement",
             "--flight-cylinder-occlusion",
@@ -820,6 +826,13 @@ fn smoke(
     let admission_seconds = admission_started.elapsed().as_secs_f64();
     let mut child = Command::new(&executable)
         .current_dir(&instance)
+        .env("CONTINUUM_AERO_STEP_CONTEXT",selection.diagnostics.aero_step_context.as_deref().unwrap_or(""))
+        .env("CONTINUUM_AERO_DRAG_TRANSACTION",if selection.diagnostics.aero_drag_transaction {"1"} else {""})
+        .env("CONTINUUM_FIXED_STEP_OWNER_ATTRIBUTION",if selection.diagnostics.fixed_step_owner_attribution {"1"} else {""})
+        .env("CONTINUUM_TRAIL_EMITTER_RECORDING",selection.diagnostics.trail_emitter.as_ref().map(|s|s.recording.as_path()).unwrap_or(Path::new("")))
+        .env("CONTINUUM_TRAIL_EMITTER_PART_ID",selection.diagnostics.trail_emitter.as_ref().map(|s|s.part.as_str()).unwrap_or(""))
+        .env("CONTINUUM_TRAIL_EMITTER_MODE",selection.diagnostics.trail_emitter.as_ref().map(|s|s.mode.as_str()).unwrap_or(""))
+        .env("CONTINUUM_VESSEL_RUNTIME_RECORDING",if selection.diagnostics.trail_emitter.is_some() {std::ffi::OsString::new()} else {std::env::var_os("CONTINUUM_VESSEL_RUNTIME_RECORDING").unwrap_or_default()})
         .env("CONTINUUM_CYLINDER_OCCLUSION_MODE",selection.diagnostics.cylinder_occlusion_replacement.as_deref().unwrap_or(""))
         .env(
             "CONTINUUM_MULTISCALE_SCENE",
@@ -1205,6 +1218,9 @@ fn smoke(
                 summary["cylinderOcclusionReplacement"] = continuum_research_lab::cylinder_occlusion::summarize(
                     mode, &report["cylinderOcclusionReplacement"], &report, &run_id, child.id(),
                 )?;
+            }
+            if selection.diagnostics.aero_step_context.is_some() || selection.diagnostics.fixed_step_owner_attribution || selection.diagnostics.trail_emitter.is_some() {
+                summary["fixedOwnerTreatments"] = continuum_research_lab::fixed_owner::summarize(&selection.diagnostics,&report,child.id())?;
             }
             continuum_research_lab::flight::validate_entry(
                 request,
