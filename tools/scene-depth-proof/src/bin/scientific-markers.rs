@@ -38,12 +38,13 @@ fn proof(b:&[Vec<u8>])->Result<Value> {
  let focus=vec3(&plan["focus"])?;let yr=yaw.to_radians();let pr=pitch.to_radians();
  let forward=[pr.cos()*yr.sin(),-pr.sin(),pr.cos()*yr.cos()];let right=[yr.cos(),0.,-yr.sin()];let up=[forward[1]*right[2]-forward[2]*right[1],forward[2]*right[0]-forward[0]*right[2],forward[0]*right[1]-forward[1]*right[0]];
  let camera=[focus[0]-distance*forward[0],focus[1]-distance*forward[1],focus[2]-distance*forward[2]];
+ let native_basis_position_bound=4.*f32::EPSILON as f64*distance;
  for (s,kind) in [(&o,"ortho"),(&p,"perspective")] {
   check(s["schema"]=="continuum-multiscale-workbench/v1"&&s["status"]=="resident"&&(s["error"].is_null()||s["error"]==""),"Native status failed")?;
   check(s["projection"]==kind&&s["width"]==w&&s["height"]==h,"Native lens/viewport differs")?;
   for (k,v,t) in [("yaw",yaw,1e-5),("pitch",pitch,1e-5),("distance",distance,1e-8),("fov",fov,1e-5)] {close(n(&s[k])?,v,t)?;}
   if kind=="ortho" {close(n(&s["verticalSpanMeters"])?,span,1e-5)?;}
-  for (a,e) in vec3(&s["cameraAnchorMeters"])?.iter().zip(camera) {close(*a,e,1e-5)?;}
+  for (a,e) in vec3(&s["cameraAnchorMeters"])?.iter().zip(camera) {close(*a,e,native_basis_position_bound)?;}
   for (a,e) in vec3(&s["focusTargetMeters"])?.iter().zip(focus) {close(*a,e,1e-5)?;}
   check(s["sceneSha256"]==plan["sceneSha256"]&&s["trailInstalled"]==true&&s["trail"]["paused"]==true&&s["trail"]["recordingSha256"]==plan["sourceRecordingSha256"],"Source/history admission differs")?;
   check(s["scientificOverlay"]["schema"]=="continuum-scientific-overlay/v1"&&s["scientificOverlay"]["viewportWidth"]==w&&s["scientificOverlay"]["viewportHeight"]==h,"Overlay viewport differs")?;
@@ -68,7 +69,7 @@ fn proof(b:&[Vec<u8>])->Result<Value> {
   }receipts.push(json!({"id":id,"label":m["label"],"position":pos,"eyeDepth":z,"views":views}));
  }
  let spans=|c:&Vec<[f64;2]>|[(c[1][0]-c[0][0]).hypot(c[1][1]-c[0][1]),(c[3][0]-c[2][0]).hypot(c[3][1]-c[2][1])];let os=spans(&centers[0]);let ps=spans(&centers[1]);close(os[0],os[1],1e-6)?;check((ps[0]-ps[1]).abs()>10.,"Perspective spans are not independently unequal")?;
- Ok(json!({"status":"passed","scope":"Authored scientific overlay placement only; no depth, simulation, gameplay or predictor qualification","processId":o["processId"],"hostId":o["hostId"],"assemblySha256":o["assemblySha256"],"sceneSha256":plan["sceneSha256"],"sourceRecordingSha256":plan["sourceRecordingSha256"],"camera":camera,"basis":{"right":right,"up":up,"forward":forward},"markers":receipts,"orthographicSpansPixels":os,"perspectiveSpansPixels":ps,"pixelCriterion":"Cyan cross central radius3px, >=2 central pixels and >=4 pixels on each 6px arm; RGB R<=155,G>=185,B>=210,G-R>=65,B-R>=80; allows GUI gamma but requires cyan contrast"}))
+ Ok(json!({"status":"passed","scope":"Authored scientific overlay placement only; no depth, simulation, gameplay or predictor qualification","processId":o["processId"],"hostId":o["hostId"],"assemblySha256":o["assemblySha256"],"sceneSha256":plan["sceneSha256"],"sourceRecordingSha256":plan["sourceRecordingSha256"],"camera":camera,"nativeBasisPositionBoundMeters":native_basis_position_bound,"nativeBasisPositionBoundDerivation":"4 float epsilons times camera distance; Unity quaternion basis is float, frozen analytic basis is double","basis":{"right":right,"up":up,"forward":forward},"markers":receipts,"orthographicSpansPixels":os,"perspectiveSpansPixels":ps,"pixelCriterion":"Cyan cross central radius3px, >=2 central pixels and >=4 pixels on each 6px arm; RGB R<=155,G>=185,B>=210,G-R>=65,B-R>=80; allows GUI gamma but requires cyan contrast"}))
 }
 fn main()->Result<()> {
  let a:Vec<_>=env::args().skip(1).collect();check(a.len()==6,"Usage: scientific-markers ORTHO_PNG ORTHO_STATUS PERSPECTIVE_PNG PERSPECTIVE_STATUS FROZEN_PLAN NEW_OUTPUT")?;
