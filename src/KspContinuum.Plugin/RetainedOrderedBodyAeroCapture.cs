@@ -204,7 +204,7 @@ namespace KspContinuum
                 Need(Thread.CurrentThread.ManagedThreadId==o.thread,"Capture thread changed.");
                 if(o.current==null)
                 {
-                    if(o.Report.capturedRoots==Roots||part!=o.vessel.rootPart||__instance.vessel!=o.vessel||!o.capturing())return;
+                    if(o.Report.capturedRoots==Roots||part!=o.vessel.rootPart||__instance.Vessel!=o.vessel||!o.capturing())return;
                     Need(__instance.GetType()==typeof(FlightIntegrator)&&o.TopologyIntact()&&o.ExactGraph()&&!FlightDriver.Pause&&TimeWarp.CurrentRate==1&&Time.timeScale==1,"Captured original root state/graph differs.");
                     o.current=o.work[o.Report.capturedRoots];o.integrator=__instance;var r=o.current.result;r.sequence=o.Report.capturedRoots++;r.frame=Time.frameCount;r.fixedTimeSeconds=Time.fixedTime;r.startedTicks=start;r.topologyIntact=true;o.current.buffer.Begin(o.Report.runId,o.Report.vesselId,o.Report.topologySha256,o.Report.providerEpoch,r.sequence);
                 }
