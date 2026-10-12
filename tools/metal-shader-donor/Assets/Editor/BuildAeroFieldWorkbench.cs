@@ -18,6 +18,7 @@ public static class BuildAeroFieldWorkbench
         public string persistentTrailRuntimeSourceSha256,persistentTrailFormatSourceSha256,persistentTrailShaderSourceSha256;
         public string trailEmitterFormatSourceSha256,measuredTrailSegmentsSourceSha256;
         public string scientificViewSourceSha256,scientificAnnotationsSourceSha256,scientificOverlaySourceSha256;
+        public string scientificReferenceSourceSha256,scientificAnchorsSourceSha256,scientificCameraControlsSourceSha256;
         public string instancingStrippingName; public int instancingStrippingValue,diagnosticVariantCount;
     }
     static string Hash(string path) { using(var stream=File.OpenRead(path)) using(var sha=SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-","").ToLowerInvariant(); }
@@ -71,6 +72,7 @@ public static class BuildAeroFieldWorkbench
                 persistentTrailRuntimeSourceSha256=File.Exists("Assets/PersistentTrailRuntime.cs")?Hash("Assets/PersistentTrailRuntime.cs"):null,persistentTrailFormatSourceSha256=File.Exists("Assets/PersistentTrailOwner.cs")?Hash("Assets/PersistentTrailOwner.cs"):null,persistentTrailShaderSourceSha256=File.Exists("Assets/ContinuumMultiscale/PersistentTrail.shader")?Hash("Assets/ContinuumMultiscale/PersistentTrail.shader"):null,
                 trailEmitterFormatSourceSha256=File.Exists("Assets/TrailEmitterRecording.cs")?Hash("Assets/TrailEmitterRecording.cs"):null,measuredTrailSegmentsSourceSha256=File.Exists("Assets/MeasuredTrailSegments.cs")?Hash("Assets/MeasuredTrailSegments.cs"):null,
                 scientificViewSourceSha256=File.Exists("Assets/ScientificView.cs")?Hash("Assets/ScientificView.cs"):null,scientificAnnotationsSourceSha256=File.Exists("Assets/ScientificAnnotations.cs")?Hash("Assets/ScientificAnnotations.cs"):null,scientificOverlaySourceSha256=File.Exists("Assets/ScientificOverlay.cs")?Hash("Assets/ScientificOverlay.cs"):null,
+                scientificReferenceSourceSha256=File.Exists("Assets/ScientificReferenceFrames.cs")?Hash("Assets/ScientificReferenceFrames.cs"):null,scientificAnchorsSourceSha256=File.Exists("Assets/ScientificAnchors.cs")?Hash("Assets/ScientificAnchors.cs"):null,scientificCameraControlsSourceSha256=File.Exists("Assets/ScientificCameraControls.cs")?Hash("Assets/ScientificCameraControls.cs"):null,
                 instancingStrippingName=strippingName,instancingStrippingValue=effectiveStripping,diagnosticVariantCount=variantCount,
                 toolAssemblySha256=Hash(typeof(BuildAeroFieldWorkbench).Assembly.Location),playerAssemblySha256=Hash(Path.Combine(output,"Contents/Resources/Data/Managed/Assembly-CSharp.dll")),packagesSha256=Hash("Packages/manifest.json") };
             using(var writer=new StreamWriter(new FileStream(output+".build.json",FileMode.CreateNew,FileAccess.Write))) writer.Write(JsonUtility.ToJson(receipt,true));

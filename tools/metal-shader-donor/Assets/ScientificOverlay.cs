@@ -22,6 +22,9 @@ public sealed class ScientificOverlay : IDisposable
         public bool gridEnabled;
         public double gridSpacingMeters,gridExtentMeters,gridRequestedExtentMeters;
         public double[] focusPosition=new double[3];
+        public string gridParentLabel="camera focus; reference axes unavailable";
+        public bool referenceInstalled;
+        public double[] referencePosition=new double[3],referenceRight=new double[3],referenceUp=new double[3],referenceForward=new double[3];
         public AnnotationData[] rows=new AnnotationData[0];
     }
     public readonly StatusData Status=new StatusData();
@@ -29,6 +32,7 @@ public sealed class ScientificOverlay : IDisposable
     readonly Dictionary<string,string> planes=new Dictionary<string,string>(StringComparer.Ordinal);
     readonly Dictionary<string,string> labels=new Dictionary<string,string>(StringComparer.Ordinal);
     ScientificVector3 focus;
+    ScientificVector3 referenceOrigin,referenceRight,referenceUp,referenceForward;
     GUIStyle style;
     bool disposed;
     const int RingSegments=64;
@@ -37,6 +41,18 @@ public sealed class ScientificOverlay : IDisposable
     {
         Finite(position.x);Finite(position.y);Finite(position.z);if(Math.Abs(position.x)>1e15||Math.Abs(position.y)>1e15||Math.Abs(position.z)>1e15)throw new ArgumentException("Focus exceeds coordinate bounds.");focus=position;Status.focusPosition[0]=position.x;Status.focusPosition[1]=position.y;Status.focusPosition[2]=position.z;
     }
+    public void SetReference(ScientificVector3 position,ScientificVector3 right,ScientificVector3 up,ScientificVector3 forward,string label)
+    {
+        if(string.IsNullOrEmpty(label)||label.Length>160||Control(label))throw new ArgumentException("Reference label is invalid.");
+        // Validate the supplied basis without repairing a reflected or sheared frame.
+        ScientificView.CheckVector(position);ScientificView.CheckAxes(right,up);ScientificView.CheckAxes(right,forward);ScientificView.CheckAxes(up,forward);
+        var cross=new ScientificVector3(right.y*up.z-right.z*up.y,right.z*up.x-right.x*up.z,right.x*up.y-right.y*up.x);
+        if(Dot(cross,forward)<1-1e-6)throw new ArgumentException("Reference axes must be right handed.");
+        referenceOrigin=position;referenceRight=right;referenceUp=up;referenceForward=forward;
+        Copy(position,Status.referencePosition);Copy(right,Status.referenceRight);Copy(up,Status.referenceUp);Copy(forward,Status.referenceForward);
+        Status.gridParentLabel=label;Status.referenceInstalled=true;
+    }
+    static void Copy(ScientificVector3 p,double[] values) {values[0]=p.x;values[1]=p.y;values[2]=p.z;}
     public void Publish(ScientificAnnotation annotation)
     {
         if(disposed)throw new InvalidOperationException("Overlay is disposed.");
@@ -60,7 +76,7 @@ public sealed class ScientificOverlay : IDisposable
             {
                 if(words.Length==3&&words[2]=="off") {store.Remove("~grid");Status.gridEnabled=false;Refresh();return true;}
                 Exact(words,6);if(words[2]!="on")throw new ArgumentException("grid requires on or off.");
-                double spacing=Number(words[3]),extent=Number(words[4]);Plane(words[5]);
+                double spacing=Number(words[3]),extent=Number(words[4]);Plane(words[5]);RequireReference(words[5]);
                 if(spacing<=0||extent<=0||extent/spacing>64)throw new ArgumentException("Grid requires positive metres and at most 64 cells each side.");
                 int cells=(int)Math.Floor(extent/spacing);if(cells<1)throw new ArgumentException("Grid extent must include at least one cell.");
                 store.Upsert(ScientificAnnotation.Grid("~grid",new ScientificVector3(0,0,0),new ScientificVector3(1,0,0),new ScientificVector3(0,1,0),spacing,cells,""));
@@ -73,7 +89,7 @@ public sealed class ScientificOverlay : IDisposable
             else if(op=="ring")
             {
                 Minimum(words,8);double radius=Number(words[6]);if(radius<=0||radius>1e12)throw new ArgumentException("Ring radius outside supported metre bounds.");
-                plane=words[7];Plane(plane);text=Label(words,8,id);ScientificVector3 u,v;Axes(plane,null,out u,out v);
+                plane=words[7];Plane(plane);RequireReference(plane);text=Label(words,8,id);ScientificVector3 u,v;Axes(plane,null,out u,out v);
                 annotation=ScientificAnnotation.Ring(id,Point(words,3),u,v,radius,text);
             }
             else if(op=="value")
@@ -99,7 +115,7 @@ public sealed class ScientificOverlay : IDisposable
             ScientificAnnotation item=store.At(i);string plane;bool selectedPlane=planes.TryGetValue(item.id,out plane);
             if(item.id=="~grid")plane=Status.gridPlane;
             ScientificVector3 u=item.axisU,v=item.axisV;if(plane!=null&&plane!="view")Axes(plane,null,out u,out v);
-            rows[i]=new AnnotationData {id=item.id,kind=item.kind.ToString(),label=item.label,unit=item.unit,value=item.value,valid=item.valid,validity=item.valid?"valid":"stale",a=Coordinates(item.a),b=Coordinates(item.b),axisU=Coordinates(u),axisV=Coordinates(v),radius=item.radius,spacing=item.spacing,cells=item.cells,plane=plane??"explicit-axes",positionPolicy=item.id=="~grid"?"focus-relative; origin is current status.focusPosition; view plane axes follow scientific view":selectedPlane&&plane=="view"?"world-center; axes follow current scientific view right/up":"absolute-world; explicit plane axes"};
+            rows[i]=new AnnotationData {id=item.id,kind=item.kind.ToString(),label=item.label,unit=item.unit,value=item.value,valid=item.valid,validity=item.valid?"valid":"stale",a=Coordinates(item.a),b=Coordinates(item.b),axisU=Coordinates(u),axisV=Coordinates(v),radius=item.radius,spacing=item.spacing,cells=item.cells,plane=plane??"explicit-axes",positionPolicy=item.id=="~grid"?"reference-relative; origin is status.referencePosition when installed, otherwise focusPosition; ship axes remain fixed while camera rotates":selectedPlane&&plane=="view"?"world-center; axes follow current scientific view right/up":"absolute-world; explicit or supplied reference plane axes"};
         }
         Status.rows=rows;
     }
@@ -131,10 +147,11 @@ public sealed class ScientificOverlay : IDisposable
                 }
                 else if(item.kind==ScientificAnnotationKind.Grid)
                 {
-                    ScientificVector3 origin=item.a,u=item.axisU,v=item.axisV;if(item.id=="~grid") {origin=focus;Axes(Status.gridPlane,view,out u,out v);}double extent=item.cells*item.spacing;GUI.color=new Color(.35f,.65f,.85f,.4f);
+                    ScientificVector3 origin=item.a,u=item.axisU,v=item.axisV;if(item.id=="~grid") {origin=Status.referenceInstalled?referenceOrigin:focus;Axes(Status.gridPlane,view,out u,out v);}double extent=item.cells*item.spacing;GUI.color=new Color(.35f,.65f,.85f,.4f);
                     for(int j=-item.cells;j<=item.cells;j++) {double offset=j*item.spacing;WorldLine(Add(origin,Add(Scale(u,offset),Scale(v,-extent))),Add(origin,Add(Scale(u,offset),Scale(v,extent))),view);WorldLine(Add(origin,Add(Scale(v,offset),Scale(u,-extent))),Add(origin,Add(Scale(v,offset),Scale(u,extent))),view);}
                 }
             }
+            if(Status.gridEnabled) {GUI.color=Color.white;GUI.Label(new Rect(450,174,Math.Max(300,view.width-470),24),"Grid: "+Status.gridParentLabel+" / "+Status.gridPlane+" / "+Status.gridSpacingMeters.ToString("G4",CultureInfo.InvariantCulture)+" m",style);}
         }
         finally {GUI.color=prior;GUI.matrix=matrix;}
     }
@@ -169,15 +186,17 @@ public sealed class ScientificOverlay : IDisposable
     static ScientificVector3 Sub(ScientificVector3 a,ScientificVector3 b) {return new ScientificVector3(a.x-b.x,a.y-b.y,a.z-b.z);}
     static ScientificVector3 Scale(ScientificVector3 a,double s) {return new ScientificVector3(a.x*s,a.y*s,a.z*s);}
     static double Dot(ScientificVector3 a,ScientificVector3 b) {return a.x*b.x+a.y*b.y+a.z*b.z;}
-    static void Axes(string plane,ScientificView view,out ScientificVector3 u,out ScientificVector3 v)
+    void Axes(string plane,ScientificView view,out ScientificVector3 u,out ScientificVector3 v)
     {
         if(plane=="view"&&view!=null) {u=view.right;v=view.up;return;}
+        if(plane.StartsWith("ship-",StringComparison.Ordinal)) {RequireReference(plane);u=plane=="ship-yz"?referenceUp:referenceRight;v=plane=="ship-xy"?referenceUp:referenceForward;return;}
         u=plane=="yz"?new ScientificVector3(0,1,0):new ScientificVector3(1,0,0);v=plane=="xz"?new ScientificVector3(0,0,1):plane=="yz"?new ScientificVector3(0,0,1):new ScientificVector3(0,1,0);
     }
+    void RequireReference(string plane) {if(plane.StartsWith("ship-",StringComparison.Ordinal)&&!Status.referenceInstalled)throw new InvalidOperationException("Ship reference axes have not been supplied.");}
     static ScientificVector3 Point(string[] w,int i) {return new ScientificVector3(Number(w[i]),Number(w[i+1]),Number(w[i+2]));}
     static double Number(string s) {double n;if(!double.TryParse(s,NumberStyles.Float,CultureInfo.InvariantCulture,out n))throw new ArgumentException("Number is invalid.");Finite(n);if(Math.Abs(n)>1e15)throw new ArgumentException("Number exceeds scientific coordinate bounds.");return n;}
     static void Finite(double n) {if(double.IsNaN(n)||double.IsInfinity(n))throw new ArgumentException("Finite number required.");}
-    static void Plane(string s) {if(s!="view"&&s!="xy"&&s!="xz"&&s!="yz")throw new ArgumentException("Plane must be view, xy, xz or yz.");}
+    static void Plane(string s) {if(s!="view"&&s!="xy"&&s!="xz"&&s!="yz"&&s!="ship-xy"&&s!="ship-xz"&&s!="ship-yz")throw new ArgumentException("Plane must be view, xy, xz, yz, ship-xy, ship-xz or ship-yz.");}
     static void Id(string s) {if(string.IsNullOrEmpty(s)||s.Length>64)throw new ArgumentException("Stable ID is invalid.");foreach(char c in s)if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='-'||c=='.'||c==':'))throw new ArgumentException("Stable ID contains unsupported characters.");}
     static bool Control(string s) {foreach(char c in s)if(char.IsControl(c))return true;return false;}
     static string Label(string[] w,int start,string fallback) {string s=start==w.Length?fallback:string.Join(" ",w,start,w.Length-start);if(s.Length>160||Control(s))throw new ArgumentException("Label is invalid.");return s;}

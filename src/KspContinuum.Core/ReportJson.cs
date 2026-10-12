@@ -210,7 +210,7 @@ namespace KspContinuum
                 type != typeof(LiveSweepStatus) &&
                 type != typeof(LiveControlReply) &&
                 type != typeof(NativeBoundaryMonoReport) && type != typeof(NativeBoundaryMonoRow) &&
-                type != typeof(MultiscaleSceneManifest) && type != typeof(ResidentMaterialManifest) && type != typeof(ResidentTextureAsset) &&
+                type != typeof(MultiscaleSceneManifest) && type != typeof(ScientificAnchorSet) && type != typeof(ScientificAnchorData) && type != typeof(ResidentMaterialManifest) && type != typeof(ResidentTextureAsset) &&
                 type != typeof(WholeCraftSceneManifest) && type != typeof(WholeCraftMaterialAsset) && type != typeof(WholeCraftDraw) && type != typeof(WholeCraftOmission) &&
                 type != typeof(ResidentMaterialAsset) && type != typeof(ResidentMaterialProperty) &&
                 type != typeof(ResidentInstanceAsset) && type != typeof(ResidentLighting) &&
