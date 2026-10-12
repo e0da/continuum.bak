@@ -122,7 +122,7 @@ namespace KspContinuum
             var body = obj.AddComponent<Rigidbody>(); body.useGravity = false; body.detectCollisions = false; body.drag = 0; body.angularDrag = 0;
             body.mass = 2; body.inertiaTensor = new Vector3(2, 3, 4); body.inertiaTensorRotation = Quaternion.identity; body.centerOfMass = Vector3.zero;
             body.maxAngularVelocity = 100; body.sleepThreshold = .005f; body.interpolation = RigidbodyInterpolation.None;
-            if (state == "dynamic-awake") { body.velocity = new Vector3(.7f, -.2f, .3f); body.angularVelocity = new Vector3(.13f, -.17f, .19f); body.WakeUp(); }
+            if (state == "dynamic-awake") { body.velocity = new Vector3(.7f, -.2f, .3f); body.angularVelocity = Vector3.zero; body.WakeUp(); }
             else if (state == "dynamic-sleeping") { body.velocity = Vector3.zero; body.angularVelocity = Vector3.zero; body.Sleep(); }
             else if (state == "kinematic") body.isKinematic = true;
             else if (state == "inactive") obj.SetActive(false);
