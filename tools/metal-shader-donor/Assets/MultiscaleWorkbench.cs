@@ -242,7 +242,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     void Execute(string text)
     {
         string[] words=text.Split(new[] {' '},StringSplitOptions.RemoveEmptyEntries); if(words.Length==0) return; if(capturing) throw new InvalidOperationException("Capture controls frozen."); if(quitRequested) throw new InvalidOperationException("Owned shutdown pending."); if(state.benchmarkActive) { if(benchmarkCapturing) benchmark.commandsDuringCapture++; if(words[0]!="status"&&words[0]!="quit"&&words[0]!="cancelbenchmark") throw new InvalidOperationException("Benchmark freezes controls/captures/HMR."); } state.commands++;
-        if(trail!=null&&trail.Status.probeInstalled&&words[0]!="status"&&words[0]!="quit"&&words[0]!="captureframe"&&words[0]!="viewport"&&!(words[0]=="trail"&&((words.Length==3&&words[1]=="probe"&&words[2]=="off")||(words.Length==2&&words[1]=="remove")))) throw new InvalidOperationException("Depth/UV probe freezes scene, camera and history controls; turn probe off first.");
+        if(trail!=null&&trail.Status.probeInstalled&&words[0]!="status"&&words[0]!="quit"&&words[0]!="captureframe"&&!(words[0]=="viewport"&&trail.Status.probe.depthSource=="synthetic-texture2d")&&!(words[0]=="trail"&&((words.Length==3&&words[1]=="probe"&&words[2]=="off")||(words.Length==2&&words[1]=="remove")))) throw new InvalidOperationException("Depth/UV probe freezes scene, camera and history controls; turn probe off first.");
         if(words[0]=="quit"&&words.Length==1) { if(state.benchmarkActive) EndBenchmark("interrupted","operator-quit"); quitRequested=true; state.status="stopping"; Write(); return; }
         if(words[0]=="status") { if(!state.benchmarkActive) Write(); return; }
         if(words[0]=="benchmark"&&words.Length==3) { BeginBenchmark(Number(words[1]),Number(words[2])); return; }
@@ -292,14 +292,56 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
             var old=trail; trail=next; state.trail=next.Status; state.trailInstalled=true; if(old!=null) old.Dispose(); return;
         }
         if(trail==null) throw new InvalidOperationException("Create trail fixture first.");
-        if(words.Length==3&&words[1]=="probe"&&(words[2]=="on"||words[2]=="off")) { if(words[2]=="on"&&(replay!=null||state.view!="composed")) throw new InvalidOperationException("Synthetic depth/UV probe requires composed static scene without replay."); trail.Probe(words[2]=="on"); }
+        if(words.Length==3&&words[1]=="probe"&&words[2]=="scene") InstallSceneTrailProbe();
+        else if(words.Length==3&&words[1]=="probe"&&(words[2]=="on"||words[2]=="off")) { if(words[2]=="on"&&(replay!=null||state.view!="composed")) throw new InvalidOperationException("Synthetic depth/UV probe requires composed static scene without replay."); trail.Probe(words[2]=="on"); }
         else if(words.Length==2&&words[1]=="reset") trail.Reset();
         else if(words.Length==2&&words[1]=="pause") trail.Pause();
         else if((words.Length==2||words.Length==3)&&words[1]=="play") trail.Play(words.Length==3?Number(words[2]):1);
         else if(words.Length==3&&words[1]=="step") trail.Step(Number(words[2]));
         else if(words.Length==5&&words[1]=="wind") trail.Wind(Number(words[2]),Number(words[3]),Number(words[4]));
         else if(words.Length==3&&words[1]=="emission"&&(words[2]=="on"||words[2]=="off")) trail.Emission(words[2]=="on");
-        else throw new InvalidDataException("trail fixture|remove|probe on/off|reset|pause|play [RATE]|step SECONDS|wind X Y Z|emission on/off");
+        else throw new InvalidDataException("trail fixture|remove|probe on/scene/off|reset|pause|play [RATE]|step SECONDS|wind X Y Z|emission on/off");
+    }
+    void InstallSceneTrailProbe()
+    {
+        if(replay!=null||state.view!="composed"||generation.Whole==null||craftTarget==null||bodyTarget==null||state.frames==0) throw new InvalidOperationException("Actual probe requires resident static whole craft, composed view and completed scene render.");
+        if(trail.Status.probeInstalled) throw new InvalidOperationException("Turn prior probe off first.");
+        var s=generation.Scene; string manifestPath=Under(Path.GetDirectoryName(state.scenePath),s.wholeCraft),root=Path.GetDirectoryName(manifestPath);
+        var manifest=generation.Whole.Manifest; string geometryPath=Under(root,manifest.geometry);
+        if(Hash(geometryPath)!=generation.Whole.GeometrySha256) throw new InvalidDataException("Scene probe geometry changed.");
+        var geometry=WholeCraftSceneFormat.ReadGeometry(geometryPath); WholeCraftSceneFormat.Validate(manifest,geometry);
+        if(Hash(geometryPath)!=generation.Whole.GeometrySha256) throw new InvalidDataException("Scene probe geometry changed during read.");
+        Matrix4x4 rootMatrix=new Matrix4x4(); for(int r=0;r<4;r++) for(int c=0;c<4;c++) rootMatrix[r,c]=manifest.rootToWorld[r*4+c]; rootMatrix.m03=rootMatrix.m13=rootMatrix.m23=0;
+        float x,y,z; MultiscaleSceneFormat.RelativePosition(s.vesselAnchorMeters,cameraAnchor,out x,out y,out z); Vector3 relative=new Vector3(x,y,z);
+        PersistentTrailRuntime.SceneTriangle craft=null,body=null; int triangles=0;
+        for(int d=0;d<manifest.draws.Length;d++)
+        {
+            var draw=manifest.draws[d]; if(!draw.enabled||!draw.active||draw.forceRenderingOff||(craftCamera.cullingMask&(1<<draw.layer))==0) continue;
+            Matrix4x4 m=rootMatrix*Matrix(draw.matrix); m.m03+=relative.x; m.m13+=relative.y; m.m23+=relative.z;
+            var mesh=geometry.meshes[draw.meshIndex]; var indices=mesh.submeshes[draw.submeshIndex].indices; var p=mesh.positions;
+            for(int i=0;i<indices.Length;i+=3)
+            {
+                if(++triangles>2000000) throw new InvalidDataException("Scene probe triangle projection bound exceeded.");
+                int a=indices[i]*3,b=indices[i+1]*3,c=indices[i+2]*3;
+                craft=PersistentTrailRuntime.SelectTriangle(craft,"craft",draw.id,m.MultiplyPoint3x4(new Vector3(p[a],p[a+1],p[a+2])),m.MultiplyPoint3x4(new Vector3(p[b],p[b+1],p[b+2])),m.MultiplyPoint3x4(new Vector3(p[c],p[c+1],p[c+2])),i/3,craftCamera,Screen.width,Screen.height,null);
+            }
+        }
+        for(int i=0;i<3;i++) bodyGeometryAnchor[i]=s.bodyAnchorMeters[i]+s.bodyLocalToMeters[i*4+3];
+        MultiscaleSceneFormat.RelativePosition(bodyGeometryAnchor,cameraAnchor,out x,out y,out z); Matrix4x4 bm=Matrix(s.bodyLocalToMeters); bm.m03=x; bm.m13=y; bm.m23=z;
+        var vertices=generation.Body.vertices; var bodyIndices=generation.Body.triangles;
+        for(int i=0;i<bodyIndices.Length;i+=3)
+        {
+            if(++triangles>2000000) throw new InvalidDataException("Scene probe triangle projection bound exceeded.");
+            Vector3 a=bm.MultiplyPoint3x4(vertices[bodyIndices[i]]),b=bm.MultiplyPoint3x4(vertices[bodyIndices[i+1]]),c=bm.MultiplyPoint3x4(vertices[bodyIndices[i+2]]);
+            if(Vector3.Dot(Vector3.Cross(b-a,c-a),a)*Mathf.Sign(bm.determinant)>=0) continue;
+            body=PersistentTrailRuntime.SelectTriangle(body,"body",s.bodyId,a,b,c,i/3,bodyCamera,Screen.width,Screen.height,craft);
+        }
+        trail.SceneProbe(craft,body,craftCamera,Screen.width,Screen.height,state.sceneSha256,generation.Whole.GeometrySha256,state.bodyGeometrySha256);
+        var proof=trail.Status.probe; proof.craftProducerProjection=new float[16]; proof.bodyProducerProjection=new float[16];
+        Matrix4x4 cp=GL.GetGPUProjectionMatrix(craftCamera.projectionMatrix,true),bp=GL.GetGPUProjectionMatrix(bodyCamera.projectionMatrix,true);
+        for(int r=0;r<4;r++) for(int c=0;c<4;c++) { proof.craftProducerProjection[r*4+c]=cp[r,c]; proof.bodyProducerProjection[r*4+c]=bp[r,c]; }
+        proof.producerNearFar=new[]{craftCamera.nearClipPlane,craftCamera.farClipPlane,bodyCamera.nearClipPlane,bodyCamera.farClipPlane}; proof.producerDimensions=new[]{craftTarget.Depth.width,craftTarget.Depth.height,bodyTarget.Depth.width,bodyTarget.Depth.height};
+        proof.sceneGeneration=state.sceneReloads; proof.debugShaderGeneration=state.debugShaderGeneration; proof.craftRenderMode=generation.Whole.RenderMode;
     }
     void BeginBenchmark(double warmup,double seconds)
     {

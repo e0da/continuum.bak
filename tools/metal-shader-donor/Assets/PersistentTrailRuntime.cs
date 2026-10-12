@@ -24,6 +24,12 @@ public sealed class PersistentTrailRuntime : IDisposable
     }
     [Serializable] public sealed class ProbeData
     {
+        public string depthSource="synthetic-texture2d",sceneSha256,wholeGeometrySha256,bodyGeometrySha256;
+        public SceneTriangle[] triangles;
+        public float[] craftProducerProjection,bodyProducerProjection,producerNearFar;
+        public int[] producerDimensions;
+        public int sceneGeneration,debugShaderGeneration;
+        public string craftRenderMode;
         public string scope="Synthetic positive-eye-depth/texture-UV witness using actual trail occlusion and composition passes; not live-scene occlusion qualification",uvConvention="Normalized bottom-left texture UV; PNG top-left rows invert Y";
         public float[] craftRegion={.125f,.25f,.375f,.75f,10},bodyRegion={.625f,.125f,.875f,.625f,20};
         public float[] centerUvDepth={.25f,.375f,8,.25f,.625f,12,.75f,.25f,18,.75f,.5f,22,.5f,.875f,15,.5f,.125f,15};
@@ -36,6 +42,28 @@ public sealed class PersistentTrailRuntime : IDisposable
         public double historyTimeOnInstall; public long historyGenerationOnInstall;
         public bool pausedOnInstall,emissionOnInstall,historyRestored;
     }
+    [Serializable] public sealed class SceneTriangle
+    {
+        public string domain,source;
+        public int triangle;
+        public float[] worldVertices,projectedUvDepth;
+        public float centerU,centerV,inradiusPixels;
+    }
+    public static SceneTriangle SelectTriangle(SceneTriangle best,string domain,string source,Vector3 a,Vector3 b,Vector3 c,int index,Camera camera,int width,int height,SceneTriangle exclude)
+    {
+        Vector3 pa=camera.WorldToViewportPoint(a),pb=camera.WorldToViewportPoint(b),pc=camera.WorldToViewportPoint(c);
+        if(!Inside(pa,camera)||!Inside(pb,camera)||!Inside(pc,camera)) return best;
+        Vector2 x=new Vector2(pa.x*width,pa.y*height),y=new Vector2(pb.x*width,pb.y*height),z=new Vector2(pc.x*width,pc.y*height);
+        float la=(y-z).magnitude,lb=(x-z).magnitude,lc=(x-y).magnitude,sum=la+lb+lc;
+        if(sum<=0) return best;
+        Vector2 center=(x*la+y*lb+z*lc)/sum;
+        float radius=Mathf.Abs((y.x-x.x)*(z.y-x.y)-(y.y-x.y)*(z.x-x.x))/sum;
+        if(radius<16||center.x<20||center.x>width-20||center.y<20||center.y>height-20) return best;
+        if(exclude!=null&&(center-new Vector2(exclude.centerU*width,exclude.centerV*height)).magnitude<50) return best;
+        if(best!=null&&best.inradiusPixels>=radius) return best;
+        return new SceneTriangle {domain=domain,source=source,triangle=index,worldVertices=new[]{a.x,a.y,a.z,b.x,b.y,b.z,c.x,c.y,c.z},projectedUvDepth=new[]{pa.x,pa.y,pa.z,pb.x,pb.y,pb.z,pc.x,pc.y,pc.z},centerU=center.x/width,centerV=center.y/height,inradiusPixels=radius};
+    }
+    static bool Inside(Vector3 p,Camera c) { return !float.IsNaN(p.x)&&!float.IsNaN(p.y)&&!float.IsNaN(p.z)&&p.z>c.nearClipPlane&&p.z<c.farClipPlane&&p.x>=0&&p.x<=1&&p.y>=0&&p.y<=1; }
     public readonly StatusData Status = new StatusData();
     readonly PersistentTrailOwner owner;
     readonly Mesh mesh;
@@ -63,6 +91,19 @@ public sealed class PersistentTrailRuntime : IDisposable
     Texture2D probeCraft,probeBody;
     double lastWall;
     bool disposed;
+    Matrix4x4 sceneProbeView;
+    float sceneProbeFov,sceneProbeAspect;
+    public void SceneProbe(SceneTriangle craft,SceneTriangle body,Camera camera,int width,int height,string sceneHash,string wholeHash,string bodyHash)
+    {
+        if(Status.probeInstalled) throw new InvalidOperationException("Turn prior probe off first.");
+        if(craft==null||body==null) throw new InvalidOperationException("Actual triangles need >=16px inscribed radius, unclipped and separated; focus/zoom then retry.");
+        if(camera.nearClipPlane<=.004f) throw new InvalidOperationException("Scene near plane needs room for an unclipped front witness; zoom out before admission.");
+        float front=Mathf.Min(camera.nearClipPlane,1)*.5f;
+        var p=new ProbeData {depthSource="actual-scene-rendertextures",scope="Actual captured triangle projection plus existing scene positive-depth producers; opaque static witness only",triangles=new[]{craft,body},sceneSha256=sceneHash,wholeGeometrySha256=wholeHash,bodyGeometrySha256=bodyHash,width=width,height=height,radiusScreenHeight=4f/height,textureSize=0,craftRegion=new float[0],bodyRegion=new float[0],centerUvDepth=new float[12],actualCentersCameraRelative=new float[12],actualEyeDepths=new float[4],rgba=new float[]{0,1,0,1,1,0,0,1,0,1,1,1,1,1,0,1},expectedVisible=new[]{true,false,true,false},historyTimeOnInstall=owner.Time,historyGenerationOnInstall=owner.Generation,pausedOnInstall=Status.paused,emissionOnInstall=owner.Emission};
+        for(int d=0;d<2;d++) { var t=p.triangles[d]; float behind=Mathf.Max(t.projectedUvDepth[2],Mathf.Max(t.projectedUvDepth[5],t.projectedUvDepth[8]))*1.05f; for(int k=0;k<2;k++) { int i=(d*2+k)*3; p.centerUvDepth[i]=t.centerU+(k==0?-8f:8f)/width; p.centerUvDepth[i+1]=t.centerV; p.centerUvDepth[i+2]=k==0?front:behind; } }
+        sceneProbeView=camera.worldToCameraMatrix; sceneProbeFov=camera.fieldOfView; sceneProbeAspect=camera.aspect;
+        Status.probe=p; Status.probeInstalled=true; uploadedGeneration=-1; HoldClock();
+    }
     public PersistentTrailRuntime(double[] anchor)
     {
         long preparationStarted=System.Diagnostics.Stopwatch.GetTimestamp();
@@ -142,6 +183,8 @@ public sealed class PersistentTrailRuntime : IDisposable
         if(Status.probeInstalled) changed|=lastProbeFov!=camera.fieldOfView||lastProbeAspect!=camera.aspect;
         for (int i = 0; i < 3; i++) changed |= lastOrigin[i] != origin[i];
         Matrix4x4 view=camera.worldToCameraMatrix;
+        bool actualProbe=Status.probeInstalled&&Status.probe.depthSource=="actual-scene-rendertextures";
+        if(actualProbe&&(width!=Status.probe.width||height!=Status.probe.height||camera.fieldOfView!=sceneProbeFov||camera.aspect!=sceneProbeAspect||view!=sceneProbeView)) throw new InvalidOperationException("Actual scene probe view changed; turn probe off before resizing/reframing.");
         if(Status.probeInstalled) { Status.probe.width=width; Status.probe.height=height; Status.probe.actualFov=camera.fieldOfView; Status.probe.actualAspect=camera.aspect; }
         Status.viewSetupTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-setupStarted;
         float far = camera.farClipPlane;
@@ -151,7 +194,7 @@ public sealed class PersistentTrailRuntime : IDisposable
             try
             {
             Vector3 right = rotation * Vector3.right, up = rotation * Vector3.up;
-            int drawCount=Status.probeInstalled?6:owner.Count;
+            int drawCount=Status.probeInstalled?Status.probe.centerUvDepth.Length/3:owner.Count;
             for(int i=0;i<drawCount;i++)
             {
                 if(Status.probeInstalled) { var recipe=Status.probe; float d=recipe.centerUvDepth[i*3+2],half=d*Mathf.Tan(camera.fieldOfView*Mathf.Deg2Rad*.5f); Vector3 c=rotation*new Vector3((recipe.centerUvDepth[i*3]*2-1)*half*camera.aspect,(recipe.centerUvDepth[i*3+1]*2-1)*half,d); parcels[i]=new PersistentTrailParcel {id=i+1,x=c.x,y=c.y,z=c.z,width=half*recipe.radiusScreenHeight*2,opacity=1}; }
@@ -180,7 +223,8 @@ public sealed class PersistentTrailRuntime : IDisposable
         far = Math.Max(far, mesh.bounds.center.magnitude + mesh.bounds.extents.magnitude + 1);
         Matrix4x4 projection = GL.GetGPUProjectionMatrix(Matrix4x4.Perspective(camera.fieldOfView, camera.aspect, .001f, far), true);
         if(Status.probeInstalled) for(int r=0;r<4;r++) for(int c=0;c<4;c++) { Status.probe.actualGpuProjection[r*4+c]=projection[r,c]; Status.probe.actualView[r*4+c]=view[r,c]; }
-        material.SetMatrix("_TrailVP", projection * view); material.SetMatrix("_TrailView", view); material.SetTexture("_CraftDepth", Status.probeInstalled?(Texture)probeCraft:craftDepth); material.SetTexture("_BodyDepth", Status.probeInstalled?(Texture)probeBody:bodyDepth);
+        if(actualProbe) { Status.probe.craftTextureId=craftDepth.GetInstanceID(); Status.probe.bodyTextureId=bodyDepth.GetInstanceID(); }
+        material.SetMatrix("_TrailVP", projection * view); material.SetMatrix("_TrailView", view); material.SetTexture("_CraftDepth", Status.probeInstalled&&!actualProbe?(Texture)probeCraft:craftDepth); material.SetTexture("_BodyDepth", Status.probeInstalled&&!actualProbe?(Texture)probeBody:bodyDepth);
         if(!commandsRecorded) { commands.Clear(); commands.SetRenderTarget(target); commands.SetViewport(new Rect(0,0,width,height)); commands.ClearRenderTarget(false,true,Color.clear); commands.DrawMesh(mesh,Matrix4x4.identity,material,0,0); commandsRecorded=true; Status.commandBuilds++; }
         Status.viewSetupTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-setupStarted;
         long before = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -190,7 +234,7 @@ public sealed class PersistentTrailRuntime : IDisposable
         finally { RenderTexture.active=old; Status.renderTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-renderStarted; }
     }
     public void Compose(RenderTexture source, RenderTexture destination, Material worldComposite)
-    { long started=System.Diagnostics.Stopwatch.GetTimestamp(); RenderTexture old=RenderTexture.active; try { if(target==null||composed==null) { Graphics.Blit(source,destination,worldComposite); return; } if(Status.probeInstalled) Graphics.Blit(source,composed,material,2); else Graphics.Blit(source,composed,worldComposite); material.SetTexture("_MainTex",composed); material.SetTexture("_TrailColor", target); Graphics.Blit(composed, destination, material, 1); } finally { RenderTexture.active=old; Status.compositionTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-started; } }
+    { long started=System.Diagnostics.Stopwatch.GetTimestamp(); RenderTexture old=RenderTexture.active; try { if(target==null||composed==null) { Graphics.Blit(source,destination,worldComposite); return; } if(Status.probeInstalled&&Status.probe.depthSource=="synthetic-texture2d") Graphics.Blit(source,composed,material,2); else Graphics.Blit(source,composed,worldComposite); material.SetTexture("_MainTex",composed); material.SetTexture("_TrailColor", target); Graphics.Blit(composed, destination, material, 1); } finally { RenderTexture.active=old; Status.compositionTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-started; } }
     void ReleaseTarget() { commandsRecorded=false; if(commands!=null) commands.Clear(); if (target != null) { target.Release(); UnityEngine.Object.Destroy(target); target = null; } if(composed!=null) { composed.Release(); UnityEngine.Object.Destroy(composed); composed=null; } }
     public void Dispose()
     { if (disposed) return; disposed = true; Status.probeInstalled=false; if(probeCraft!=null) UnityEngine.Object.Destroy(probeCraft); if(probeBody!=null) UnityEngine.Object.Destroy(probeBody); ReleaseTarget(); if (commands != null) commands.Release(); if (mesh != null) UnityEngine.Object.Destroy(mesh); if (material != null) UnityEngine.Object.Destroy(material); Status.cleanupStatus = "owned-resources-destruction-requested"; Status.status = "disposed"; }
