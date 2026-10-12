@@ -31,6 +31,8 @@ namespace KspContinuum
         CylinderOcclusionCapture cylinderOcclusionCapture;
         CylinderOcclusionReplacement cylinderOcclusionReplacement;
         FixedStepOwnerAttribution fixedStepOwnerAttribution;
+        FixedDispatchAttribution fixedDispatchAttribution;
+        RetainedOrderedBodyAeroCapture orderedBodyAeroCapture;
         TrailEmitterCapture trailEmitter;
         ConvectionCapture convectionCapture;
         ConvectionReplacement convectionReplacement;
@@ -203,6 +205,20 @@ namespace KspContinuum
                     report.fixedStepOwnerAttribution = fixedStepOwnerAttribution.Report;
                     if (fixedStepOwnerAttribution.Report.status != "installed") throw new InvalidOperationException("Fixed step owner admission failed: " + fixedStepOwnerAttribution.Report.detail);
                 }
+                fixedDispatchAttribution = FixedDispatchAttribution.Create(arguments, report.runId, () => captureActive);
+                if (fixedDispatchAttribution != null)
+                {
+                    report.fixedDispatchAttribution = fixedDispatchAttribution.Report;
+                    if (fixedStepOwnerAttribution == null || fixedDispatchAttribution.Report.status != "installed")
+                        throw new InvalidOperationException("Fixed dispatch admission failed: " + fixedDispatchAttribution.Report.detail);
+                }
+                orderedBodyAeroCapture = RetainedOrderedBodyAeroCapture.Create(arguments, report.runId, () => captureActive);
+                if (orderedBodyAeroCapture != null)
+                {
+                    report.orderedBodyAeroCapture = orderedBodyAeroCapture.Report;
+                    if (orderedBodyAeroCapture.Report.status != "installed")
+                        throw new InvalidOperationException("Ordered body aero admission failed: " + orderedBodyAeroCapture.Report.detail);
+                }
                 if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || updateCallbackAttribution != null || integratorUpdateAttribution != null || cylinderOcclusionReplacement != null || fixedStepOwnerAttribution != null || dryBuoyancy != null)
                 {
                     IPlayerLoopBracketObserver observer = writerCensus == null ? null : writerCensus.Census;
@@ -211,6 +227,7 @@ namespace KspContinuum
                     if (updateCallbackAttribution != null) observer = new CompositePlayerLoopObserver(observer, updateCallbackAttribution);
                     if (integratorUpdateAttribution != null) observer = new CompositePlayerLoopObserver(observer, integratorUpdateAttribution);
                     if (fixedStepOwnerAttribution != null) observer = new CompositePlayerLoopObserver(observer, fixedStepOwnerAttribution);
+                    if (fixedDispatchAttribution != null) observer = new CompositePlayerLoopObserver(observer, fixedDispatchAttribution);
                     if (dryBuoyancy != null) observer = new CompositePlayerLoopObserver(observer, dryBuoyancy);
                     playerLoop = new PlayerLoopTiming(observer); playerLoop.Start(); report.playerLoop = playerLoop.Report;
                     if (updateCallbackAttribution != null && playerLoop.Report.integrityStatus != "verified-at-boundaries")
@@ -434,6 +451,28 @@ namespace KspContinuum
             if (finished) return;
             finished = true;
             var errors = new List<string>();
+            if (orderedBodyAeroCapture != null)
+            {
+                try
+                {
+                    orderedBodyAeroCapture.Dispose();
+                    string reason;
+                    if (!orderedBodyAeroCapture.IsValidFinal(out reason)) errors.Add("OrderedBodyAeroCapture: " + reason);
+                }
+                catch (Exception error) { errors.Add("OrderedBodyAeroCapture: " + error.GetType().Name); }
+                orderedBodyAeroCapture = null;
+            }
+            if (fixedDispatchAttribution != null)
+            {
+                try
+                {
+                    fixedDispatchAttribution.Dispose();
+                    string reason;
+                    if (!fixedDispatchAttribution.IsValidFinal(out reason)) errors.Add("FixedDispatchAttribution: " + reason);
+                }
+                catch (Exception error) { errors.Add("FixedDispatchAttribution: " + error.GetType().Name); }
+                fixedDispatchAttribution = null;
+            }
             if (fixedStepOwnerAttribution != null)
             {
                 try

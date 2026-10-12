@@ -116,6 +116,20 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.FixedStepOwnerAttribution+ModuleOwner" ||
                  type.FullName == "KspContinuum.FixedStepOwnerAttribution+Window" ||
                  type.FullName == "KspContinuum.FixedStepOwnerAttribution+Entry" ||
+                 type.FullName == "KspContinuum.FixedDispatchAttribution+ReportData" ||
+                 type.FullName == "KspContinuum.FixedDispatchAttribution+Target" ||
+                 type.FullName == "KspContinuum.FixedDispatchAttribution+Instance" ||
+                 type.FullName == "KspContinuum.FixedDispatchAttribution+Subscriber" ||
+                 type.FullName == "KspContinuum.FixedDispatchAttribution+SubscriberMetric" ||
+                 type.FullName == "KspContinuum.FixedDispatchAttribution+Metric" ||
+                 type.FullName == "KspContinuum.FixedDispatchAttribution+Window" ||
+                 type.FullName == "KspContinuum.FixedDispatchAttribution+Shift" ||
+                 type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+ReportData" ||
+                 type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+MethodRow" ||
+                 type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+BodyBinding" ||
+                 type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+Root" ||
+                 type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+Row" ||
+                 type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+Command" ||
                  type.FullName == "KspContinuum.TrailEmitterCapture+CaptureReport" ||
                  type.FullName == "KspContinuum.AeroStepContext+ReportData" ||
                  type.FullName == "KspContinuum.AeroStepContext+MethodRow" ||

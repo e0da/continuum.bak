@@ -7,6 +7,7 @@ pub mod checkpoint_reload;
 pub mod convection_replacement;
 pub mod cylinder_occlusion;
 pub mod fixed_owner;
+pub mod ordered_body_aero;
 pub mod docking;
 pub mod flight;
 pub mod gpu_timing;

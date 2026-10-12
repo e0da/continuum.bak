@@ -96,6 +96,7 @@ namespace KspContinuum
                 Report.targets = targets.Select((m, i) =>
                 {
                     Require(m != null && !m.IsStatic && m.ReturnType == typeof(void) && m.Module.ModuleVersionId == Mvid && m.GetMethodBody() != null &&
+                        m.MetadataToken == new[] {100670971,100677747,100677520,100679178}[i] &&
                         (i >= 2 || m.GetParameters().Length == 0), "Original dispatch signature/module differs.");
                     Empty(m); return new Target { slot = i, metadataToken = m.MetadataToken, declaringType = m.DeclaringType.FullName, method = m.Name,
                         assemblySha256 = Sha, assemblyMvid = Mvid.ToString("D"), ilSha256 = Hash(m.GetMethodBody().GetILAsByteArray()) };

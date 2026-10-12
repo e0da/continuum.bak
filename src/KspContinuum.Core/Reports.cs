@@ -139,6 +139,8 @@ namespace KspContinuum
         public object cylinderOcclusionCapture;
         public object cylinderOcclusionReplacement;
         public object fixedStepOwnerAttribution;
+        public object fixedDispatchAttribution;
+        public object orderedBodyAeroCapture;
         public object trailEmitterCapture;
         public object convectionCapture;
         public object convectionReplacement;

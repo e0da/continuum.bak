@@ -162,7 +162,7 @@ fn dispatch_summary(r:&Value,run:&str,pid:u32,vessel:&Value,start:u64,end:u64,fr
     let targets=r["targets"].as_array().filter(|a|a.len()==4).ok_or("dispatch targets missing")?;
     for (i,row) in targets.iter().enumerate(){
         check(row["slot"]==i&&row["assemblySha256"]=="8a20892953fc14c02f352b393eb6712c665156d94a7d846d16c20a7de3e22f27"
-            &&row["assemblyMvid"]=="10657063-2fc3-43a7-84fa-d39e75e877bf"&&n(row,"metadataToken")?>0
+            &&row["assemblyMvid"]=="10657063-2fc3-43a7-84fa-d39e75e877bf"&&row["metadataToken"]==[100670971,100677747,100677520,100679178][i]
             &&row["method"]==["FixedUpdate","FixedUpdate","setOffset","Fire"][i]
             &&row["declaringType"].as_str().is_some_and(|s| if i<3{s==["Part","Vessel","FloatingOrigin"][i]}else{s.starts_with("EventData`2[[Vector3d,")})
             &&row["ilSha256"].as_str().is_some_and(|s|s.len()==64&&s.bytes().all(|b|b.is_ascii_hexdigit())),"dispatch target identity differs")?;

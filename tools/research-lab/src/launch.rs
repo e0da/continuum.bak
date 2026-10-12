@@ -93,6 +93,12 @@ pub struct Diagnostics {
     pub aero_drag_transaction: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub fixed_step_owner_attribution: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fixed_dispatch_attribution: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordered_body_aero_capture: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scientific_attachment_nodes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trail_emitter: Option<TrailEmitterSelection>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -252,6 +258,9 @@ impl ResolvedLaunch {
                 aero_step_context: options.get("--flight-aero-step-context").cloned(),
                 aero_drag_transaction: boolean("--flight-aero-drag-transaction")?,
                 fixed_step_owner_attribution: boolean("--flight-fixed-step-owner-attribution")?,
+                fixed_dispatch_attribution: boolean("--flight-fixed-dispatch-attribution")?,
+                ordered_body_aero_capture: path("--flight-ordered-body-aero-capture"),
+                scientific_attachment_nodes: options.get("--flight-scientific-attachment-nodes").cloned(),
                 trail_emitter: options.get("--flight-trail-emitter").map(|output| Ok::<TrailEmitterSelection,String>(TrailEmitterSelection {
                     recording: PathBuf::from(output),
                     part: options.get("--flight-trail-emitter-part").ok_or("explicit root or numeric trail emitter part required")?.clone(),
@@ -289,11 +298,30 @@ impl ResolvedLaunch {
 
     pub fn validate(&self) -> Result<()> {
         let d=&self.diagnostics;
-        if d.aero_step_context.is_some() || d.fixed_step_owner_attribution || d.trail_emitter.is_some() {
+        if d.aero_step_context.is_some() || d.fixed_step_owner_attribution || d.trail_emitter.is_some() || d.ordered_body_aero_capture.is_some() {
             let f=self.flight.as_ref().ok_or("fixed-owner/aero/emitter requires pinned flight")?;
             if self.live_play || f.expected_parts.is_none() || f.warp!=1 || f.callback_attribution
                 || d.checkpoint_reload || d.docking.is_some() || d.convection_capture.is_some() {
                 return Err("fixed-owner/aero/emitter requires normal-time pinned diagnostic without broad attribution/reload/docking/capture".into());
+            }
+        }
+        if d.fixed_dispatch_attribution && !d.fixed_step_owner_attribution {
+            return Err("fixed dispatch attribution requires the bound fixed-step owner and shared phase brackets".into());
+        }
+        if let Some(path) = &d.ordered_body_aero_capture {
+            if d.aero_step_context.is_some() || d.aero_drag_transaction || self.live_play
+                || !path.is_absolute() || path.exists()
+                || !path.parent().is_some_and(|p| p.is_dir())
+                || path.parent().unwrap().canonicalize().map_err(|e| e.to_string())? != path.parent().unwrap() {
+                return Err("ordered body aero capture requires original provider execution and a new canonical absolute output".into());
+            }
+        }
+        if let Some(nodes) = &d.scientific_attachment_nodes {
+            if d.multiscale_scene.is_none() || nodes.is_empty() || nodes.split(',').count() > 128
+                || nodes.split(',').any(|node| !node.split_once(':').is_some_and(|(owner, id)|
+                    owner.parse::<u32>().is_ok_and(|v| v > 0) && !id.is_empty()
+                    && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b)))) {
+                return Err("scientific attachment selection requires a new scene and explicit part-ID:node-ID entries".into());
             }
         }
         if let Some(mode)=&d.aero_step_context {
@@ -633,6 +661,26 @@ const FLIGHT_KEYS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ordered_capture_replays_explicit_ownership_and_rejects_provider_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().canonicalize().unwrap().join("original-commands.json");
+        let mut input = options(&[("--flight-save", "lab"), ("--flight-checkpoint", "checkpoint"),
+            ("--flight-expected-parts", "512"), ("--flight-atmosphere", "true")]);
+        input.insert("--flight-ordered-body-aero-capture".into(), output.to_str().unwrap().into());
+        let capture = ResolvedLaunch::parse(&input).unwrap();
+        let replay = ResolvedLaunch::parse_from_json(&capture.identity_json().unwrap()).unwrap();
+        assert_eq!(replay.diagnostics.ordered_body_aero_capture, Some(output.clone()));
+        input.insert("--flight-aero-step-context".into(), "query".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input.remove("--flight-aero-step-context");
+        input.insert("--flight-fixed-dispatch-attribution".into(), "true".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input.insert("--flight-fixed-step-owner-attribution".into(), "true".into());
+        assert!(ResolvedLaunch::parse(&input).is_ok());
+        std::fs::write(output, b"already-owned").unwrap();
+        assert!(ResolvedLaunch::parse(&input).is_err());
+    }
     #[test]
     fn cylinder_treatment_is_frozen_and_rejects_unknown_or_conflicting_modes() {
         let mut input=options(&[("--flight-save","lab"),("--flight-checkpoint","checkpoint"),
