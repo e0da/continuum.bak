@@ -30,6 +30,8 @@ public sealed class PersistentTrailRuntime : IDisposable
         public int[] producerDimensions;
         public int sceneGeneration,debugShaderGeneration;
         public string craftRenderMode;
+        public float[] craftProjectedAabbPixels;
+        public float bodyCraftExclusionMarginPixels;
         public string scope="Synthetic positive-eye-depth/texture-UV witness using actual trail occlusion and composition passes; not live-scene occlusion qualification",uvConvention="Normalized bottom-left texture UV; PNG top-left rows invert Y";
         public float[] craftRegion={.125f,.25f,.375f,.75f,10},bodyRegion={.625f,.125f,.875f,.625f,20};
         public float[] centerUvDepth={.25f,.375f,8,.25f,.625f,12,.75f,.25f,18,.75f,.5f,22,.5f,.875f,15,.5f,.125f,15};

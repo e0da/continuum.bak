@@ -314,6 +314,7 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         Matrix4x4 rootMatrix=new Matrix4x4(); for(int r=0;r<4;r++) for(int c=0;c<4;c++) rootMatrix[r,c]=manifest.rootToWorld[r*4+c]; rootMatrix.m03=rootMatrix.m13=rootMatrix.m23=0;
         float x,y,z; MultiscaleSceneFormat.RelativePosition(s.vesselAnchorMeters,cameraAnchor,out x,out y,out z); Vector3 relative=new Vector3(x,y,z);
         PersistentTrailRuntime.SceneTriangle craft=null,body=null; int triangles=0;
+        float minCraftX=float.PositiveInfinity,minCraftY=float.PositiveInfinity,maxCraftX=float.NegativeInfinity,maxCraftY=float.NegativeInfinity;
         for(int d=0;d<manifest.draws.Length;d++)
         {
             var draw=manifest.draws[d]; if(!draw.enabled||!draw.active||draw.forceRenderingOff||(craftCamera.cullingMask&(1<<draw.layer))==0) continue;
@@ -323,7 +324,11 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
             {
                 if(++triangles>2000000) throw new InvalidDataException("Scene probe triangle projection bound exceeded.");
                 int a=indices[i]*3,b=indices[i+1]*3,c=indices[i+2]*3;
-                craft=PersistentTrailRuntime.SelectTriangle(craft,"craft",draw.id,m.MultiplyPoint3x4(new Vector3(p[a],p[a+1],p[a+2])),m.MultiplyPoint3x4(new Vector3(p[b],p[b+1],p[b+2])),m.MultiplyPoint3x4(new Vector3(p[c],p[c+1],p[c+2])),i/3,craftCamera,Screen.width,Screen.height,null);
+                Vector3 va=m.MultiplyPoint3x4(new Vector3(p[a],p[a+1],p[a+2])),vb=m.MultiplyPoint3x4(new Vector3(p[b],p[b+1],p[b+2])),vc=m.MultiplyPoint3x4(new Vector3(p[c],p[c+1],p[c+2]));
+                ExpandCraftProbeBounds(craftCamera.WorldToViewportPoint(va),ref minCraftX,ref minCraftY,ref maxCraftX,ref maxCraftY);
+                ExpandCraftProbeBounds(craftCamera.WorldToViewportPoint(vb),ref minCraftX,ref minCraftY,ref maxCraftX,ref maxCraftY);
+                ExpandCraftProbeBounds(craftCamera.WorldToViewportPoint(vc),ref minCraftX,ref minCraftY,ref maxCraftX,ref maxCraftY);
+                craft=PersistentTrailRuntime.SelectTriangle(craft,"craft",draw.id,va,vb,vc,i/3,craftCamera,Screen.width,Screen.height,null);
             }
         }
         for(int i=0;i<3;i++) bodyGeometryAnchor[i]=s.bodyAnchorMeters[i]+s.bodyLocalToMeters[i*4+3];
@@ -334,7 +339,11 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
             if(++triangles>2000000) throw new InvalidDataException("Scene probe triangle projection bound exceeded.");
             Vector3 a=bm.MultiplyPoint3x4(vertices[bodyIndices[i]]),b=bm.MultiplyPoint3x4(vertices[bodyIndices[i+1]]),c=bm.MultiplyPoint3x4(vertices[bodyIndices[i+2]]);
             if(Vector3.Dot(Vector3.Cross(b-a,c-a),a)*Mathf.Sign(bm.determinant)>=0) continue;
-            body=PersistentTrailRuntime.SelectTriangle(body,"body",s.bodyId,a,b,c,i/3,bodyCamera,Screen.width,Screen.height,craft);
+            var candidate=PersistentTrailRuntime.SelectTriangle(null,"body",s.bodyId,a,b,c,i/3,bodyCamera,Screen.width,Screen.height,craft);
+            if(candidate==null) continue;
+            float px=candidate.centerU*Screen.width,py=candidate.centerV*Screen.height;
+            if(px>=minCraftX-20&&px<=maxCraftX+20&&py>=minCraftY-20&&py<=maxCraftY+20) continue;
+            if(body==null||candidate.inradiusPixels>body.inradiusPixels) body=candidate;
         }
         trail.SceneProbe(craft,body,craftCamera,bodyCamera.nearClipPlane,Screen.width,Screen.height,state.sceneSha256,generation.Whole.GeometrySha256,state.bodyGeometrySha256);
         var proof=trail.Status.probe; proof.craftProducerProjection=new float[16]; proof.bodyProducerProjection=new float[16];
@@ -342,6 +351,14 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
         for(int r=0;r<4;r++) for(int c=0;c<4;c++) { proof.craftProducerProjection[r*4+c]=cp[r,c]; proof.bodyProducerProjection[r*4+c]=bp[r,c]; }
         proof.producerNearFar=new[]{craftCamera.nearClipPlane,craftCamera.farClipPlane,bodyCamera.nearClipPlane,bodyCamera.farClipPlane}; proof.producerDimensions=new[]{craftTarget.Depth.width,craftTarget.Depth.height,bodyTarget.Depth.width,bodyTarget.Depth.height};
         proof.sceneGeneration=state.sceneReloads; proof.debugShaderGeneration=state.debugShaderGeneration; proof.craftRenderMode=generation.Whole.RenderMode;
+        proof.craftProjectedAabbPixels=new[]{minCraftX,minCraftY,maxCraftX,maxCraftY}; proof.bodyCraftExclusionMarginPixels=20;
+    }
+    void ExpandCraftProbeBounds(Vector3 projected,ref float minX,ref float minY,ref float maxX,ref float maxY)
+    {
+        // Near-plane crossing requires clipping to bound it; this diagnostic declines it conservatively.
+        if(projected.z<=craftCamera.nearClipPlane||float.IsNaN(projected.x)||float.IsNaN(projected.y)) { minX=minY=float.NegativeInfinity; maxX=maxY=float.PositiveInfinity; return; }
+        minX=Mathf.Min(minX,projected.x*Screen.width); minY=Mathf.Min(minY,projected.y*Screen.height);
+        maxX=Mathf.Max(maxX,projected.x*Screen.width); maxY=Mathf.Max(maxY,projected.y*Screen.height);
     }
     void BeginBenchmark(double warmup,double seconds)
     {
