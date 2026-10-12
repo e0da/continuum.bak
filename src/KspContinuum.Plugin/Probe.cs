@@ -33,6 +33,7 @@ namespace KspContinuum
         FixedStepOwnerAttribution fixedStepOwnerAttribution;
         FixedDispatchAttribution fixedDispatchAttribution;
         RetainedOrderedBodyAeroCapture orderedBodyAeroCapture;
+        ZeroNativeForcePruning zeroNativeForcePruning;
         TrailEmitterCapture trailEmitter;
         ConvectionCapture convectionCapture;
         ConvectionReplacement convectionReplacement;
@@ -117,6 +118,23 @@ namespace KspContinuum
                     var row = new MarkerReport { name = Names[i], status = "unavailable", availabilityDetail = "Recorder unavailable in this player or marker has not been created.",
                         nanoseconds = new long[report.requestedFrames], blocks = new int[report.requestedFrames], available = new bool[report.requestedFrames] };
                     report.markers[i] = row;
+                }
+                ZeroNativeForceCanary.ReportData zeroQualification = null;
+                if (ZeroNativeForcePruning.Requested)
+                {
+                    zeroQualification = ZeroNativeForceCanary.Run();
+                    zeroQualification.runId = report.runId;
+                    report.zeroNativeForceCanary = zeroQualification;
+                    double cleanupDeadline = Time.realtimeSinceStartup + 10;
+                    while (!ZeroNativeForceCanary.ObserveCleanup(zeroQualification))
+                    {
+                        if (zeroQualification.cleanupStatus == "cleanup-error" || Time.realtimeSinceStartup >= cleanupDeadline)
+                            throw new InvalidOperationException("Isolated zero-force scene cleanup failed or timed out.");
+                        yield return null;
+                        if (finished) yield break;
+                    }
+                    if (!zeroQualification.passed || zeroQualification.cleanupStatus != "scene-unloaded")
+                        throw new InvalidOperationException("Isolated zero-force native qualification failed: " + zeroQualification.detail);
                 }
                 if (VesselRuntimeCapture.Requested && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-callback-attribution") >= 0)
                     throw new InvalidOperationException("Vessel runtime recording excludes broad callback attribution.");
@@ -219,6 +237,14 @@ namespace KspContinuum
                     if (orderedBodyAeroCapture.Report.status != "installed")
                         throw new InvalidOperationException("Ordered body aero admission failed: " + orderedBodyAeroCapture.Report.detail);
                 }
+                zeroNativeForcePruning = ZeroNativeForcePruning.Create(arguments, report.runId, () => captureActive,
+                    zeroQualification != null && zeroQualification.passed && zeroQualification.cleanupStatus == "scene-unloaded");
+                if (zeroNativeForcePruning != null)
+                {
+                    report.zeroNativeForcePruning = zeroNativeForcePruning.Report;
+                    if (zeroNativeForcePruning.Report.status != "installed")
+                        throw new InvalidOperationException("Zero-force pruning admission failed: " + zeroNativeForcePruning.Report.detail);
+                }
                 if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || updateCallbackAttribution != null || integratorUpdateAttribution != null || cylinderOcclusionReplacement != null || fixedStepOwnerAttribution != null || dryBuoyancy != null)
                 {
                     IPlayerLoopBracketObserver observer = writerCensus == null ? null : writerCensus.Census;
@@ -261,6 +287,13 @@ namespace KspContinuum
                 {
                     if (cylinderOcclusionReplacement.QualificationFailed || clock.Elapsed.TotalSeconds >= wallTimeoutSeconds)
                         throw new InvalidOperationException("Cylinder occlusion qualification failed or timed out before capture.");
+                    yield return null;
+                    if (finished) yield break;
+                }
+                while (zeroNativeForcePruning != null && !zeroNativeForcePruning.ReadyForCapture)
+                {
+                    if (zeroNativeForcePruning.QualificationFailed || clock.Elapsed.TotalSeconds >= wallTimeoutSeconds)
+                        throw new InvalidOperationException("Zero-force root warmup failed or timed out before capture.");
                     yield return null;
                     if (finished) yield break;
                 }
@@ -451,6 +484,17 @@ namespace KspContinuum
             if (finished) return;
             finished = true;
             var errors = new List<string>();
+            if (zeroNativeForcePruning != null)
+            {
+                try
+                {
+                    zeroNativeForcePruning.Dispose();
+                    string reason;
+                    if (!zeroNativeForcePruning.IsValidFinal(out reason)) errors.Add("ZeroNativeForcePruning: " + reason);
+                }
+                catch (Exception error) { errors.Add("ZeroNativeForcePruning: " + error.GetType().Name); }
+                zeroNativeForcePruning = null;
+            }
             if (orderedBodyAeroCapture != null)
             {
                 try

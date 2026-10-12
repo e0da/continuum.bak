@@ -130,6 +130,16 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+Root" ||
                  type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+Row" ||
                  type.FullName == "KspContinuum.RetainedOrderedBodyAeroCapture+Command" ||
+                 type.FullName == "KspContinuum.MultiscaleSceneCapture+Evidence" ||
+                 type.FullName == "KspContinuum.MultiscaleSceneCapture+AttachmentNodeEvidence" ||
+                 type.FullName == "KspContinuum.ZeroNativeForcePruning+ReportData" ||
+                 type.FullName == "KspContinuum.ZeroNativeForcePruning+MethodRow" ||
+                 type.FullName == "KspContinuum.ZeroNativeForcePruning+BodyBinding" ||
+                 type.FullName == "KspContinuum.ZeroNativeForcePruning+Window" ||
+                 type.FullName == "KspContinuum.ZeroNativeForceCanary+ReportData" ||
+                 type.FullName == "KspContinuum.ZeroNativeForceCanary+CaseData" ||
+                 type.FullName == "KspContinuum.ZeroNativeForceCanary+BodyState" ||
+                 type.FullName == "KspContinuum.ZeroNativeForceCanary+ReceiverData" ||
                  type.FullName == "KspContinuum.TrailEmitterCapture+CaptureReport" ||
                  type.FullName == "KspContinuum.AeroStepContext+ReportData" ||
                  type.FullName == "KspContinuum.AeroStepContext+MethodRow" ||

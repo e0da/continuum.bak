@@ -65,9 +65,9 @@ namespace KspContinuum
                 scene.scientificAnchors=CaptureAnchors(vessel,centreOfMass,scene,out attachmentEvidence);
                 scene.scientificAnchorsCaptured=true;
                 MultiscaleSceneFormat.Validate(scene);
-                File.WriteAllText(Path.Combine(staging, "capture-evidence.json"), JsonUtility.ToJson(new Evidence { runId=runId, body=body.bodyName, mesh=mesh.name, shader=material.shader.name,
+                File.WriteAllText(Path.Combine(staging, "capture-evidence.json"), ReportJson.Encode(new Evidence { runId=runId, body=body.bodyName, mesh=mesh.name, shader=material.shader.name,
                     vertices=vertices.Length, triangles=geometry.indices.Length/3, derivedTangents=derivedTangents, textureCapture=captureMode, sourceTexture=texture.name,
-                    sourceTextureFormat=(int)texture.format, sourceTextureMips=texture.mipmapCount, scaledSpaceFactor=scale, attachmentNodes=attachmentEvidence }, true));
+                    sourceTextureFormat=(int)texture.format, sourceTextureMips=texture.mipmapCount, scaledSpaceFactor=scale, attachmentNodes=attachmentEvidence }));
                 File.WriteAllText(Path.Combine(staging, "manifest.json"), ReportJson.Encode(scene));
                 Directory.Move(staging, output); Debug.Log("[Continuum multiscale] ready actualBody=" + body.bodyName + " texture=" + captureMode + " output=" + output);
                 return Path.Combine(output, "manifest.json");

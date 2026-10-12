@@ -141,6 +141,8 @@ namespace KspContinuum
         public object fixedStepOwnerAttribution;
         public object fixedDispatchAttribution;
         public object orderedBodyAeroCapture;
+        public object zeroNativeForcePruning;
+        public object zeroNativeForceCanary;
         public object trailEmitterCapture;
         public object convectionCapture;
         public object convectionReplacement;

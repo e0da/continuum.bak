@@ -47,6 +47,7 @@ fn run() -> Result<()> {
         "startup-timeline" => &["--log", "--output"],
         "update-callback-summary" => &["--report", "--pid", "--output"],
         "ordered-body-aero-summary" => &["--report", "--recording", "--pid", "--output"],
+        "zero-native-force-summary" => &["--report", "--pid", "--output"],
         "prepare" => &["--output", "--variant"],
         "index" => &["--assembly", "--ilspy", "--output", "--project"],
         "recompose" => &[
@@ -64,6 +65,7 @@ fn run() -> Result<()> {
             "--flight-fixed-step-owner-attribution",
             "--flight-fixed-dispatch-attribution",
             "--flight-ordered-body-aero-capture",
+            "--flight-zero-native-force-pruning",
             "--flight-scientific-attachment-nodes",
             "--flight-trail-emitter",
             "--flight-trail-emitter-part",
@@ -199,6 +201,11 @@ fn run() -> Result<()> {
             let pid = get("--pid")?.parse::<u32>().map_err(|e| e.to_string())?;
             let summary = continuum_research_lab::ordered_body_aero::summarize(Path::new(get("--recording")?), &report, pid)?;
             write_new(output, &summary)?;
+        }
+        "zero-native-force-summary" => {
+            let report: Value = read(Path::new(get("--report")?))?;
+            let pid = get("--pid")?.parse::<u32>().map_err(|e| e.to_string())?;
+            write_new(output, &continuum_research_lab::zero_native_force::summarize(&report, pid)?)?;
         }
         "program-catalog" => {
             write_new(output, &json!({"schema":"continuum-reference-program/v1","recipes":continuum_research_lab::reference_program::catalog()}))?;
@@ -841,6 +848,7 @@ fn smoke(
         .env("CONTINUUM_FIXED_STEP_OWNER_ATTRIBUTION",if selection.diagnostics.fixed_step_owner_attribution {"1"} else {""})
         .env("CONTINUUM_FIXED_DISPATCH_ATTRIBUTION",if selection.diagnostics.fixed_dispatch_attribution {"1"} else {""})
         .env("CONTINUUM_ORDERED_BODY_AERO_CAPTURE",selection.diagnostics.ordered_body_aero_capture.as_deref().unwrap_or(Path::new("")))
+        .env("CONTINUUM_ZERO_NATIVE_FORCE_PRUNING",selection.diagnostics.zero_native_force_pruning.as_deref().unwrap_or(""))
         .env("CONTINUUM_SCIENTIFIC_ATTACHMENT_NODES",selection.diagnostics.scientific_attachment_nodes.as_deref().unwrap_or(""))
         .env("CONTINUUM_TRAIL_EMITTER_RECORDING",selection.diagnostics.trail_emitter.as_ref().map(|s|s.recording.as_path()).unwrap_or(Path::new("")))
         .env("CONTINUUM_TRAIL_EMITTER_PART_ID",selection.diagnostics.trail_emitter.as_ref().map(|s|s.part.as_str()).unwrap_or(""))
@@ -1240,6 +1248,10 @@ fn smoke(
             }
             if let Some(path) = selection.diagnostics.ordered_body_aero_capture.as_deref() {
                 summary["orderedBodyAeroCapture"] = continuum_research_lab::ordered_body_aero::summarize(path, &report, child.id())?;
+            }
+            if selection.diagnostics.zero_native_force_pruning.is_some() {
+                summary["zeroNativeForcePruning"] = continuum_research_lab::zero_native_force::summarize(&report, child.id())?;
+                summary["comparisonEligibility"] = json!("intrusive-adjacent-root-comparison; prohibited-clean-FPS-comparison");
             }
             continuum_research_lab::flight::validate_entry(
                 request,

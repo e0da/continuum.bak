@@ -98,6 +98,8 @@ pub struct Diagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ordered_body_aero_capture: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zero_native_force_pruning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scientific_attachment_nodes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trail_emitter: Option<TrailEmitterSelection>,
@@ -260,6 +262,7 @@ impl ResolvedLaunch {
                 fixed_step_owner_attribution: boolean("--flight-fixed-step-owner-attribution")?,
                 fixed_dispatch_attribution: boolean("--flight-fixed-dispatch-attribution")?,
                 ordered_body_aero_capture: path("--flight-ordered-body-aero-capture"),
+                zero_native_force_pruning: options.get("--flight-zero-native-force-pruning").cloned(),
                 scientific_attachment_nodes: options.get("--flight-scientific-attachment-nodes").cloned(),
                 trail_emitter: options.get("--flight-trail-emitter").map(|output| Ok::<TrailEmitterSelection,String>(TrailEmitterSelection {
                     recording: PathBuf::from(output),
@@ -298,7 +301,7 @@ impl ResolvedLaunch {
 
     pub fn validate(&self) -> Result<()> {
         let d=&self.diagnostics;
-        if d.aero_step_context.is_some() || d.fixed_step_owner_attribution || d.trail_emitter.is_some() || d.ordered_body_aero_capture.is_some() {
+        if d.aero_step_context.is_some() || d.fixed_step_owner_attribution || d.trail_emitter.is_some() || d.ordered_body_aero_capture.is_some() || d.zero_native_force_pruning.is_some() {
             let f=self.flight.as_ref().ok_or("fixed-owner/aero/emitter requires pinned flight")?;
             if self.live_play || f.expected_parts.is_none() || f.warp!=1 || f.callback_attribution
                 || d.checkpoint_reload || d.docking.is_some() || d.convection_capture.is_some() {
@@ -307,6 +310,12 @@ impl ResolvedLaunch {
         }
         if d.fixed_dispatch_attribution && !d.fixed_step_owner_attribution {
             return Err("fixed dispatch attribution requires the bound fixed-step owner and shared phase brackets".into());
+        }
+        if let Some(mode) = d.zero_native_force_pruning.as_deref() {
+            if !["compare", "query"].contains(&mode) || d.ordered_body_aero_capture.is_some()
+                || d.aero_step_context.is_some() || d.aero_drag_transaction {
+                return Err("zero native force pruning requires compare/query and exclusive original integrator ownership".into());
+            }
         }
         if let Some(path) = &d.ordered_body_aero_capture {
             if d.aero_step_context.is_some() || d.aero_drag_transaction || self.live_play
@@ -678,6 +687,16 @@ mod tests {
         assert!(ResolvedLaunch::parse(&input).is_err());
         input.insert("--flight-fixed-step-owner-attribution".into(), "true".into());
         assert!(ResolvedLaunch::parse(&input).is_ok());
+        input.insert("--flight-zero-native-force-pruning".into(), "compare".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input.remove("--flight-ordered-body-aero-capture");
+        let pruning = ResolvedLaunch::parse(&input).unwrap();
+        let replay = ResolvedLaunch::parse_from_json(&pruning.identity_json().unwrap()).unwrap();
+        assert_eq!(replay.diagnostics.zero_native_force_pruning.as_deref(), Some("compare"));
+        input.insert("--flight-zero-native-force-pruning".into(), "unknown".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input.remove("--flight-zero-native-force-pruning");
+        input.insert("--flight-ordered-body-aero-capture".into(), output.to_str().unwrap().into());
         std::fs::write(output, b"already-owned").unwrap();
         assert!(ResolvedLaunch::parse(&input).is_err());
     }
