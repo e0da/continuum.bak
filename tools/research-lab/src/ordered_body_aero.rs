@@ -62,7 +62,9 @@ pub fn summarize(path: &Path, probe: &Value, pid: u32) -> Result<Value> {
     check(r["inputFloatFields"] == json!(["velocity.x","velocity.y","velocity.z","dragApplicationPoint.x","dragApplicationPoint.y","dragApplicationPoint.z","liftApplicationPoint.x","liftApplicationPoint.y","liftApplicationPoint.z","rotatedScaledLift.x","rotatedScaledLift.y","rotatedScaledLift.z","angularDrag","angularDragMultiplier","dragMultiplier","bodyLiftMultiplier","globalBodyLiftMultiplier","liftMachSample"])
         && r["inputDoubleFields"] == json!(["submergedPortion","atmosphericDensity","originalDragValue","pseudoReMultiplier"])
         && r["inputFlagFields"] == json!(["ownBody","servoBody","shielded","applyDrag","applyParentDrag","angularDragByIntegrator","accelerationMode","bodyLiftEligible","liftForceEligible","liftGeometryCaptured"])
-        && r["outputFloatFields"] == json!(["speedSquared","speed","direction.x","direction.y","direction.z","dragScalar","bodyLiftScalar"]), "declared numeric layouts differ")?;
+        && r["outputFloatFields"] == json!(["speedSquared","speed","direction.x","direction.y","direction.z","dragScalar","bodyLiftScalar"])
+        && r["extraFloatFields"] == json!(["initialBodyLiftScalar","bodyLiftLocalPosition.x","bodyLiftLocalPosition.y","bodyLiftLocalPosition.z","bodyLiftLocalVector.x","bodyLiftLocalVector.y","bodyLiftLocalVector.z","liftCurveInput"])
+        && r["extraDoubleFields"] == json!(["exposedArea","aerodynamicArea","submergedDynamicPressurekPa"]), "declared numeric layouts differ")?;
     let bindings = r["bodyBindings"].as_array().ok_or("native body ledger absent")?;
     let bound = n(&r, "boundParts")?;
     let reachable = n(&r, "reachableParts")?;
@@ -142,6 +144,8 @@ pub fn summarize(path: &Path, probe: &Value, pid: u32) -> Result<Value> {
                     if norm >= f32::from_bits(1) { for i in 0..3 { projected[i] -= normal[i] * product / norm; } }
                     force(tail.get(cursor).ok_or("original lift command absent")?, &projected,&words(row,"inputFloatBits",18)?[6..9],mode,"aero-lift")?; cursor += 1;
                 }
+            } else {
+                check(words(row,"outputFloatBits",7)?[6] == words(row,"extraFloatBits",8)?[0], "unwritten original lift field changed bits")?;
             }
             check(cursor == tail.len() && tail.iter().all(|c| c["recipientBodyId"] == row["recipientBodyId"]), "original tail command count/body differs")?;
             root_matched += 1;

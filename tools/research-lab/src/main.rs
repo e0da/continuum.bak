@@ -46,6 +46,7 @@ fn run() -> Result<()> {
         "restore-native-assets" => &["--instance", "--installation", "--output"],
         "startup-timeline" => &["--log", "--output"],
         "update-callback-summary" => &["--report", "--pid", "--output"],
+        "ordered-body-aero-summary" => &["--report", "--recording", "--pid", "--output"],
         "prepare" => &["--output", "--variant"],
         "index" => &["--assembly", "--ilspy", "--output", "--project"],
         "recompose" => &[
@@ -191,6 +192,12 @@ fn run() -> Result<()> {
             if hash(path)? != digest { return Err("Update callback source changed during analysis".into()); }
             summary["sourceSha256"] = json!(digest);
             summary["ownedPid"] = json!(pid);
+            write_new(output, &summary)?;
+        }
+        "ordered-body-aero-summary" => {
+            let report: Value = read(Path::new(get("--report")?))?;
+            let pid = get("--pid")?.parse::<u32>().map_err(|e| e.to_string())?;
+            let summary = continuum_research_lab::ordered_body_aero::summarize(Path::new(get("--recording")?), &report, pid)?;
             write_new(output, &summary)?;
         }
         "program-catalog" => {
