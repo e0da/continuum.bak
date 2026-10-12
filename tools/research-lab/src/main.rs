@@ -60,6 +60,7 @@ fn run() -> Result<()> {
         "run" | "resolve" => &[
             "--flight-checkpoint-reload",
             "--flight-convection-replacement",
+            "--flight-cylinder-occlusion",
             "--flight-docking",
             "--flight-docking-prepare-pair",
             "--flight-lighting",
@@ -806,6 +807,7 @@ fn smoke(
     let admission_seconds = admission_started.elapsed().as_secs_f64();
     let mut child = Command::new(&executable)
         .current_dir(&instance)
+        .env("CONTINUUM_CYLINDER_OCCLUSION_MODE",selection.diagnostics.cylinder_occlusion_replacement.as_deref().unwrap_or(""))
         .env(
             "CONTINUUM_MULTISCALE_SCENE",
             selection
@@ -1184,6 +1186,11 @@ fn smoke(
             if let Some(mode) = selection.diagnostics.convection_replacement.as_deref() {
                 summary["convectionReplacement"] = continuum_research_lab::convection_replacement::summarize(
                     mode, &report["convectionReplacement"], &run_id, child.id(),
+                )?;
+            }
+            if let Some(mode) = selection.diagnostics.cylinder_occlusion_replacement.as_deref() {
+                summary["cylinderOcclusionReplacement"] = continuum_research_lab::cylinder_occlusion::summarize(
+                    mode, &report["cylinderOcclusionReplacement"], &run_id, child.id(),
                 )?;
             }
             continuum_research_lab::flight::validate_entry(

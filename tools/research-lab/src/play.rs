@@ -28,6 +28,7 @@ pub fn validate(selection: &ResolvedLaunch) -> Result<()> {
         || d.convection_replacement.is_some()
         || d.docking.is_some()
         || d.convection_capture.is_some()
+        || d.cylinder_occlusion_replacement.is_some()
         || d.flight_lighting.is_some()
         || d.integrator_update_attribution
         || d.profile

@@ -125,6 +125,9 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.CylinderOcclusionCapture+Row" ||
                  type.FullName == "KspContinuum.CylinderOcclusionCapture+Pair" ||
                  type.FullName == "KspContinuum.CylinderOcclusionCapture+Cylinder" ||
+                 type.FullName == "KspContinuum.CylinderOcclusionReplacement+ReportData" ||
+                 type.FullName == "KspContinuum.CylinderOcclusionReplacement+PassReport" ||
+                 type.FullName == "KspContinuum.CylinderOcclusionReplacement+Window" ||
                  type.FullName == "KspContinuum.FlightAeroFieldRenderer+Report" ||
                  type.FullName == "KspContinuum.FlightPartBatcher+Report" ||
                  type.FullName == "KspContinuum.ResidentMaterialFixtureCapture+Topology" ||

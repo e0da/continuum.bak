@@ -29,6 +29,7 @@ namespace KspContinuum
         UpdateCallbackAttribution updateCallbackAttribution;
         FlightIntegratorUpdateAttribution integratorUpdateAttribution;
         CylinderOcclusionCapture cylinderOcclusionCapture;
+        CylinderOcclusionReplacement cylinderOcclusionReplacement;
         ConvectionCapture convectionCapture;
         ConvectionReplacement convectionReplacement;
         AeroIntegrationAttribution aeroIntegrationAttribution;
@@ -163,12 +164,14 @@ namespace KspContinuum
                     callbackAttribution = new FixedCallbackAttribution(convectionReplacement); callbackAttribution.Start();
                     report.callbackAttribution = callbackAttribution.Report;
                 }
+                cylinderOcclusionReplacement = CylinderOcclusionReplacement.Create(arguments, report.runId, () => captureActive);
+                if (cylinderOcclusionReplacement != null) report.cylinderOcclusionReplacement = cylinderOcclusionReplacement.Report;
                 if (Array.IndexOf(arguments, "--continuum-flight-integrator-update-attribution") >= 0)
                 {
                     if (callbackAttribution != null) throw new InvalidOperationException("Narrow integrator attribution excludes broad callback attribution.");
                     cylinderOcclusionCapture = CylinderOcclusionCapture.Create(arguments, report.runId, () => captureActive);
                     if (cylinderOcclusionCapture != null) report.cylinderOcclusionCapture = cylinderOcclusionCapture.Report;
-                    integratorUpdateAttribution = new FlightIntegratorUpdateAttribution(report.runId, aeroStepContext, convectionReplacement, cylinderOcclusionCapture); integratorUpdateAttribution.Start();
+                    integratorUpdateAttribution = new FlightIntegratorUpdateAttribution(report.runId, aeroStepContext, convectionReplacement, cylinderOcclusionCapture, cylinderOcclusionReplacement); integratorUpdateAttribution.Start();
                     report.flightIntegratorUpdateAttribution = integratorUpdateAttribution.Report;
                     if (integratorUpdateAttribution.Report.status != "installed")
                         throw new InvalidOperationException("Narrow integrator attribution: " + integratorUpdateAttribution.Report.detail);
@@ -184,7 +187,7 @@ namespace KspContinuum
                     dryBuoyancy = new DryBuoyancyRuntime(requestedDryStrategy); dryBuoyancy.Start(); report.dryBuoyancy = dryBuoyancy.Report;
                     if (dryBuoyancy.Report.status != "installed") throw new InvalidOperationException("Dry buoyancy admission did not install: " + dryBuoyancy.Report.status);
                 }
-                if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || updateCallbackAttribution != null || integratorUpdateAttribution != null || dryBuoyancy != null)
+                if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || updateCallbackAttribution != null || integratorUpdateAttribution != null || cylinderOcclusionReplacement != null || dryBuoyancy != null)
                 {
                     IPlayerLoopBracketObserver observer = writerCensus == null ? null : writerCensus.Census;
                     if (substitutionCanary != null) observer = new CompositePlayerLoopObserver(observer, substitutionCanary);
@@ -219,6 +222,13 @@ namespace KspContinuum
                         if (finished) yield break;
                     }
                     aeroStepContext.Report.dragWarmupWaitEndedTicks = Stopwatch.GetTimestamp();
+                }
+                while (cylinderOcclusionReplacement != null && !cylinderOcclusionReplacement.ReadyForCapture)
+                {
+                    if (cylinderOcclusionReplacement.QualificationFailed || clock.Elapsed.TotalSeconds >= wallTimeoutSeconds)
+                        throw new InvalidOperationException("Cylinder occlusion qualification failed or timed out before capture.");
+                    yield return null;
+                    if (finished) yield break;
                 }
                 perturbation = FlightPerturbation.Create(arguments, FlightGlobals.ActiveVessel, report.runId);
                 if (perturbation != null)
@@ -452,6 +462,17 @@ namespace KspContinuum
                 }
                 catch (Exception error) { errors.Add("CylinderOcclusionCapture: " + error.GetType().Name); }
                 cylinderOcclusionCapture = null;
+            }
+            if (cylinderOcclusionReplacement != null)
+            {
+                try
+                {
+                    cylinderOcclusionReplacement.Dispose();
+                    string reason;
+                    if (!cylinderOcclusionReplacement.IsValidFinal(out reason)) errors.Add("CylinderOcclusionReplacement: " + reason);
+                }
+                catch (Exception error) { errors.Add("CylinderOcclusionReplacement: " + error.GetType().Name); }
+                cylinderOcclusionReplacement = null;
             }
             if (aeroStepContext != null)
             {

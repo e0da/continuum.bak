@@ -92,6 +92,8 @@ pub struct Diagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub convection_replacement: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cylinder_occlusion_replacement: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docking: Option<crate::docking::Selection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flight_lighting: Option<String>,
@@ -234,6 +236,7 @@ impl ResolvedLaunch {
             diagnostics: Diagnostics {
                 checkpoint_reload: boolean("--flight-checkpoint-reload")?,
                 convection_replacement: options.get("--flight-convection-replacement").cloned(),
+                cylinder_occlusion_replacement: options.get("--flight-cylinder-occlusion").cloned(),
                 docking: options.get("--flight-docking").map(|value|
                     crate::docking::Selection::parse(value, boolean("--flight-docking-prepare-pair")?)
                 ).transpose()?,
@@ -270,6 +273,16 @@ impl ResolvedLaunch {
             return Err("timeout must be 1..1800 seconds".into());
         }
         let s = &self.startup;
+        if let Some(mode) = &self.diagnostics.cylinder_occlusion_replacement {
+            let f = self.flight.as_ref().ok_or("cylinder occlusion requires a pinned flight")?;
+            if !["verify", "compare", "query"].contains(&mode.as_str()) || self.live_play
+                || f.warp != 1 || f.expected_parts.is_none() || f.callback_attribution
+                || self.diagnostics.checkpoint_reload || self.diagnostics.docking.is_some()
+                || self.diagnostics.convection_capture.is_some()
+            {
+                return Err("cylinder occlusion requires verify, compare or query in a normal-time pinned flight without broad attribution/reload/docking/capture".into());
+            }
+        }
         if self.diagnostics.checkpoint_reload {
             let f = self.flight.as_ref().ok_or("checkpoint reload requires a pinned flight")?;
             if self.live_play || f.warp != 1 || f.atmosphere || f.entry_target_altitude.is_some()
@@ -571,6 +584,20 @@ const FLIGHT_KEYS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cylinder_treatment_is_frozen_and_rejects_unknown_or_conflicting_modes() {
+        let mut input=options(&[("--flight-save","lab"),("--flight-checkpoint","checkpoint"),
+            ("--flight-expected-parts","512"),("--flight-cylinder-occlusion","compare"),
+            ("--flight-integrator-update-attribution","true")]);
+        let launch=ResolvedLaunch::parse(&input).unwrap();
+        let replay=ResolvedLaunch::parse_from_json(&launch.identity_json().unwrap()).unwrap();
+        assert_eq!(replay.diagnostics.cylinder_occlusion_replacement.as_deref(),Some("compare"));
+        input.insert("--flight-cylinder-occlusion".into(),"unknown".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input.insert("--flight-cylinder-occlusion".into(),"query".into());
+        input.insert("--flight-callback-attribution".into(),"true".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+    }
     #[test]
     fn query_allows_each_attribution_but_verify_and_combined_observers_stay_exclusive() {
         let mut input = options(&[
