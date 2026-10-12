@@ -402,14 +402,15 @@ public sealed class MultiscaleWorkbench : MonoBehaviour
     }
     void OnGUI()
     {
+        bool controlsAllowed=!capturing&&!state.benchmarkActive&&!quitRequested&&(trail==null||!trail.Status.probeInstalled);
         GUI.Box(new Rect(10,10,430,150),generation!=null&&generation.Whole!=null?"Whole craft snapshot / "+state.wholeRenderMode:"Captured material-family subset"); GUI.Label(new Rect(20,35,410,20),state.preset+" / "+state.distance.ToString("G5")+" m / "+state.view);
-        float log=GUI.HorizontalSlider(new Rect(20,65,400,20),(float)Math.Log10(Math.Max(.25,distance)),-.6f,10); if(!capturing&&!state.benchmarkActive) distance=Math.Pow(10,log);
-        if(GUI.Button(new Rect(20,90,100,22),"low")&&!capturing&&!state.benchmarkActive) { state.preset="low"; policyDirty=true; } if(GUI.Button(new Rect(130,90,100,22),"balanced")&&!capturing&&!state.benchmarkActive) { state.preset="balanced"; policyDirty=true; } if(GUI.Button(new Rect(240,90,100,22),"high")&&!capturing&&!state.benchmarkActive) { state.preset="high"; policyDirty=true; }
+        float log=GUI.HorizontalSlider(new Rect(20,65,400,20),(float)Math.Log10(Math.Max(.25,distance)),-.6f,10); if(controlsAllowed) distance=Math.Pow(10,log);
+        if(GUI.Button(new Rect(20,90,100,22),"low")&&controlsAllowed) { state.preset="low"; policyDirty=true; } if(GUI.Button(new Rect(130,90,100,22),"balanced")&&controlsAllowed) { state.preset="balanced"; policyDirty=true; } if(GUI.Button(new Rect(240,90,100,22),"high")&&controlsAllowed) { state.preset="high"; policyDirty=true; }
         GUI.Label(new Rect(20,120,410,30),generation!=null&&generation.Whole!=null?state.wholeCapturedRenderers+" captured / "+state.wholeOmittedRenderers+" omitted / "+state.fixtureInstances+" slots":state.fixtureInstances+" rows / "+state.fixtureMeshes+" meshes / "+state.materialMode);
         GUI.Label(new Rect(450,10,Screen.width-460,70),state.debugLegend);
         if(replay!=null) GUI.Label(new Rect(450,80,Screen.width-460,60),"Replay "+replay.Status.status+" / "+replay.Status.cursor+" of "+replay.Status.frames+" / UT "+replay.Status.universalTime.ToString("G10")+" / force "+replay.Status.forceSummary+" / moment "+replay.Status.momentSummary);
         if(trail!=null) GUI.Label(new Rect(450,145,Screen.width-460,50),"Artistic trail / t="+trail.Status.simulationTime.ToString("F2")+" / live "+trail.Status.live+" / expired "+trail.Status.expired+" / "+(trail.Status.paused?"paused":"playing")+" / emission "+trail.Status.emission);
-        for(int i=0;i<debugViews.Length;i++) if(GUI.Button(new Rect(10+(i%2)*215,170+(i/2)*23,210,22),debugViews[i])&&!capturing&&!state.benchmarkActive&&!quitRequested) { SelectView(debugViews[i]); Write(); }
+        for(int i=0;i<debugViews.Length;i++) if(GUI.Button(new Rect(10+(i%2)*215,170+(i/2)*23,210,22),debugViews[i])&&controlsAllowed) { SelectView(debugViews[i]); Write(); }
     }
     void SocketLoop()
     {
