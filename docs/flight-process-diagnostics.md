@@ -1,7 +1,7 @@
 # Aligned flight process diagnostics
 
 `--flight-native-sample true` is an intrusive diagnostic of the owned game PID,
-not an unprofiled performance arm. Native sample receipt v2 requests two seconds
+not an unprofiled performance arm. Native sample receipt v3 requests two seconds
 at a one-millisecond interval. Historical five-second receipts are unchanged.
 
 The runner retains capture signals, sampler PID/exit/hash, and native
@@ -11,14 +11,26 @@ The game must publish `machClockStatus=available`,
 `machTimebaseNumerator` and `machTimebaseDenominator` at both capture boundaries.
 The game's two readings bracket its existing Stopwatch boundary timestamp.
 
-Qualification requires matching ownership, successful capture/completion,
-identical nonzero native timebases, and this conservative ordering:
+Native and Rosetta-translated processes can report different raw units. Apple's
+[architecture guidance](https://developer.apple.com/documentation/apple-silicon/addressing-architectural-differences-in-your-macos-code)
+explicitly requires applying each process's timebase before comparing their
+`mach_absolute_time` values. The receipt preserves raw readings and normalized
+nanosecond intervals `[floor(ticks*n/d), ceil(ticks*n/d)]`, computed with checked
+integer arithmetic. Each domain's timebase must remain stable; game and runner
+timebases need not equal. Missing units, overflow and drift reject admission.
+
+Qualification requires matching ownership, successful capture/completion, and
+this conservative ordering (upper start/finish bounds versus lower enclosing
+bounds after normalization):
 
 ```
-capture-start after <= spawn before <= spawn after
-    <= completion-observation before <= completion-observation after
-    <= capture-end before
+ceil(capture-start after) <= floor(spawn before)
+ceil(completion-observation after) <= floor(capture-end before)
 ```
+
+Raw runner readings must also preserve spawn-before/after and
+completion-before/after order; game capture brackets must be ordered. Normalized
+bounds are retained even when the enclosure inequality fails.
 
 Only this proof produces `status=completed`. Missing clocks, ambiguous ordering,
 failed or interrupted sampling, and missed capture remain explicit failures.

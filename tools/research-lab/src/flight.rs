@@ -1645,7 +1645,7 @@ impl NativeSample {
             attempted: false,
             child: None,
             capture: None,
-            receipt: json!({"schema":"continuum-flight-native-sample/v2","requested":requested,"status":if requested {"waiting-for-owned-capture"} else {"not-requested"},
+            receipt: json!({"schema":"continuum-flight-native-sample/v3","requested":requested,"status":if requested {"waiting-for-owned-capture"} else {"not-requested"},
                 "perturbation":"Native sampling attaches to the owned game process; this variant is diagnostic and unsuitable as an unprofiled performance comparison.",
                 "durationSeconds":2,"intervalMilliseconds":1,"captureDetectionResolutionSeconds":0.1,
                 "enclosureScope":"Entire sampler spawn-to-process-completion-observation envelope must fit between native mach clock brackets at capture boundaries. File publication/absence and Mono Stopwatch frequency do not prove clock equivalence. Samples are statistical stack occupancy, not CPU milliseconds or GPU duration."}),
@@ -1794,9 +1794,12 @@ impl NativeSample {
             self.receipt["psScope"]=json!("Raw process snapshots only; end may be unavailable after owned game exit. Percent CPU is ps process accounting, not capture-window exclusive CPU.");
             if self.receipt["status"] == "process-completed-awaiting-enclosure" {
                 match native_sample_enclosure(&self.receipt) {
-                    Ok(()) => {
-                        self.receipt["status"] = json!("completed");
-                        self.receipt["enclosureStatus"] = json!("proved-native-clock-envelope");
+                    Ok(normalized) => {
+                        let enclosed = normalized["enclosed"] == true;
+                        self.receipt["normalizedClockEnvelope"] = normalized;
+                        self.receipt["status"] = json!(if enclosed { "completed" } else { "enclosure-unresolved" });
+                        self.receipt["enclosureStatus"] = json!(if enclosed { "proved-native-clock-envelope" } else { "rejected" });
+                        if !enclosed { self.receipt["enclosureError"] = json!("Normalized sampler invocation/completion envelope not conservatively enclosed by capture."); }
                     }
                     Err(error) => {
                         self.receipt["status"] = json!("enclosure-unresolved");
@@ -1839,7 +1842,7 @@ fn sample_mach_clock() -> Value {
 #[cfg(not(target_os = "macos"))]
 fn sample_mach_clock() -> Value { json!({"status":"unsupported"}) }
 
-fn native_sample_enclosure(receipt: &Value) -> Result<()> {
+fn native_sample_enclosure(receipt: &Value) -> Result<Value> {
     if !receipt["captureEndReadError"].is_null() { return Err("capture-end read/identity rejected".into()); }
     if !receipt["samplerObservationError"].is_null() { return Err("sampler process observation failed".into()); }
     let start = &receipt["captureStartSignal"];
@@ -1851,8 +1854,14 @@ fn native_sample_enclosure(receipt: &Value) -> Result<()> {
         || end["processId"] != receipt["ownedPid"] {
         return Err("capture boundary signal shape unavailable".into());
     }
-    let n = start["machTimebaseNumerator"].as_u64().filter(|v| *v > 0).ok_or("native timebase numerator unavailable")?;
-    let d = start["machTimebaseDenominator"].as_u64().filter(|v| *v > 0).ok_or("native timebase denominator unavailable")?;
+    let timebase = |v: &Value, numerator: &str, denominator: &str| -> Result<(u64,u64)> {
+        let n=v[numerator].as_u64().filter(|x| *x>0 && *x<=u32::MAX as u64).ok_or("native timebase numerator unavailable")?;
+        let d=v[denominator].as_u64().filter(|x| *x>0 && *x<=u32::MAX as u64).ok_or("native timebase denominator unavailable")?;
+        Ok((n,d))
+    };
+    let (n,d) = timebase(start,"machTimebaseNumerator","machTimebaseDenominator")?;
+    let runner=&receipt["spawnEnvelopeBefore"];
+    let (rn,rd)=timebase(runner,"numerator","denominator")?;
     let signal = |value: &Value| -> Result<(u64,u64)> {
         if value["machClockStatus"] != "available" || value["machTimebaseNumerator"].as_u64() != Some(n)
             || value["machTimebaseDenominator"].as_u64() != Some(d) { return Err("native capture clock/timebase unavailable or changed".into()); }
@@ -1863,7 +1872,7 @@ fn native_sample_enclosure(receipt: &Value) -> Result<()> {
     };
     let observation = |name: &str| -> Result<u64> {
         let v=&receipt[name];
-        if v["status"] != "available" || v["numerator"].as_u64()!=Some(n) || v["denominator"].as_u64()!=Some(d) {
+        if v["status"] != "available" || v["numerator"].as_u64()!=Some(rn) || v["denominator"].as_u64()!=Some(rd) {
             return Err(format!("runner native clock/timebase unavailable at {name}"));
         }
         v["ticks"].as_u64().filter(|v| *v>0).ok_or_else(|| format!("runner clock missing at {name}"))
@@ -1874,11 +1883,28 @@ fn native_sample_enclosure(receipt: &Value) -> Result<()> {
     let spawn_after=observation("spawnEnvelopeAfter")?;
     let completed_before=observation("completionObservationBefore")?;
     let completed_after=observation("completionObservationAfter")?;
-    if !(start_before<=start_after && start_after<=spawn_before && spawn_before<=spawn_after
-        && spawn_after<=completed_before && completed_before<=completed_after && completed_after<=end_before && end_before<=end_after) {
-        return Err("sampler invocation/completion envelope not conservatively enclosed by capture".into());
+    if !(spawn_before<=spawn_after && spawn_after<=completed_before && completed_before<=completed_after) {
+        return Err("runner raw clock observations regressed".into());
     }
-    Ok(())
+    let sb=mach_nanosecond_bounds(start_before,n,d)?; let sa=mach_nanosecond_bounds(start_after,n,d)?;
+    let eb=mach_nanosecond_bounds(end_before,n,d)?; let ea=mach_nanosecond_bounds(end_after,n,d)?;
+    let pb=mach_nanosecond_bounds(spawn_before,rn,rd)?; let pa=mach_nanosecond_bounds(spawn_after,rn,rd)?;
+    let cb=mach_nanosecond_bounds(completed_before,rn,rd)?; let ca=mach_nanosecond_bounds(completed_after,rn,rd)?;
+    let enclosed=start_after<=end_before && sa.1<=pb.0 && ca.1<=eb.0;
+    let row=|(floor,ceil):(u64,u64)| json!({"floorNanoseconds":floor,"ceilNanoseconds":ceil});
+    Ok(json!({"enclosed":enclosed,"scope":"Same-host-boot mach_absolute_time origin; per-architecture timebases normalized with checked integer outward rounding. No Stopwatch or UTC equivalence assumed.",
+        "gameTimebase":{"numerator":n,"denominator":d},"runnerTimebase":{"numerator":rn,"denominator":rd},
+        "captureStartBefore":row(sb),"captureStartAfter":row(sa),"captureEndBefore":row(eb),"captureEndAfter":row(ea),
+        "spawnBefore":row(pb),"spawnAfter":row(pa),"completionBefore":row(cb),"completionAfter":row(ca)}))
+}
+fn mach_nanosecond_bounds(ticks:u64,numerator:u64,denominator:u64) -> Result<(u64,u64)> {
+    if ticks==0 || numerator==0 || denominator==0 { return Err("native normalization input zero".into()); }
+    let product=(ticks as u128).checked_mul(numerator as u128).ok_or("native normalization product overflow")?;
+    let divisor=denominator as u128;
+    let floor=product/divisor;
+    let ceil=floor.checked_add(u128::from(product%divisor!=0)).ok_or("native normalization ceiling overflow")?;
+    Ok((u64::try_from(floor).map_err(|_| "native normalized floor exceeds receipt range")?,
+        u64::try_from(ceil).map_err(|_| "native normalized ceiling exceeds receipt range")?))
 }
 #[cfg(test)]
 mod native_sample_alignment_tests {
@@ -1895,15 +1921,39 @@ mod native_sample_alignment_tests {
     }
     #[test]
     fn enclosure_requires_native_boundary_not_file_publication() {
-        let good=enclosed(); assert!(native_sample_enclosure(&good).is_ok());
+        let good=enclosed(); assert_eq!(native_sample_enclosure(&good).unwrap()["enclosed"],true);
         let mut late=good.clone(); late["completionObservationAfter"]["ticks"]=json!(102);
-        assert!(native_sample_enclosure(&late).is_err());
+        assert_eq!(native_sample_enclosure(&late).unwrap()["enclosed"],false);
         let mut missing=good.clone(); missing["captureEndSignal"]["machClockStatus"]=json!("unsupported");
         assert!(native_sample_enclosure(&missing).is_err());
         let mut changed=good.clone(); changed["spawnEnvelopeAfter"]["denominator"]=json!(2);
         assert!(native_sample_enclosure(&changed).is_err());
         let mut foreign=good; foreign["captureEndSignal"]["processId"]=json!(43);
         assert!(native_sample_enclosure(&foreign).is_err());
+    }
+    #[test]
+    fn cross_architecture_units_and_outward_rounding() {
+        let mut mixed=enclosed();
+        for name in ["captureStartSignal","captureEndSignal"] {
+            for key in ["machAbsoluteBeforeTicks","machAbsoluteAfterTicks"] {
+                mixed[name][key]=json!(mixed[name][key].as_u64().unwrap()*125);
+            }
+        }
+        for name in ["spawnEnvelopeBefore","spawnEnvelopeAfter","completionObservationBefore","completionObservationAfter"] {
+            mixed[name]["ticks"]=json!(mixed[name]["ticks"].as_u64().unwrap()*3);
+            mixed[name]["numerator"]=json!(125); mixed[name]["denominator"]=json!(3);
+        }
+        assert_eq!(native_sample_enclosure(&mixed).unwrap()["enclosed"],true);
+        assert_eq!(mach_nanosecond_bounds(1,125,3).unwrap(),(41,42));
+        assert!(mach_nanosecond_bounds(u64::MAX,u64::MAX,1).is_err());
+        assert!(mach_nanosecond_bounds(1,1,0).is_err());
+        let mut rounding=enclosed();
+        rounding["spawnEnvelopeBefore"]["ticks"]=json!(11);
+        for name in ["captureStartSignal","captureEndSignal"] { rounding[name]["machTimebaseNumerator"]=json!(2); rounding[name]["machTimebaseDenominator"]=json!(3); }
+        for name in ["spawnEnvelopeBefore","spawnEnvelopeAfter","completionObservationBefore","completionObservationAfter"] { rounding[name]["numerator"]=json!(2); rounding[name]["denominator"]=json!(3); }
+        assert_eq!(native_sample_enclosure(&rounding).unwrap()["enclosed"],false);
+        mixed["captureEndSignal"]["machTimebaseDenominator"]=json!(2);
+        assert!(native_sample_enclosure(&mixed).is_err());
     }
 }
 fn unix_seconds() -> f64 {
