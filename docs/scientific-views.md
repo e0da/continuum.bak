@@ -45,6 +45,10 @@ Use one annotation model with context-specific camera and interaction adapters:
 
 Keep camera navigation separate from simulation state. Selection identifies a stable domain object; dragging an annotation changes an authored diagnostic unless a command explicitly requests a maneuver or assembly edit. Switching projection should preserve the selected target and its on-screen scale. Establish that behavior and human controls before claiming a polished editor.
 
+`ScientificReferenceFrames` supplies the portable math for named plane snaps. `Plane` accepts an explicit normal and in-plane reference; `Equatorial` accepts the body's rotation axis and prime-meridian reference; `Orbital` constructs a plane from relative position/velocity; `RadialIn` builds the outside-looking-in orientation from the selected radial vector and orbital normal. Either viewing side preserves handedness. `Snap` retains the selected lens, viewport and clip interval, including constant orthographic scale. The caller retains frame identity/coordinate-space provenance alongside the resulting view. Actual KSP frame selectors and renderer bindings remain open.
+
+An arbitrary maneuver point supplies its own predicted position/velocity and evaluation epoch. It can differ from the live craft's position and time. Observation freshness has separate `observedAtSeconds` and `validUntilSeconds`; a future node epoch is valid while its prediction is current. Invalid, not-yet-issued and stale observations reject a snap. This contract supports vessel-orbit versus target-orbit/equator comparisons without introducing a trajectory predictor or letting camera manipulation mutate a burn.
+
 Prediction tubes, reentry paths and uncertainty bands should arrive as retained typed observations with units, source epoch, frame, validity and error bounds. Their displayed geometry may use screen-error simplification; their underlying numerical history remains authoritative. Relevance scheduling needs an independently conservative reachable-volume proof and a tail-cost budget before it can suppress coupled physical work. A rendered tube alone authorizes no physics culling.
 
 ## Evidence boundaries
