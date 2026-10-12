@@ -25,6 +25,9 @@ namespace KspContinuum
         public int GapSpans { get; private set; }
         public const double MaximumSourceSpanSeconds=.25;
         public double MaximumRemovedErrorPixels { get; private set; }
+        public const double DepthAbsoluteToleranceMeters=1e-4, DepthRelativeTolerance=1e-5;
+        public double MaximumRemovedDepthErrorMeters { get; private set; }
+        public double MaximumRemovedDepthErrorRatio { get; private set; }
         public MeasuredTrailSegments(TrailEmitterRecording recording)
         {
             TrailEmitterFormat.Validate(recording);
@@ -55,7 +58,7 @@ namespace KspContinuum
             Need(Finite(now)&&now>=0&&now<=times[times.Length-1]&&Finite(lifetime)&&lifetime>0&&lifetime<=3600&&Finite(width)&&width>=.001&&width<=1000&&Finite(diffusion)&&diffusion>=0&&diffusion<=1000&&Finite(decay)&&decay>=0&&decay<=100&&Finite(focal)&&focal>0&&focal<=1e8&&Finite(near)&&near>0&&near<=1e12&&Finite(errorPixels)&&errorPixels>=0&&errorPixels<=4);
             foreach(var v in new[]{camera,right,up,forward}){Need(v!=null&&v.Length==3);foreach(double x in v)Need(Finite(x)&&Math.Abs(x)<=1e15);}
             foreach(var v in new[]{right,up,forward})Need(Math.Abs(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]-1)<1e-4);
-            int count=0,run=0;InputSpans=GapSpans=NearClippedSpans=Count=RetainedPoints=0;MaximumRemovedErrorPixels=0;
+            int count=0,run=0;InputSpans=GapSpans=NearClippedSpans=Count=RetainedPoints=0;MaximumRemovedErrorPixels=MaximumRemovedDepthErrorMeters=MaximumRemovedDepthErrorRatio=0;
             for(int i=0;i+1<times.Length&&times[i]<now;i++)
             {
                 double start=Math.Max(times[i],Math.Max(0,now-lifetime)),end=Math.Min(now,times[i+1]);
@@ -87,9 +90,23 @@ namespace KspContinuum
                 {
                     int hi=stack[--top],lo=stack[--top];if(hi<=lo+1)continue;
                     double ax,ay,bx,by;Project(points[lo],camera,right,up,forward,focal,out ax,out ay);Project(points[hi],camera,right,up,forward,focal,out bx,out by);
-                    double dx=bx-ax,dy=by-ay,length=dx*dx+dy*dy,max=-1;int chosen=-1;
-                    for(int k=lo+1;k<hi;k++){double x,y;Project(points[k],camera,right,up,forward,focal,out x,out y);double u=length==0?0:Math.Max(0,Math.Min(1,((x-ax)*dx+(y-ay)*dy)/length));double ex=x-ax-u*dx,ey=y-ay-u*dy,d=Math.Sqrt(ex*ex+ey*ey);Need(Finite(d));if(d>max){max=d;chosen=k;}}
-                    if(max>errorPixels){keep[chosen]=true;stack[top++]=lo;stack[top++]=chosen;stack[top++]=chosen;stack[top++]=hi;}else MaximumRemovedErrorPixels=Math.Max(MaximumRemovedErrorPixels,max);
+                    double dx=bx-ax,dy=by-ay,length=dx*dx+dy*dy,maxScore=-1,maxScreen=0,maxDepth=0,maxDepthRatio=0;
+                    double za=Eye(points[lo],camera,forward),zb=Eye(points[hi],camera,forward);Need(za>0&&zb>0);
+                    int chosen=-1;
+                    for(int k=lo+1;k<hi;k++)
+                    {
+                        double x,y;Project(points[k],camera,right,up,forward,focal,out x,out y);
+                        double u=length==0?0:Math.Max(0,Math.Min(1,((x-ax)*dx+(y-ay)*dy)/length));
+                        double ex=x-ax-u*dx,ey=y-ay-u*dy,d=Math.Sqrt(ex*ex+ey*ey);
+                        double actual=Eye(points[k],camera,forward),chord=1/((1-u)/za+u/zb),depthError=Math.Abs(actual-chord);
+                        double depthRatio=depthError/(DepthAbsoluteToleranceMeters+DepthRelativeTolerance*Math.Abs(actual));
+                        Need(Finite(d)&&Finite(chord)&&Finite(depthError)&&Finite(depthRatio)&&actual>0);
+                        double screenRatio=errorPixels==0?(d==0?0:double.PositiveInfinity):d/errorPixels,score=Math.Max(screenRatio,depthRatio);
+                        maxScreen=Math.Max(maxScreen,d);maxDepth=Math.Max(maxDepth,depthError);maxDepthRatio=Math.Max(maxDepthRatio,depthRatio);
+                        if(score>maxScore){maxScore=score;chosen=k;}
+                    }
+                    if(maxScore>1){keep[chosen]=true;stack[top++]=lo;stack[top++]=chosen;stack[top++]=chosen;stack[top++]=hi;}
+                    else {MaximumRemovedErrorPixels=Math.Max(MaximumRemovedErrorPixels,maxScreen);MaximumRemovedDepthErrorMeters=Math.Max(MaximumRemovedDepthErrorMeters,maxDepth);MaximumRemovedDepthErrorRatio=Math.Max(MaximumRemovedDepthErrorRatio,maxDepthRatio);}
                 }
                 int previous=start;RetainedPoints++;
                 for(int k=start+1;k<=end;k++)if(keep[k]){Need(Count<MaxSegments);Segments[Count++]=new MeasuredTrailSegment{a=points[previous],b=points[k],run=runs[k]};previous=k;RetainedPoints++;}

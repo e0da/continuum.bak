@@ -23,6 +23,7 @@ public sealed class PersistentTrailRuntime : IDisposable
         public int segmentCapacity=MeasuredTrailSegments.MaxSegments,segmentWindChanges;
         public double segmentMaximumSourceSpanSeconds=MeasuredTrailSegments.MaximumSourceSpanSeconds;
         public double segmentErrorPixels=.5,segmentRemovedErrorPixels,segmentNearPlane;
+        public double segmentDepthAbsoluteToleranceMeters=MeasuredTrailSegments.DepthAbsoluteToleranceMeters,segmentDepthRelativeTolerance=MeasuredTrailSegments.DepthRelativeTolerance,segmentRemovedDepthErrorMeters,segmentRemovedDepthErrorRatio;
         public double[] segmentEndpointsScene=new double[12],segmentEndpointTimes=new double[4],segmentCameraOrigin=new double[3];
         public double[] segmentGeometry=new double[0];
         public string segmentGeometryLayout="13 doubles per retained segment: ax ay az bx by bz birthA birthB widthA widthB opacityA opacityB emissionRun";
@@ -317,6 +318,7 @@ public sealed class PersistentTrailRuntime : IDisposable
         segments.Build(owner.Time,Status.lifetimeSeconds,Status.initialWidthMeters,Status.diffusionSquareMetersPerSecond,Status.decayPerSecond,origin,new double[]{right.x,right.y,right.z},new double[]{up.x,up.y,up.z},new double[]{forward.x,forward.y,forward.z},target.height/(2*Math.Tan(camera.fieldOfView*Math.PI/360)),camera.nearClipPlane,Status.segmentErrorPixels);
         Status.segmentInputSpans=segments.InputSpans;Status.segmentDraws=segments.Count;Status.segmentRetainedPoints=segments.RetainedPoints;Status.segmentNearClippedSpans=segments.NearClippedSpans;Status.segmentGapSpans=segments.GapSpans;Status.segmentRemovedErrorPixels=segments.MaximumRemovedErrorPixels;Status.segmentNearPlane=camera.nearClipPlane;Status.segmentViewportWidth=target.width;Status.segmentViewportHeight=target.height;Status.segmentBuilds++;Array.Copy(origin,Status.segmentCameraOrigin,3);
         Status.segmentWindChanges=segments.WindChanges;
+        Status.segmentRemovedDepthErrorMeters=segments.MaximumRemovedDepthErrorMeters;Status.segmentRemovedDepthErrorRatio=segments.MaximumRemovedDepthErrorRatio;
         Array.Clear(Status.segmentEndpointsScene,0,12);Array.Clear(Status.segmentEndpointTimes,0,4);
         Status.segmentGeometry=new double[segments.Count*13];
         for(int i=0;i<segments.Count;i++)
