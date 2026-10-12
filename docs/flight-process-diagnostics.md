@@ -55,3 +55,48 @@ average occupied-core estimates. These estimates include all process threads and
 observers. Endpoint RSS is not peak memory, and occupied cores is not main-thread
 utilization. Unsupported resource reads remain explicit. Only requested capture
 observation performs native clock or resource reads.
+
+## Selected native witness
+
+The 512-part frontlit atmospheric comparison `1791763411-48980` completed
+10.02 simulated seconds with 501 physics steps and 362 rendered frames. The
+owned Rosetta player reported a `1/1` Mach timebase; the native runner reported
+`125/3`. All eight normalized boundary intervals passed independent integer
+recomputation. The complete sampler process envelope was 3.423362 seconds,
+enclosed with 6.377 ms start slack and 7.228836 seconds end slack. This includes
+attachment/report processing; requested sample collection was two seconds.
+
+Boundary reads captured 19.685853 CPU seconds across a 10.659143-second
+bracket-midpoint interval: 1.846851 average occupied cores, with validated bounds
+1.846752–1.846951. Snapshot read tax totaled 1.1843 ms. Endpoint working set was
+5,532,688,384 -> 5,541,998,592 bytes. These are all-thread values including
+observers; endpoint growth cannot characterize peak memory or a leak.
+
+The overlapping phase brackets were 11.4786 ms managed fixed work per rendered
+frame (8.2939 ms per physics step), 3.2568 ms native physics per frame (2.3532 ms
+per step), 5.7749 ms script Update per frame and 4.5422 ms FinishFrameRendering
+per frame. FixedUpdate's parent is 14.8033 ms per frame; do not add it again.
+Render-end remains a wall bracket, not GPU execution time.
+
+The statistical main-thread context had 37 recognized wait occurrences among
+1,346; remaining categories were 467 Mono, 545 unsymbolicated Unity and 297
+unresolved. The graphics-worker context had 839 recognized waits among 1,304,
+306 driver and 159 unsymbolicated Unity occurrences. The same physical graphics
+thread also appears in other queue contexts; those are retained separately.
+Inherited classification is incomplete. Waits cannot distinguish producer
+starvation from a GPU fence, and unrecognized spin waits may appear elsewhere.
+
+The evidence favors investigating main-thread production next, especially the
+remaining managed fixed owners and script Update/Unity preparation subtree. It
+does not prove an exclusively CPU-bound frame or absent GPU cost. Resolve a
+coherent owner from existing stack/callback evidence, then replay its immutable
+inputs and charge capture, preparation, computation and publication. No new
+identical renderer or rejected timestamp run is warranted.
+
+The mixed, sampled flight's 33.99 FPS and 0.94036x simulation rate are retained
+diagnostics, not clean candidate performance or a regression verdict. Its local
+drag transaction comparison remains a bounded positive under the separate
+[aero contract](aero-step-context.md). Both original-resolution images were
+inspected: real craft, atmospheric background, native UI and portraits appear;
+booms extend outside the frame. Original helper/settings and all 21 pinned
+ordinary inputs were restored; owned player/sampler processes exited.
