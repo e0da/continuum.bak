@@ -102,6 +102,8 @@ pub struct Diagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_rigid_owner: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_rigid_scenario: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zero_native_force_pruning: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scientific_attachment_nodes: Option<String>,
@@ -268,6 +270,7 @@ impl ResolvedLaunch {
                 ordered_body_aero_capture: path("--flight-ordered-body-aero-capture"),
                 native_assembly_scene: path("--flight-native-assembly-scene"),
                 live_rigid_owner: path("--flight-live-rigid-owner"),
+                live_rigid_scenario: options.get("--flight-live-rigid-scenario").cloned(),
                 zero_native_force_pruning: options.get("--flight-zero-native-force-pruning").cloned(),
                 scientific_attachment_nodes: options.get("--flight-scientific-attachment-nodes").cloned(),
                 trail_emitter: options.get("--flight-trail-emitter").map(|output| Ok::<TrailEmitterSelection,String>(TrailEmitterSelection {
@@ -307,6 +310,20 @@ impl ResolvedLaunch {
 
     pub fn validate(&self) -> Result<()> {
         let d=&self.diagnostics;
+        if let Some(scenario) = d.live_rigid_scenario.as_deref() {
+            if scenario != "control-warp" || d.live_rigid_owner.is_none() {
+                return Err("control-warp requires the selected live rigid owner".into());
+            }
+            if self.flight.as_ref().is_some_and(|request| request.local_camera.as_str() != "stock") {
+                return Err("control-warp requires the stock local-camera observer".into());
+            }
+            if self.flight.as_ref().is_none_or(|f| f.seconds < 14.0) {
+                return Err("control-warp requires fourteen simulated seconds including stock handback".into());
+            }
+            if self.flight.as_ref().is_none_or(|f| f.maximum_delta < 0.08) {
+                return Err("control-warp requires a catchup limit at least as large as its 0.08 second native step".into());
+            }
+        }
         if d.live_rigid_owner.is_some() {
             let f=self.flight.as_ref().ok_or("live rigid owner requires pinned flight")?;
             if self.live_play || f.expected_parts.is_none() || f.warp!=1 || f.atmosphere || f.seconds<=2.0 || !f.seconds.is_finite()
@@ -623,6 +640,18 @@ impl ResolvedLaunch {
         Ok(())
     }
 
+    pub fn flight_arguments(&self) -> Vec<String> {
+        let mut args = self.flight.as_ref().map(flight::Request::arguments).unwrap_or_default();
+        if self.diagnostics.live_rigid_scenario.as_deref() == Some("control-warp") {
+            for arg in &mut args {
+                if arg.starts_with("--continuum-flight-timeout=") {
+                    *arg = "--continuum-flight-timeout=120".into();
+                }
+            }
+        }
+        args
+    }
+
     // Selection identity binds configuration, not asset contents or successful admission.
     pub fn identity_json(&self) -> Result<String> {
         self.validate()?;
@@ -706,6 +735,30 @@ mod tests {
         input.insert("--flight-aero-step-context".into(),"query".into()); assert!(ResolvedLaunch::parse(&input).is_err());
         input.remove("--flight-aero-step-context");
         std::fs::write(output,b"existing").unwrap(); assert!(ResolvedLaunch::parse(&input).is_err());
+    }
+    #[test]
+    fn live_rigid_control_warp_requires_complete_exclusive_frozen_window() {
+        let directory=tempfile::tempdir().unwrap();
+        let output=directory.path().canonicalize().unwrap().join("controlled.json");
+        let mut input=options(&[("--flight-save","lab"),("--flight-checkpoint","checkpoint"),("--flight-expected-parts","512"),("--flight-seconds","14"),("--flight-max-delta","0.12"),("--flight-perturbation","quiet"),("--flight-live-rigid-scenario","control-warp")]);
+        assert!(ResolvedLaunch::parse(&input).is_err());
+        input.insert("--flight-live-rigid-owner".into(),output.to_str().unwrap().into());
+        let launch=ResolvedLaunch::parse(&input).unwrap();
+        let replay=ResolvedLaunch::parse_from_json(&launch.identity_json().unwrap()).unwrap();
+        assert_eq!(replay.diagnostics.live_rigid_scenario.as_deref(),Some("control-warp"));
+        let timeouts:Vec<_> = replay.flight_arguments().into_iter().filter(|arg| arg.starts_with("--continuum-flight-timeout=")).collect();
+        assert_eq!(timeouts, vec!["--continuum-flight-timeout=120"]);
+        let mut ordinary=input.clone(); ordinary.remove("--flight-live-rigid-scenario");
+        assert!(ResolvedLaunch::parse(&ordinary).unwrap().flight_arguments().contains(&"--continuum-flight-timeout=60".into()));
+        input.insert("--flight-local-camera".into(),"merged".into()); assert!(ResolvedLaunch::parse(&input).is_err());
+        input.remove("--flight-local-camera");
+        input.insert("--flight-max-delta".into(),"0.04".into()); assert!(ResolvedLaunch::parse(&input).is_err());
+        input.insert("--flight-max-delta".into(),"0.12".into());
+        input.insert("--flight-seconds".into(),"13".into()); assert!(ResolvedLaunch::parse(&input).is_err());
+        input.insert("--flight-seconds".into(),"14".into());
+        input.insert("--flight-warp".into(),"4".into()); assert!(ResolvedLaunch::parse(&input).is_err());
+        input.remove("--flight-warp");
+        input.insert("--flight-live-rigid-scenario".into(),"unknown".into()); assert!(ResolvedLaunch::parse(&input).is_err());
     }
     #[test]
     fn native_assembly_capture_rejects_short_windows_before_boot_and_freezes_selection() {

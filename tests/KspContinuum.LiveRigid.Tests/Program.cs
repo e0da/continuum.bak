@@ -64,9 +64,12 @@ static class Program
     }
     static void Verify(JsonElement receipt)
     {
-        Need(receipt.GetProperty("schema").GetString()=="continuum-live-rigid-owner/v1"&&receipt.GetProperty("status").GetString()=="passed"&&B(receipt,"passed"),"completed live receipt");Need(!string.IsNullOrEmpty(receipt.GetProperty("runId").GetString()),"run identity");
+        string schema=receipt.GetProperty("schema").GetString();bool controlled=schema=="continuum-live-rigid-owner/v2";
+        Need((controlled||schema=="continuum-live-rigid-owner/v1")&&receipt.GetProperty("status").GetString()=="passed"&&B(receipt,"passed"),"completed live receipt");Need(!string.IsNullOrEmpty(receipt.GetProperty("runId").GetString()),"run identity");
+        if(controlled)Need(receipt.GetProperty("scenario").GetString()=="control-warp","controlled scenario identity");
         Need(I(receipt,"sourceParts")==512&&I(receipt,"sourceBodies")>0&&I(receipt,"sourceBodies")<=2048,"frozen real craft domain");int bodies=I(receipt,"sourceBodies"),owner=I(receipt,"aggregateId");Need(owner!=0,"aggregate identity");
-        foreach(string flag in new[]{"pulseQueued","originalBodiesRestored","aggregateRetired","bridgeReleased"})Need(B(receipt,flag),"closure "+flag);
+        foreach(string flag in new[]{"originalBodiesRestored","aggregateRetired","bridgeReleased"})Need(B(receipt,flag),"closure "+flag);
+        if(!controlled)Need(B(receipt,"pulseQueued"),"closure pulseQueued");
         Need(receipt.GetProperty("cleanupStatus").GetString()=="restored-original-ownership","ownership cleanup");foreach(string field in new[]{"velocityReads","angularReads","centerReads","pointReads"})Need(I(receipt,field)>0,"read coverage "+field);
         if(receipt.TryGetProperty("statsReads",out var statsReads))Need(statsReads.GetInt32()>0,"coherent aggregate statistics read coverage");
         Need(I(receipt,"duplicateAccelerationReceivers")==0&&D(receipt,"maxProxyPositionError")>=0&&D(receipt,"maxProxyPositionError")<=1e-4&&D(receipt,"maxProxyRotationError")>=0&&D(receipt,"maxProxyRotationError")<=.002,"proxy/common ownership errors");
@@ -94,7 +97,8 @@ static class Program
             maxAngularVelocity=Math.Max(maxAngularVelocity,Error(Sub(A(after,"angularVelocity"),A(before,"angularVelocity")),expectedAngularVelocityDelta,1e-4,1e-5,"native angular velocity torque response"));
             Need(D(step,"proxyPositionError")>=0&&D(step,"proxyPositionError")<=1e-4&&D(step,"proxyRotationError")>=0&&D(step,"proxyRotationError")<=.002,"per-step proxy pose coverage");
         }
-        Need(sourceIds.Count>0&&sourceIds.Count<=bodies&&offcenter>0&&pulseSeen,"actual frozen queued off-center pulse moment");Need(I(receipt,"routedCommands")>=commands&&I(receipt,"accelerationCalls")==common&&I(receipt,"omittedZeroCommands")>=0,"raw/global command coverage");
+        Need(sourceIds.Count>0&&sourceIds.Count<=bodies&&offcenter>0&&(controlled||pulseSeen),"actual queued off-center command coverage");Need(I(receipt,"routedCommands")>=commands&&I(receipt,"accelerationCalls")==common&&I(receipt,"omittedZeroCommands")>=0,"raw/global command coverage");
+        if(controlled)Controlled(receipt,steps);
         Need(I(receipt,"postRestorationNativeSteps")>=2,"original ownership resumes native steps");
         RestoreRows(receipt.GetProperty("restoredRows"),bodies,owner);
         var restoredIds=new HashSet<int>(receipt.GetProperty("restoredRows").EnumerateArray().Select(r=>I(r,"originalId")));Need(sourceIds.IsSubsetOf(restoredIds),"raw commands bound to restored original recipients");
@@ -108,6 +112,85 @@ static class Program
             Need(I(row,"originalId")==I(row,"readbackId")&&!B(row,"originalKinematic")&&B(row,"originalKinematic")==B(row,"readbackKinematic")&&B(row,"originalDetectCollisions")==B(row,"readbackDetectCollisions"),"original constituent flags restored");
             Error(A(row,"readbackVelocity"),A(row,"expectedVelocity"),0,1e-4,"restored native velocity assignment");Error(A(row,"readbackAngularVelocity"),A(row,"expectedAngularVelocity"),0,1e-4,"restored native angular assignment");
         }
+    }
+    static void Controlled(JsonElement receipt,JsonElement[] steps)
+    {
+        var driver=receipt.GetProperty("controlDriver");
+        foreach(string flag in new[]{"passed","subscribersRestored","groupsRestored","warpRestored","controlsRestored","stockIdleAtAdmission"})Need(B(driver,flag),"control driver closure "+flag);
+        Need(I(receipt,"propertyRebuilds")>0&&F(receipt.GetProperty("restoredAggregate"),"mass")<F(receipt.GetProperty("initial"),"mass"),"original propellant mass reaches rebuilt aggregate");
+        Need(B(receipt,"stockContinuationVerified")&&Rows(receipt,"screenshots",4).Length==4,"stock continuation and four image artifacts");
+        Need(D(receipt,"postRestorationSimulatedSeconds")>=1.9999,"two actual simulated seconds under restored stock ownership");
+        double ownerStartUt=D(receipt,"ownerStartUt"),ownerEndUt=D(receipt,"ownerEndUt"),priorUt=ownerStartUt;
+        Need(ownerEndUt>ownerStartUt,"ordered owner UT interval");
+        foreach(var step in steps)
+        {
+            double ut=D(step,"universalTime");Need(ut>=priorUt&&ut<=ownerEndUt,"finite monotonic native step UT within owner interval");priorUt=ut;
+        }
+        var originalSubscribers=Rows(driver,"originalSubscribers",4096);var finalSubscribers=Rows(driver,"finalSubscribers",4096);
+        Need(originalSubscribers.Select(s=>s.GetString()).SequenceEqual(finalSubscribers.Select(s=>s.GetString()))&&originalSubscribers.All(s=>!string.IsNullOrEmpty(s.GetString())),"exact input subscriber restoration");
+        Need(string.IsNullOrEmpty(driver.GetProperty("failure").GetString()),"control driver failure");
+        foreach(string field in new[]{"callbacks","attitudeCallbacks","translationCallbacks","warpCallbacks","reactionWheelModules","rcsModules","warpEntries","normalReturns"})Need(I(driver,field)>0,"control driver coverage "+field);
+        var wheelModes=Rows(driver,"reactionWheelModes",4096);var wheelStates=Rows(driver,"reactionWheelStates",4096);var wheelEnabled=Rows(driver,"reactionWheelEnabled",4096);
+        Need(wheelModes.Length==I(driver,"reactionWheelModules")&&wheelStates.Length==wheelModes.Length&&wheelEnabled.Length==wheelModes.Length,"reaction wheel inventory cardinality");
+        int deliveredWheels=0;for(int i=0;i<wheelModes.Length;i++){int mode=wheelModes[i].GetInt32(),state=wheelStates[i].GetInt32();bool enabled=wheelEnabled[i].GetBoolean();Need(mode>=0&&mode<=2&&state>=0&&state<=2,"bounded wheel mode/state");if(mode==0&&state==0&&enabled)deliveredWheels++;}
+        Need(deliveredWheels>0&&I(driver,"deliveredInputReactionWheels")==deliveredWheels,"active Normal reaction wheels receive delivered controls");
+        Need(I(driver,"warpEntries")==1&&I(driver,"normalReturns")==1,"one declared physics warp roundtrip");
+        Need(I(driver,"callbacks")>=I(driver,"attitudeCallbacks")&&I(driver,"callbacks")>=I(driver,"translationCallbacks")&&I(driver,"callbacks")>=I(driver,"warpCallbacks"),"control callback totals");
+        B(driver,"originalSas");B(driver,"originalRcs");
+        Need(F(driver,"originalWarpRate")==1&&I(driver,"originalWarpIndex")==0&&(driver.GetProperty("originalWarpMode").GetString()=="LOW"||driver.GetProperty("originalWarpMode").GetString()=="HIGH"),"original normal-time warp selection");
+        Need(F(driver,"duration")>=12,"control driver simulated duration");
+        double initialEc=D(driver,"initialElectricCharge"),finalEc=D(driver,"finalElectricCharge");
+        Need(initialEc>=0&&finalEc>=0,"finite nonnegative net electric charge balances");
+        double initialPropellant=D(driver,"initialMonoPropellant"),finalPropellant=D(driver,"finalMonoPropellant");
+        Need(initialPropellant>0&&finalPropellant>=0&&finalPropellant<initialPropellant,"actual stock propellant consumption");
+        ElectricDraws(driver);
+        string[] phases={"quiet","attitude","translation","pre-warp","warp","normal-return"};
+        double[][] controls={new double[6],new[]{.35,.15,-.2,0,0,0},new[]{0,0,0,.5,.2,-.3},new double[6],new[]{-.2,.1,0,-.3,0,.4},new double[6]};
+        int[] counts=new int[phases.Length];int lastPhase=-1;double duration=0;bool attitudeTorque=false,translationForce=false,warpTorque=false,warpForce=false;int warpIndex=-1;
+        foreach(var step in steps)
+        {
+            string phase=step.GetProperty("controlPhase").GetString();int slot=Array.IndexOf(phases,phase);
+            Need(slot>=0&&slot>=lastPhase,"ordered control phase");lastPhase=slot;counts[slot]++;duration+=F(step,"dt");
+            var actual=A(step,"controls",6);for(int i=0;i<actual.Length;i++)Need(Math.Abs(actual[i]-controls[slot][i])<=1e-7,"declared native controls "+phase+" component "+i);
+            double rate=F(step,"warpRate");int index=I(step,"warpRateIndex");string mode=step.GetProperty("warpMode").GetString();
+            Need(index>=0&&(mode=="LOW"||mode=="HIGH"),"actual warp selection");
+            if(slot==4)
+            {
+                Need(rate==4&&mode=="LOW"&&index==3&&Math.Abs(F(step,"dt")-.08)<=1e-6,"actual LOW 4x native step");
+                if(warpIndex<0)warpIndex=index;else Need(index==warpIndex,"stable 4x warp index");
+            }
+            else Need(rate==1&&index==0&&Math.Abs(F(step,"dt")-.02)<=1e-6,"normal-time native step outside warp phase");
+            foreach(var command in step.GetProperty("nonzeroCommands").EnumerateArray())
+            {
+                bool torque=B(command,"torque");bool atPoint=B(command,"atPoint");var value=A(command,"value");
+                if(slot==1&&torque&&I(command,"mode")==0&&Norm(value)>0)attitudeTorque=true;
+                if(slot==2&&!torque&&atPoint&&I(command,"mode")==0&&Norm(Cross(Sub(A(command,"point"),A(step.GetProperty("before"),"center")),value))>0)translationForce=true;
+                if(slot==4&&torque&&I(command,"mode")==0&&Norm(value)>0)warpTorque=true;
+                if(slot==4&&!torque&&atPoint&&I(command,"mode")==0&&Norm(value)>0)warpForce=true;
+            }
+        }
+        Need(counts.All(c=>c>0)&&duration>=11.99&&attitudeTorque&&translationForce&&warpTorque&&warpForce,"complete controlled native phases/stock commands/duration");
+        Console.WriteLine("Controlled-flight evidence: "+duration.ToString("R")+" simulated seconds; phase native steps "+string.Join(",",phases.Zip(counts,(p,c)=>p+"="+c))+". Stock torque/RCS command and resource consumption witnessed; no human control-feel or fuel-flow fidelity claim.");
+    }
+    static void ElectricDraws(JsonElement driver)
+    {
+        Need(B(driver,"electricObserverReleased"),"electric withdrawal observer released");
+        Need(I(driver,"electricMethodToken")==100673762&&driver.GetProperty("electricMethodMvid").GetString()==StockMvid&&driver.GetProperty("electricAssemblySha256").GetString()==StockSha,"pinned original electric resource method");
+        string digest=driver.GetProperty("electricMethodIlSha256").GetString();
+        Need(digest=="382f270bf72d7fa71254bb005ef6ea5c788ec51ddbc03a60cf2b335c5e0239c2","pinned original electric resource method IL identity");
+        var rows=Rows(driver,"electricDraws",4096);Need(rows.Length>0&&rows.Length==I(driver,"electricResourceCalls"),"bounded gross electric draw tape");
+        double requested=0,withdrawn=0,priorTime=-1;int positive=0,roundedOverdraw=0;bool attitude=false,warp=false;
+        foreach(var row in rows)
+        {
+            double time=F(row,"fixedTime");Need(time>=priorTime&&I(row,"partId")!=0,"ordered original wheel resource call identity");priorTime=time;
+            string phase=row.GetProperty("phase").GetString();Need(Array.IndexOf(new[]{"quiet","attitude","translation","pre-warp","warp","normal-return"},phase)>=0,"electric draw control phase");
+            double request=D(row,"requested"),draw=D(row,"withdrawn");Need(request>=0&&draw>=0&&(request==0?draw==0:draw<=Math.BitIncrement(request)),"original electric withdrawal bounds (one binary64 successor)");
+            if(draw>request)roundedOverdraw++;requested+=request;withdrawn+=draw;
+            if(draw>0){positive++;if(phase=="attitude")attitude=true;if(phase=="warp")warp=true;}
+        }
+        Need(positive==I(driver,"electricPositiveCalls")&&withdrawn>0&&attitude&&warp,"actual gross wheel withdrawal in delivered attitude and warp phases");
+        Need(Math.Abs(D(driver,"grossElectricChargeRequested")-requested)<=1e-8+1e-10*Math.Abs(requested)&&Math.Abs(D(driver,"grossElectricChargeWithdrawn")-withdrawn)<=1e-8+1e-10*Math.Abs(withdrawn),"independent gross electric withdrawal sum");
+        Console.WriteLine("Original wheel electric withdrawals: "+rows.Length+" calls; "+roundedOverdraw+" one-ULP over-request readbacks; raw values retained.");
     }
     public static int Main(string[] args)
     {

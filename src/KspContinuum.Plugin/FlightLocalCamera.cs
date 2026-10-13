@@ -28,6 +28,7 @@ namespace KspContinuum
             public string schema = "continuum-flight-local-camera/v1", mode, runId, vesselId, status, reason, cleanupStatus;
             public string scope = "Experimental stock D3D11 local-camera partition applied to a pinned OpenGL quiet-vacuum diagnostic. Depth precision and visual fidelity are unqualified. Callback counts are window-local; observerTicks includes lifecycle audits and is nested wall cost.";
             public string provenance = "Pinned FlightCamera.Start: Camera 00 far=750000, Camera 01 inactive, UnderwaterFog PQS role transferred to Camera 00.";
+            public string controlledClockScope;
             public int processId, parts, faults, observedFrames, coverageChecks, windowStartFrame, windowEndFrame;
             public double maxProjectionError;
             public long windowStartClockTimestamp, windowEndClockTimestamp, clockFrequency, observerTicks;
@@ -38,6 +39,7 @@ namespace KspContinuum
         static Report report; static Camera near, far; static UnderwaterFog nearFog, farFog;
         static FlightCamera flight; static Vessel vessel; static CelestialBody body; static string output;
         static bool attached, sceneAttached, window, finished, changed;
+        static bool controlledClock;
         sealed class SceneListener { public void Changed(GameScenes next) { Fault("Scene change before local-camera completion."); } }
         static readonly SceneListener sceneListener = new SceneListener();
         [StructLayout(LayoutKind.Explicit)] struct FloatBits { [FieldOffset(0)] public float value; [FieldOffset(0)] public int bits; }
@@ -107,6 +109,9 @@ namespace KspContinuum
             output=Path.Combine(directory,"local-camera.json"); Require(!File.Exists(output),"Local-camera output already exists.");
             report=new Report { mode=mode,runId=runId,processId=Process.GetCurrentProcess().Id,vesselId=active==null?null:active.id.ToString(),
                 parts=active==null?0:active.parts.Count,status="preparing",clockFrequency=Stopwatch.Frequency };
+            string rigidOwner=Environment.GetEnvironmentVariable("CONTINUUM_LIVE_RIGID_OWNER");
+            controlledClock=mode=="stock" && Environment.GetEnvironmentVariable("CONTINUUM_LIVE_RIGID_SCENARIO")=="control-warp" && !string.IsNullOrEmpty(rigidOwner) && Path.IsPathRooted(rigidOwner);
+            report.controlledClockScope=controlledClock?"Explicit control-warp stock-camera observer: normal rate1/index0/timeScale1/native dt0.02 or LOW rate4/index3/timeScale4/native dt0.08; camera, vacuum and rendering guards unchanged.":"Original normal-time-only local-camera context.";
             try
             {
                 StartupPinnedGameIdentity.Require(typeof(FlightCamera).Assembly);
@@ -150,9 +155,18 @@ namespace KspContinuum
         }
         static void Context()
         {
+            bool clock=TimeWarp.CurrentRate==1;
+            if(controlledClock)
+            {
+                string rigidOwner=Environment.GetEnvironmentVariable("CONTINUUM_LIVE_RIGID_OWNER");
+                Require(report.mode=="stock" && Environment.GetEnvironmentVariable("CONTINUUM_LIVE_RIGID_SCENARIO")=="control-warp" && !string.IsNullOrEmpty(rigidOwner) && Path.IsPathRooted(rigidOwner),"Controlled local-camera declaration changed.");
+                bool normal=TimeWarp.CurrentRate==1 && TimeWarp.CurrentRateIndex==0 && Time.timeScale==1 && Time.fixedDeltaTime==.02f;
+                bool low=TimeWarp.WarpMode==TimeWarp.Modes.LOW && TimeWarp.CurrentRate==4 && TimeWarp.CurrentRateIndex==3 && Time.timeScale==4 && Time.fixedDeltaTime==.08f;
+                clock=normal||low;
+            }
             Require(HighLogic.LoadedScene==GameScenes.FLIGHT && !MapView.MapIsEnabled && vessel!=null && vessel==FlightGlobals.ActiveVessel && vessel.loaded && !vessel.packed &&
                 vessel.parts.Count==report.parts && vessel.mainBody==body && body!=null && vessel.altitude>body.atmosphereDepth && vessel.atmDensity==0 &&
-                TimeWarp.CurrentRate==1 && SystemInfo.graphicsDeviceType==GraphicsDeviceType.OpenGLCore,"Quiet physical vacuum/OpenGL/normal-time context drift.");
+                clock && SystemInfo.graphicsDeviceType==GraphicsDeviceType.OpenGLCore,"Quiet physical vacuum/OpenGL/declared-clock context drift.");
         }
         static void SharedView()
         {

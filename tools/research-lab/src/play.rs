@@ -46,6 +46,7 @@ pub fn validate(selection: &ResolvedLaunch) -> Result<()> {
         || d.multiscale_scene.is_some()
         || d.native_assembly_scene.is_some()
         || d.live_rigid_owner.is_some()
+        || d.live_rigid_scenario.is_some()
         || d.menu_material_facts.is_some()
         || selection.native_asset_installation.is_some()
         || selection.graphics_api != crate::launch::GraphicsApi::Current

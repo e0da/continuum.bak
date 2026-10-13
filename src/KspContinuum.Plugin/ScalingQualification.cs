@@ -465,6 +465,8 @@ namespace KspContinuum
 
         static bool Stable(ProbeReport report, float expectedWarp, out string reason, bool atmosphere = false)
         {
+            bool controlledRigid = Environment.GetEnvironmentVariable("CONTINUUM_LIVE_RIGID_SCENARIO") == "control-warp" &&
+                !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_LIVE_RIGID_OWNER")) && !atmosphere && expectedWarp == 1;
             reason = atmosphere ? "verified-normal-atmospheric-context" : "verified-fixed-orbital-context";
             if (report == null || report.status != "complete" || !CompletedWindow(report) || report.frames == null || report.frames.Length == 0 ||
                 report.requestedSimulatedSeconds > 0 && !report.topologyStable)
@@ -474,11 +476,12 @@ namespace KspContinuum
                 if (frame == null || frame.vesselId != first.vesselId || frame.parts != first.parts ||
                     frame.rigidbodies != first.rigidbodies || frame.joints != first.joints || frame.colliders != first.colliders ||
                     frame.loadedVessels != first.loadedVessels || frame.loaded != true || frame.packed != false || frame.paused != false ||
-                    frame.warpRate != expectedWarp || !FinitePositive(frame.fixedDeltaSeconds) || !FinitePositive(frame.timeScale) ||
-                    frame.fixedDeltaSeconds != first.fixedDeltaSeconds || frame.timeScale != first.timeScale ||
+                    (controlledRigid ? !ControlledRigidClock(frame) : frame.warpRate != expectedWarp ||
+                        frame.fixedDeltaSeconds != first.fixedDeltaSeconds || frame.timeScale != first.timeScale || frame.warpMode != first.warpMode) ||
+                    !FinitePositive(frame.fixedDeltaSeconds) || !FinitePositive(frame.timeScale) ||
                     !frame.throttleCommand.HasValue || frame.throttleCommand.Value >= 0.01 ||
                     frame.maximumDeltaSeconds != first.maximumDeltaSeconds || frame.physicsFrameLimitSeconds != first.physicsFrameLimitSeconds ||
-                    frame.warpMode != first.warpMode || frame.fixedCallbacksPerFrame < 0 ||
+                    frame.fixedCallbacksPerFrame < 0 ||
                     (atmosphere ? frame.body != "Kerbin" || !frame.altitudeMeters.HasValue || !frame.atmosphereDepthMeters.HasValue ||
                         frame.altitudeMeters.Value < 0 || frame.altitudeMeters.Value >= frame.atmosphereDepthMeters.Value : frame.situation != Vessel.Situations.ORBITING.ToString()))
                 { reason = "context-or-topology-changed"; return false; }
@@ -514,6 +517,13 @@ namespace KspContinuum
         }
         static bool CompletedWindow(ProbeReport report)
         { return report.requestedSimulatedSeconds > 0 ? report.actualSimulatedSeconds >= report.requestedSimulatedSeconds && report.completedFrames <= report.requestedFrames : report.completedFrames == report.requestedFrames; }
+
+        static bool ControlledRigidClock(ProfileFrame frame)
+        {
+            return frame.warpRate == 1 && frame.timeScale == 1 && Math.Abs(frame.fixedDeltaSeconds - .02) < 1e-6 &&
+                    (frame.warpMode == "HIGH" || frame.warpMode == "LOW") ||
+                frame.warpRate == 4 && frame.warpMode == "LOW" && frame.timeScale == 4 && Math.Abs(frame.fixedDeltaSeconds - .08) < 1e-6;
+        }
 
         static bool AtmosphericFlight(Vessel vessel)
         {

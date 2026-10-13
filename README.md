@@ -10,7 +10,7 @@ The [local research program](docs/ksp-research-program.md) adds guarded inventor
 
 ## What exists
 
-- A [live rigid vessel owner](docs/live-rigid-owner.md) routes original part force queues and motion reads to one aggregate while retaining gameplay identities. Its bounded vacuum diagnostic restores stock physics afterward; independent receipt verification and visible capture qualify this limited transaction separately from playability and FPS.
+- A [live rigid vessel owner](docs/live-rigid-owner.md) routes original part force queues and motion reads to one aggregate while retaining gameplay identities. Its bounded 512-part vacuum proof includes original wheel/RCS controls, 4x physics warp and return, followed by stock ownership restoration. Independent raw verification and visible capture qualify this limited transaction separately from playability and FPS.
 - A main-menu benchmark compares 8, 32, and 128 aligned boxes as a chain of Unity fixed joints and as one compound rigid body. Both retain the same collider geometry. It uses separate physics scenes and does not change global simulation settings.
 - The benchmark checks collider ray hits, spacing error, a compound body's contact with a floor, and momentum at separation. It reports raw repeated timings. These are synthetic bodies, not stock parts or KSP joints.
 - A flight panel inventories the active vessel without modifying it. A small structural allowlist identifies inspection candidates; it does not approve them for merging.

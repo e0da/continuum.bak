@@ -74,6 +74,8 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.LiveRigidVesselOwner+RestoredRow" ||
                  type.FullName == "KspContinuum.LiveRigidVesselOwner+Step" ||
                  type.FullName == "KspContinuum.LiveRigidVesselOwner+Command" ||
+                 type.FullName == "KspContinuum.LiveRigidFlightDriver+Receipt" ||
+                 type.FullName == "KspContinuum.LiveRigidFlightDriver+ElectricDraw" ||
                  type.FullName == "KspContinuum.LiveRigidVesselBridge+CallsiteRow" ||
                  type.FullName == "KspContinuum.ConvectionCapture+CaptureReport" ||
                  type.FullName == "KspContinuum.ConvectionReplacement+ReportData" ||

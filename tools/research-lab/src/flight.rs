@@ -565,6 +565,49 @@ pub fn analyze(
     start: &Value,
     end: &Value,
 ) -> Result<Value> {
+    analyze_case(request, run_id, pid, report, start, end, false)
+}
+
+pub fn analyze_controlled_rigid(
+    request: &Request,
+    run_id: &str,
+    pid: u32,
+    report: &Value,
+    start: &Value,
+    end: &Value,
+    owner: &Value,
+) -> Result<Value> {
+    if request.warp != 1 || request.atmosphere || request.perturbation != "quiet" || request.seconds < 14.0 || request.maximum_delta < 0.08 ||
+        owner["schema"] != "continuum-live-rigid-owner/v2" || owner["scenario"] != "control-warp" || owner["runId"] != run_id ||
+        owner["status"] != "passed" || owner["passed"] != true || owner["cleanupStatus"] != "restored-original-ownership" ||
+        owner["stockContinuationVerified"] != true || owner["controlDriver"]["passed"] != true ||
+        owner["controlDriver"]["warpEntries"] != 1 || owner["controlDriver"]["normalReturns"] != 1 {
+        return Err("controlled rigid analysis requires the same-run completed v2 owner and frozen treatment".into());
+    }
+    let mut summary = analyze_case(request, run_id, pid, report, start, end, true)?;
+    summary["intrusiveDiagnosticsRequested"] = Value::Bool(true);
+    summary["comparisonEligibility"] = json!("intrusive-controlled-rigid-reconstruction-proof; prohibited-clean-FPS-comparison");
+    summary["comparisonScope"] = json!("Scheduled pilot-control/normal-LOW4-normal reconstruction proof. Mixed-clock aggregate is not a fixed-rate FPS qualification; independent raw owner verification remains required.");
+    Ok(summary)
+}
+
+fn controlled_rigid_clock(frame: &Value) -> Result<bool> {
+    let rate=finite(frame,"warpRate")?;
+    let scale=finite(frame,"timeScale")?;
+    let dt=finite(frame,"fixedDeltaSeconds")?;
+    Ok(rate==1.0 && scale==1.0 && (dt-0.02).abs()<1e-6 && matches!(frame["warpMode"].as_str(),Some("HIGH")|Some("LOW")) ||
+        rate==4.0 && scale==4.0 && (dt-0.08).abs()<1e-6 && frame["warpMode"]=="LOW")
+}
+
+fn analyze_case(
+    request: &Request,
+    run_id: &str,
+    pid: u32,
+    report: &Value,
+    start: &Value,
+    end: &Value,
+    controlled_rigid: bool,
+) -> Result<Value> {
     if report["schema"] != "ksp-continuum-markers/v2"
         || report["status"] != "complete"
         || report["captureMode"] != "simulation-duration"
@@ -653,10 +696,11 @@ pub fn analyze(
                 return Err("flight topology changed or unavailable".into());
             }
         }
-        if (finite(frame, "warpRate")? - request.warp as f64).abs() > 1e-5
-            || frame["warpMode"] != *first_mode
-            || !matches!(frame["warpMode"].as_str(), Some("LOW") | Some("HIGH"))
-            || (request.warp == 4 && frame["warpMode"] != "LOW")
+        let warp_matches = if controlled_rigid { controlled_rigid_clock(frame)? } else {
+            (finite(frame,"warpRate")?-request.warp as f64).abs()<=1e-5 && frame["warpMode"]==*first_mode &&
+                matches!(frame["warpMode"].as_str(),Some("LOW")|Some("HIGH")) && (request.warp!=4 || frame["warpMode"]=="LOW")
+        };
+        if !warp_matches
             || (finite(frame, "maximumDeltaSeconds")?
                 - request
                     .maximum_delta

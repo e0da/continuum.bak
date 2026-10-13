@@ -331,6 +331,8 @@ namespace KspContinuum
                 {
                     yield return null;
                     if (finished) yield break;
+                    if (liveRigidOwner != null && liveRigidOwner.Invalid)
+                    { report.status = "invalid"; report.completionReason = "live-rigid-owner-invalid"; throw new InvalidOperationException("Live rigid owner failed: " + liveRigidOwner.Report.detail); }
                     if (perturbationError != null)
                     {
                         report.status = "invalid"; report.completionReason = "perturbation-error";
@@ -365,7 +367,8 @@ namespace KspContinuum
                     completed++;
                     report.actualSimulatedSeconds = Planetarium.GetUniversalTime() - captureStartUt;
                     report.captureWallSeconds = now - captureStartWall;
-                    if (simulationSeconds > 0 && report.actualSimulatedSeconds >= simulationSeconds) { report.status = "complete"; report.completionReason = "simulation-duration-reached"; break; }
+                    if (simulationSeconds > 0 && report.actualSimulatedSeconds >= simulationSeconds && (liveRigidOwner == null || liveRigidOwner.CaptureReady))
+                    { report.status = "complete"; report.completionReason = "simulation-duration-reached"; break; }
                     if (simulationSeconds > 0 && report.captureWallSeconds >= wallTimeoutSeconds) { report.status = "invalid"; report.completionReason = "capture-wall-timeout"; break; }
                     if (completed < report.requestedFrames) previous = Context();
                 }

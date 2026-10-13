@@ -67,6 +67,7 @@ fn run() -> Result<()> {
             "--flight-ordered-body-aero-capture",
             "--flight-native-assembly-scene",
             "--flight-live-rigid-owner",
+            "--flight-live-rigid-scenario",
             "--flight-zero-native-force-pruning",
             "--flight-scientific-attachment-nodes",
             "--flight-trail-emitter",
@@ -852,6 +853,7 @@ fn smoke(
         .env("CONTINUUM_ORDERED_BODY_AERO_CAPTURE",selection.diagnostics.ordered_body_aero_capture.as_deref().unwrap_or(Path::new("")))
         .env("CONTINUUM_NATIVE_ASSEMBLY_SCENE",selection.diagnostics.native_assembly_scene.as_deref().unwrap_or(Path::new("")))
         .env("CONTINUUM_LIVE_RIGID_OWNER",selection.diagnostics.live_rigid_owner.as_deref().unwrap_or(Path::new("")))
+        .env("CONTINUUM_LIVE_RIGID_SCENARIO",selection.diagnostics.live_rigid_scenario.as_deref().unwrap_or(""))
         .env("CONTINUUM_ZERO_NATIVE_FORCE_PRUNING",selection.diagnostics.zero_native_force_pruning.as_deref().unwrap_or(""))
         .env("CONTINUUM_SCIENTIFIC_ATTACHMENT_NODES",selection.diagnostics.scientific_attachment_nodes.as_deref().unwrap_or(""))
         .env("CONTINUUM_TRAIL_EMITTER_RECORDING",selection.diagnostics.trail_emitter.as_ref().map(|s|s.recording.as_path()).unwrap_or(Path::new("")))
@@ -882,7 +884,7 @@ fn smoke(
         } else if flight.is_none() {
             vec!["--continuum-native-boundary-bench".to_string()]
         } else {
-            flight.as_ref().unwrap().arguments()
+            selection.flight_arguments()
         })
         .args([
             "-screen-width",
@@ -1226,14 +1228,13 @@ fn smoke(
                 None => "owned flight capture not found; no owned entry sidecar".to_string(),
             })?;
             let (start, end, report) = continuum_research_lab::flight::retain(&directory, output)?;
-            let mut summary = continuum_research_lab::flight::analyze(
-                request,
-                &run_id,
-                child.id(),
-                &report,
-                &start,
-                &end,
-            )?;
+            let mut summary = if selection.diagnostics.live_rigid_scenario.as_deref() == Some("control-warp") {
+                let owner_path=selection.diagnostics.live_rigid_owner.as_ref().ok_or("controlled rigid owner path missing")?;
+                let owner=read(owner_path)?;
+                let mut result=continuum_research_lab::flight::analyze_controlled_rigid(request,&run_id,child.id(),&report,&start,&end,&owner)?;
+                result["liveRigidOwnerEvidence"]=json!({"path":owner_path,"sha256":hash(owner_path)?,"schema":owner["schema"],"physicsSteps":owner["physicsSteps"],"status":owner["status"]});
+                result
+            } else { continuum_research_lab::flight::analyze(request,&run_id,child.id(),&report,&start,&end)? };
             if let Some(mode) = selection.diagnostics.convection_replacement.as_deref() {
                 summary["convectionReplacement"] = continuum_research_lab::convection_replacement::summarize(
                     mode, &report["convectionReplacement"], &run_id, child.id(),

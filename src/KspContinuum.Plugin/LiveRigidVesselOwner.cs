@@ -19,12 +19,16 @@ namespace KspContinuum
         readonly int thread = Thread.CurrentThread.ManagedThreadId;
         readonly string output;
         readonly Func<bool> capturing;
+        readonly bool controlled;
         readonly Dictionary<Rigidbody, Member> members = new Dictionary<Rigidbody, Member>();
         readonly List<Member> ordered = new List<Member>();
         readonly List<ModuleWheelBase> retractedWheels = new List<ModuleWheelBase>();
         readonly List<Command> commands = new List<Command>();
         readonly HashSet<int> accelerationReceivers = new HashSet<int>();
         readonly List<Step> steps = new List<Step>();
+        readonly List<string> screenshots = new List<string>();
+        readonly float[] captureTimes = { 1.8f, 4.5f, 8.5f, 11.5f };
+        int captureIndex;
         readonly List<RigidAssemblyMember> propertyScratch = new List<RigidAssemblyMember>();
         readonly Harmony framePatches = new Harmony(FrameOwner);
         readonly List<MethodBase> frameMethods = new List<MethodBase>();
@@ -42,16 +46,27 @@ namespace KspContinuum
         float scriptTime = -1, enteredTime;
         RigidAssemblyProperties properties;
         Step pending;
+        LiveRigidFlightDriver driver;
         public readonly Receipt Report;
+        public bool CaptureReady { get { return !controlled || Report.originalBodiesRestored && Report.bridgeReleased && Report.aggregateRetired &&
+            Report.postRestorationSimulatedSeconds >= 1.9999 && driver != null && driver.Report.passed; } }
+        public bool Invalid { get { return failed || Report.status == "invalid"; } }
 
         [Serializable] public sealed class Receipt
         {
             public string schema = "continuum-live-rigid-owner/v1", runId, status = "installing", detail, cleanupStatus = "not-installed";
             public string screenshotPath;
+            public string scenario = "quiet-pulse";
+            public string[] screenshots;
+            public LiveRigidFlightDriver.Receipt controlDriver;
             public string scope = "Fixed topology, no-contact vacuum, normal time. Original Part/Rigidbody identities retained as kinematic proxies; independent default-scene aggregate advances in unchanged native physics. Rigid projection, native mass weighting and zero aggregate damping are declared model choices. No stock trajectory, contact, arbitrary mod writer, long-flight, feel or performance qualification.";
             public int sourceParts, sourceBodies, retractedWheelParts, aggregateId, physicsSteps, postRestorationNativeSteps, routedCommands, omittedZeroCommands, accelerationCalls, duplicateAccelerationReceivers;
             public int velocityReads, angularReads, centerReads, pointReads, statsReads, frameVelocityChanges, frameTranslations;
+            public int propertyRebuilds;
+            public double maxPropertyPositionShift, maxPropertyRotationShift;
+            public double ownerStartUt, ownerEndUt, postRestorationSimulatedSeconds;
             public bool pulseQueued, originalBodiesRestored, aggregateRetired, bridgeReleased, passed;
+            public bool stockContinuationVerified;
             public double maxProxyPositionError, maxProxyRotationError, removedKineticEnergy;
             public BodyState initial, restoredAggregate;
             public RestoredRow[] restoredRows;
@@ -81,6 +96,11 @@ namespace KspContinuum
         {
             public int index, frame, commonReceivers, dynamicProxies, commands;
             public float fixedTime, dt;
+            public double universalTime;
+            public string controlPhase, warpMode;
+            public float warpRate;
+            public int warpRateIndex;
+            public float[] controls;
             public BodyState before, after;
             public double[] force, torque, impulse, angularImpulse;
             public float[] commonAcceleration;
@@ -99,6 +119,9 @@ namespace KspContinuum
             public Vector3 InitialVelocity, InitialAngularVelocity;
             public Vector3 InitialPosition;
             public Quaternion InitialRotation;
+            public float NativeMass;
+            public Vector3 NativeCenter, NativeInertia;
+            public Quaternion NativeInertiaRotation;
         }
 
         public LiveRigidVesselOwner(string output, string runId, Func<bool> capturing)
@@ -107,6 +130,14 @@ namespace KspContinuum
             Need(Path.IsPathRooted(output) && !File.Exists(output) && Directory.Exists(Path.GetDirectoryName(output)), "Fresh absolute private receipt required.");
             this.output = output; this.capturing = capturing;
             Report = new Receipt { runId = runId };
+            string scenario = Environment.GetEnvironmentVariable("CONTINUUM_LIVE_RIGID_SCENARIO");
+            Need(string.IsNullOrEmpty(scenario) || scenario == "control-warp", "Unknown live rigid scenario.");
+            controlled = scenario == "control-warp";
+            if (controlled)
+            {
+                Report.schema = "continuum-live-rigid-owner/v2"; Report.scenario = scenario;
+                Report.scope = "Twelve simulated seconds of original pilot attitude/RCS input, LOW 4x physics warp and normal return. Fixed topology, no-contact vacuum, original identities and default-scene native aggregate. Rigid projection, zero damping and material velocity preservation at mass/COM changes are declared model choices. Fuel-flow momentum, contact, arbitrary mods, human control feel and FPS remain unqualified.";
+            }
             bridge = new LiveRigidVesselBridge();
             try
             {
@@ -124,7 +155,7 @@ namespace KspContinuum
         public Vector3 ReadVelocity(Rigidbody receiver) { Report.velocityReads++; return ReadPointVelocity(receiver, ReadWorldCenter(receiver)); }
         public Vector3 ReadAngularVelocity(Rigidbody receiver) { Report.angularReads++; return body.angularVelocity; }
         public Vector3 ReadWorldCenter(Rigidbody receiver)
-        { Report.centerReads++; Member member = members[receiver]; return body.position + body.rotation * (member.Position + member.Rotation * receiver.centerOfMass); }
+        { Report.centerReads++; Member member = members[receiver]; return body.position + Normalized(body.rotation) * (member.Position + member.Rotation * receiver.centerOfMass); }
         public Vector3 ReadPointVelocity(Rigidbody receiver, Vector3 point) { Report.pointReads++; return body.GetPointVelocity(point); }
         public void WriteVelocity(Rigidbody receiver, Vector3 value)
         { Abort("Unsupported direct constituent velocity writer."); receiver.velocity = value; }
@@ -179,6 +210,10 @@ namespace KspContinuum
                 }
                 Need(steps.Count < 1024, "Native step receipt bound exceeded.");
                 pending = new Step { index = steps.Count, frame = frame, fixedTime = (float)time, dt = Time.fixedDeltaTime,
+                    universalTime = Planetarium.GetUniversalTime(),
+                    controlPhase = driver == null ? "quiet-pulse" : driver.Phase,
+                    warpMode = TimeWarp.WarpMode.ToString(), warpRate = TimeWarp.CurrentRate, warpRateIndex = TimeWarp.CurrentRateIndex,
+                    controls = new[] { vessel.ctrlState.pitch, vessel.ctrlState.yaw, vessel.ctrlState.roll, vessel.ctrlState.X, vessel.ctrlState.Y, vessel.ctrlState.Z },
                     before = State(body, false), commonReceivers = accelerationReceivers.Count,
                     commonAcceleration = Array(commonSet ? commonAcceleration : Vector3.zero), commands = commands.Count,
                     nonzeroCommands = commands.ToArray(), force = Array(force), torque = Array(torque), impulse = Array(impulse), angularImpulse = Array(angularImpulse) };
@@ -192,10 +227,12 @@ namespace KspContinuum
         public void After(string phase, int frame, double time)
         {
             if (disposed || failed || !capturing()) return;
-            if (entered && !screenshotRequested && Time.fixedTime - enteredTime > .3f)
+            float elapsed = Time.fixedTime - enteredTime;
+            bool captureDue = controlled ? captureIndex < captureTimes.Length && elapsed >= captureTimes[captureIndex] : !screenshotRequested && elapsed > .3f;
+            if (entered && captureDue)
             {
-                screenshotRequested = true;
-                try { ScalingQualification.CaptureAtEndOfFrame(CaptureView); }
+                screenshotRequested = true; int index = captureIndex++;
+                try { ScalingQualification.CaptureAtEndOfFrame(() => CaptureView(index)); }
                 catch (Exception error) { Abort("Render scheduling: " + error); }
             }
             if (phase != PhysicsPhase) return;
@@ -204,7 +241,18 @@ namespace KspContinuum
                 if (!entered)
                 {
                     if (!admissionAttempted) { admissionAttempted = true; Admit(); }
-                    else { Report.postRestorationNativeSteps++; Report.aggregateRetired = retiredRoot == null; }
+                    else
+                    {
+                        Need(ordered.All(member => member.Body != null && member.Body.isKinematic == member.Kinematic &&
+                            member.Body.detectCollisions == member.DetectCollisions && Finite(member.Body.velocity) && Finite(member.Body.angularVelocity)),
+                            "Original body ownership/motion changed after handback.");
+                        if (controlled) Need(Report.bridgeReleased && driver.Report.controlsRestored && driver.Report.groupsRestored && driver.Report.warpRestored &&
+                            vessel.ctrlState.pitch == 0 && vessel.ctrlState.yaw == 0 && vessel.ctrlState.roll == 0 && vessel.ctrlState.X == 0 && vessel.ctrlState.Y == 0 && vessel.ctrlState.Z == 0 &&
+                            TimeWarp.CurrentRate == 1 && TimeWarp.CurrentRateIndex == 0, "Controlled stock continuation changed.");
+                        Report.postRestorationNativeSteps++; Report.aggregateRetired = retiredRoot == null;
+                        Report.postRestorationSimulatedSeconds += Time.fixedDeltaTime;
+                        Report.stockContinuationVerified = Report.postRestorationNativeSteps >= 2;
+                    }
                     return;
                 }
                 Need(pending != null && pending.frame == frame && pending.fixedTime == (float)time, "Missing matched native boundary.");
@@ -212,11 +260,12 @@ namespace KspContinuum
                 steps.Add(pending); pending = null; Report.physicsSteps = steps.Count;
                 if (steps.Count % 16 == 0) Need(bridge.ExactInstalled(), "Live bridge graph changed during native ownership.");
                 Report.status = "running";
-                if (Time.fixedTime - enteredTime >= 1.5f) { Restore(); Report.status = "restored-awaiting-stock-steps"; }
+                if (driver != null) driver.AfterPhysics();
+                if (Time.fixedTime - enteredTime >= (controlled ? 12f : 1.5f)) { Restore(); Report.status = "restored-awaiting-stock-steps"; }
             }
             catch (Exception error) { Abort(error.ToString()); }
         }
-        void CaptureView()
+        void CaptureView(int index)
         {
             if (disposed || failed || !entered || !capturing()) return;
             Texture2D image = null; RenderTexture previous = RenderTexture.active;
@@ -224,8 +273,8 @@ namespace KspContinuum
             {
                 RenderTexture.active = null; image = new Texture2D(Screen.width, Screen.height, TextureFormat.RGB24, false);
                 image.ReadPixels(new Rect(0, 0, Screen.width, Screen.height), 0, 0); image.Apply();
-                string path = output + ".png"; Need(!File.Exists(path), "Rigid flight screenshot already exists.");
-                File.WriteAllBytes(path, image.EncodeToPNG()); Report.screenshotPath = path; screenshotCaptured = true;
+                string path = output + (controlled ? ".view-" + index : "") + ".png"; Need(!File.Exists(path), "Rigid flight screenshot already exists.");
+                File.WriteAllBytes(path, image.EncodeToPNG()); screenshots.Add(path); Report.screenshotPath = path; screenshotCaptured = true;
             }
             catch (Exception error) { Abort("Render readback: " + error); }
             finally { RenderTexture.active = previous; if (image != null) UnityEngine.Object.Destroy(image); }
@@ -253,12 +302,12 @@ namespace KspContinuum
                 foreach (Rigidbody candidate in part.transform.GetComponentsInChildren<Rigidbody>(true)) if (!candidate.isKinematic) found.Add(candidate);
             }
             Need(found.Count > 0 && found.Count <= 2048, "Dynamic native body census outside bounds.");
-            Vector3 position = vessel.rootPart.rb.position; Quaternion rotation = vessel.rootPart.rb.rotation, inverse = Quaternion.Inverse(rotation);
+            Vector3 position = vessel.rootPart.rb.position; Quaternion rotation = Normalized(vessel.rootPart.rb.rotation), inverse = Quaternion.Inverse(rotation);
             var motions = new List<RigidAssemblyMotion>();
             foreach (Rigidbody candidate in found.OrderBy(candidate => candidate.GetInstanceID()))
             {
                 Need(candidate != null && !candidate.isKinematic && candidate.gameObject.activeInHierarchy && candidate.constraints == RigidbodyConstraints.None, "Unqualified original native body.");
-                var member = new Member { Body = candidate, Position = inverse * (candidate.position - position), Rotation = inverse * candidate.rotation,
+                var member = new Member { Body = candidate, Position = inverse * (candidate.position - position), Rotation = Normalized(inverse * candidate.rotation),
                     Kinematic = candidate.isKinematic, DetectCollisions = candidate.detectCollisions, Depth = Depth(candidate.transform), LocalId = members.Count,
                     InitialVelocity = candidate.velocity, InitialAngularVelocity = candidate.angularVelocity, InitialPosition = candidate.position, InitialRotation = candidate.rotation };
                 member.Properties = Properties(member);
@@ -276,30 +325,41 @@ namespace KspContinuum
                 foreach (Member member in ordered) { member.Body.detectCollisions = false; member.Body.isKinematic = true; }
                 body.isKinematic = false; body.velocity = rotation * Unity(projection.Velocity); body.angularVelocity = rotation * Unity(projection.AngularVelocity); body.WakeUp();
                 entered = true; active = this; enteredTime = Time.fixedTime;
+                Report.ownerStartUt = Planetarium.GetUniversalTime();
                 Report.sourceParts = parts.Length; Report.sourceBodies = found.Count; Report.retractedWheelParts = retractedWheels.Count; Report.aggregateId = body.GetInstanceID();
                 Report.removedKineticEnergy = projection.RemovedKineticEnergy; Report.initial = State(body, false); Publish(null);
                 motionInitialized = true;
+                if (controlled) { driver = new LiveRigidFlightDriver(vessel, enteredTime); Report.controlDriver = driver.Report; }
             }
             catch { Restore(); throw; }
         }
         void Eligible()
         {
             Need(vessel != null && FlightGlobals.ActiveVessel == vessel && vessel.loaded && !vessel.packed && !vessel.HoldPhysics &&
-                !FlightDriver.Pause && TimeWarp.CurrentRate == 1 && Time.timeScale == 1 && vessel.situation == Vessel.Situations.ORBITING &&
+                !FlightDriver.Pause && WarpAdmitted() && vessel.situation == Vessel.Situations.ORBITING &&
                 vessel.mainBody != null && vessel.altitude > vessel.mainBody.atmosphereDepth && vessel.ctrlState.mainThrottle < .01f, "Fixed vacuum lifecycle changed.");
+        }
+        bool WarpAdmitted()
+        {
+            bool normal = TimeWarp.CurrentRate == 1 && TimeWarp.CurrentRateIndex == 0 && Time.timeScale == 1 && Math.Abs(Time.fixedDeltaTime - .02f) < 1e-6f;
+            if (normal) return true;
+            return controlled && driver != null && TimeWarp.WarpMode == TimeWarp.Modes.LOW && TimeWarp.CurrentRate == 4 &&
+                TimeWarp.CurrentRateIndex == 3 && Time.timeScale == 4 && Math.Abs(Time.fixedDeltaTime - .08f) < 1e-6f;
         }
         void Audit()
         {
             Eligible(); Need(vessel.parts.Count == parts.Length, "Part count changed.");
+            if (driver != null) driver.Audit();
             foreach (ModuleWheelBase wheel in retractedWheels) RetractedWheel(wheel);
             for (int i = 0; i < parts.Length; i++) Need(vessel.parts[i] == parts[i] && parts[i] != null &&
                 (parts[i].parent == null ? 0 : parts[i].parent.GetInstanceID()) == parents[i] &&
                 (parts[i].rb == null ? 0 : parts[i].rb.GetInstanceID()) == aliases[i] && parts[i].servoRb == null, "Topology or alias changed.");
             Need(body != null && !body.isKinematic && !body.detectCollisions, "Aggregate ownership changed.");
             foreach (Member member in ordered) Need(member.Body != null && member.Body.isKinematic && !member.Body.detectCollisions, "Proxy ownership changed.");
+            Quaternion aggregateRotation = Normalized(body.rotation);
             foreach (Member member in ordered)
             {
-                Vector3 position = body.position + body.rotation * member.Position; Quaternion rotation = body.rotation * member.Rotation;
+                Vector3 position = body.position + aggregateRotation * member.Position; Quaternion rotation = Normalized(aggregateRotation * member.Rotation);
                 double positionError = Math.Max((member.Body.transform.position - position).magnitude, (member.Body.position - position).magnitude);
                 double rotationError = Math.Max(RotationError(member.Body.transform.rotation, rotation), RotationError(member.Body.rotation, rotation));
                 Need(positionError <= 1e-4 && rotationError <= .002, "Unrouted constituent pose writer: id=" + member.Body.GetInstanceID() +
@@ -319,6 +379,7 @@ namespace KspContinuum
         }
         void QueuePulse()
         {
+            if (controlled) return;
             if (pulseApplied || Time.fixedTime - enteredTime < .2f) return;
             Part target = null; float largestArm = -1;
             foreach (Part candidate in parts)
@@ -329,8 +390,8 @@ namespace KspContinuum
             }
             Need(target != null && largestArm > 1, "Off-center source queue target missing.");
             Vector3 point = target.transform.position, lever = point - body.worldCenterOfMass;
-            Vector3 direction = Vector3.Cross(lever, body.rotation * Vector3.forward);
-            if (direction.sqrMagnitude < .001f) direction = Vector3.Cross(lever, body.rotation * Vector3.up);
+            Vector3 direction = Vector3.Cross(lever, Normalized(body.rotation) * Vector3.forward);
+            if (direction.sqrMagnitude < .001f) direction = Vector3.Cross(lever, Normalized(body.rotation) * Vector3.up);
             Vector3 force = direction.normalized * (body.mass * .25f / Time.fixedDeltaTime);
             target.AddForceAtPosition(force, point); pulseApplied = true; Report.pulseQueued = true;
         }
@@ -339,16 +400,21 @@ namespace KspContinuum
             bool changed = false; propertyScratch.Clear();
             foreach (Member member in ordered)
             {
-                Rigidbody source = member.Body; RigidAssemblyMember prior = member.Properties;
-                if (prior.Mass != source.mass || !Same(Unity(prior.LocalCenterOfMass), source.centerOfMass) ||
-                    !Same(Unity(prior.PrincipalInertia), source.inertiaTensor) || !Same(Unity(prior.PrincipalRotation), source.inertiaTensorRotation))
+                Rigidbody source = member.Body;
+                if (member.NativeMass != source.mass || !Same(member.NativeCenter, source.centerOfMass) ||
+                    !Same(member.NativeInertia, source.inertiaTensor) || !Same(member.NativeInertiaRotation, source.inertiaTensorRotation))
                 { member.Properties = Properties(member); changed = true; }
                 propertyScratch.Add(member.Properties);
             }
             if (!changed) return;
+            Report.propertyRebuilds++;
             Vector3 oldCenter = body.worldCenterOfMass, velocity = body.velocity, omega = body.angularVelocity;
+            Vector3 oldPosition = body.position; Quaternion oldRotation = body.rotation;
             properties = RigidAssemblyProperties.Combine(propertyScratch); PublishProperties();
             body.velocity = velocity + Vector3.Cross(omega, body.worldCenterOfMass - oldCenter);
+            Report.maxPropertyPositionShift = Math.Max(Report.maxPropertyPositionShift, (body.position - oldPosition).magnitude);
+            Report.maxPropertyRotationShift = Math.Max(Report.maxPropertyRotationShift, RotationError(body.rotation, oldRotation));
+            Publish(null);
         }
         void PublishProperties()
         {
@@ -358,9 +424,10 @@ namespace KspContinuum
         }
         void Publish(Step step)
         {
+            Quaternion aggregateRotation = Normalized(body.rotation);
             foreach (Member member in ordered)
             {
-                Vector3 position = body.position + body.rotation * member.Position; Quaternion rotation = body.rotation * member.Rotation;
+                Vector3 position = body.position + aggregateRotation * member.Position; Quaternion rotation = Normalized(aggregateRotation * member.Rotation);
                 member.Body.transform.SetPositionAndRotation(position, rotation);
                 member.Body.position = position; member.Body.rotation = rotation;
                 double pe = Math.Max((member.Body.position - position).magnitude, (member.Body.transform.position - position).magnitude);
@@ -372,8 +439,10 @@ namespace KspContinuum
         RigidAssemblyMember Properties(Member member)
         {
             Rigidbody source = member.Body;
-            return new RigidAssemblyMember(member.LocalId, source.mass, Vector(member.Position), Rotate(member.Rotation),
-                Vector(source.centerOfMass), Vector(source.inertiaTensor), Rotate(source.inertiaTensorRotation));
+            member.NativeMass = source.mass; member.NativeCenter = source.centerOfMass;
+            member.NativeInertia = source.inertiaTensor; member.NativeInertiaRotation = source.inertiaTensorRotation;
+            return new RigidAssemblyMember(member.LocalId, member.NativeMass, Vector(member.Position), Rotate(member.Rotation),
+                Vector(member.NativeCenter), Vector(member.NativeInertia), Rotate(member.NativeInertiaRotation));
         }
 
         void InstallFramePatches()
@@ -421,7 +490,7 @@ namespace KspContinuum
             vessel.velocityD = vessel.rb_velocityD + Krakensbane.GetFrameVelocity();
             Quaternion referenceInverse = Quaternion.Inverse(vessel.ReferenceTransform.rotation);
             vessel.angularVelocity = referenceInverse * body.angularVelocity; vessel.angularVelocityD = vessel.angularVelocity;
-            Quaternion axes = referenceInverse * body.rotation * body.inertiaTensorRotation;
+            Quaternion axes = Normalized(referenceInverse * Normalized(body.rotation) * body.inertiaTensorRotation);
             Vector3 a = axes * Vector3.right, b = axes * Vector3.up, c = axes * Vector3.forward, moments = body.inertiaTensor;
             vessel.MOI = new Vector3(moments.x*a.x*a.x+moments.y*b.x*b.x+moments.z*c.x*c.x,
                 moments.x*a.y*a.y+moments.y*b.y*b.y+moments.z*c.y*c.y, moments.x*a.z*a.z+moments.y*b.z*b.z+moments.z*c.z*c.z);
@@ -474,9 +543,14 @@ namespace KspContinuum
             if (ReferenceEquals(active, this)) active = null;
             if (ordered.Count == 0) { Report.originalBodiesRestored = body == null && root == null; return; }
             var faults = new List<string>();
+            if (driver != null)
+            {
+                try { driver.Dispose(); }
+                catch (Exception error) { faults.Add("pilot-restoration:" + error.Message); }
+            }
             if (motionInitialized && body != null)
             {
-                try { Report.restoredAggregate = State(body, false); }
+                try { Report.restoredAggregate = State(body, false); Report.ownerEndUt = Planetarium.GetUniversalTime(); }
                 catch (Exception error) { faults.Add("aggregate-state:" + error.Message); }
             }
             var restored = new List<RestoredRow>();
@@ -494,9 +568,9 @@ namespace KspContinuum
                     try
                     {
                         BodyState state = Report.restoredAggregate;
-                        Quaternion rotation = new Quaternion(state.rotation[0], state.rotation[1], state.rotation[2], state.rotation[3]);
+                        Quaternion rotation = Normalized(new Quaternion(state.rotation[0], state.rotation[1], state.rotation[2], state.rotation[3]));
                         Vector3 position = Unity(Vector(state.position)) + rotation * member.Position;
-                        Quaternion orientation = rotation * member.Rotation;
+                        Quaternion orientation = Normalized(rotation * member.Rotation);
                         Vector3 center = position + orientation * member.Body.centerOfMass;
                         omega = Unity(Vector(state.angularVelocity)); velocity = Unity(Vector(state.velocity)) + Vector3.Cross(omega, center - Unity(Vector(state.center)));
                         member.Body.transform.SetPositionAndRotation(position, orientation); member.Body.position = position; member.Body.rotation = orientation;
@@ -520,12 +594,28 @@ namespace KspContinuum
             }
             Report.restoredRows = restored.ToArray();
             Report.originalBodiesRestored = faults.Count == 0 && restored.Count == ordered.Count && restored.All(row =>
-                row.originalKinematic == row.readbackKinematic && row.originalDetectCollisions == row.readbackDetectCollisions);
+                row.originalKinematic == row.readbackKinematic && row.originalDetectCollisions == row.readbackDetectCollisions &&
+                (Unity(Vector(row.expectedVelocity)) - Unity(Vector(row.readbackVelocity))).magnitude <= 1e-4 &&
+                (Unity(Vector(row.expectedAngularVelocity)) - Unity(Vector(row.readbackAngularVelocity))).magnitude <= 1e-4);
             try { if (body != null) { body.isKinematic = true; body.detectCollisions = false; } }
             catch (Exception error) { faults.Add("aggregate-retirement:" + error.Message); }
             finally { if (root != null) { retiredRoot = root; UnityEngine.Object.Destroy(root); } body = null; root = null; }
             entered = false;
+            if (controlled)
+            {
+                try { ReleaseHooks(); }
+                catch (Exception error) { faults.Add("early-hook-release:" + error.Message); }
+            }
             if (faults.Count > 0) { Report.status = "invalid"; failed = true; Report.detail = (Report.detail ?? "") + " Restore: " + string.Join(";", faults); }
+        }
+        void ReleaseHooks()
+        {
+            if (Report.bridgeReleased) return;
+            if (bridge.Installed) Need(bridge.ExactInstalled(), "Bridge graph changed before cleanup.");
+            if (frameMethods.Count > 0) framePatches.UnpatchAll(FrameOwner);
+            frameInstalled = false; bridge.Dispose(); Report.bridgeReleased = bridge.CleanupStatus == "removed";
+            foreach (MethodBase method in frameMethods) if (Harmony.GetPatchInfo(method)?.Owners.Contains(FrameOwner) == true) Report.bridgeReleased = false;
+            Need(Report.bridgeReleased, "Owned bridge cleanup incomplete.");
         }
         public void Dispose()
         {
@@ -533,20 +623,21 @@ namespace KspContinuum
             try
             {
                 if (body != null || entered || !Report.originalBodiesRestored) Restore();
-                if (bridge.Installed && !bridge.ExactInstalled()) { Report.status = "invalid"; Report.detail = "Bridge graph changed before cleanup."; }
+                if (!Report.bridgeReleased && bridge.Installed && !bridge.ExactInstalled()) { Report.status = "invalid"; Report.detail = "Bridge graph changed before cleanup."; }
             }
             catch (Exception error) { Report.status = "invalid"; Report.detail = "Restore failed: " + error; }
             try
             {
-                if (frameMethods.Count > 0) framePatches.UnpatchAll(FrameOwner);
-                frameInstalled = false; bridge.Dispose(); Report.bridgeReleased = bridge.CleanupStatus == "removed";
-                foreach (MethodBase method in frameMethods) if (Harmony.GetPatchInfo(method)?.Owners.Contains(FrameOwner) == true) Report.bridgeReleased = false;
+                ReleaseHooks();
             }
             catch (Exception error) { Report.status = "invalid"; Report.detail = "Hook cleanup failed: " + error; }
             Report.steps = steps.ToArray(); Report.bridgeSites = bridge.SourceCallsites;
+            Report.screenshots = screenshots.ToArray();
             Report.aggregateRetired = retiredRoot == null && Report.originalBodiesRestored;
             Report.cleanupStatus = Report.originalBodiesRestored && Report.aggregateRetired && Report.bridgeReleased && !frameInstalled ? "restored-original-ownership" : "incomplete";
-            Report.passed = Report.status != "invalid" && steps.Count >= 10 && Report.postRestorationNativeSteps >= 2 && Report.pulseQueued && screenshotCaptured && Report.cleanupStatus == "restored-original-ownership" &&
+            bool treatmentComplete = controlled ? driver != null && driver.Report.passed && steps.Sum(step => (double)step.dt) >= 11.99 &&
+                Report.postRestorationSimulatedSeconds >= 1.9999 && screenshots.Count == captureTimes.Length : Report.pulseQueued;
+            Report.passed = Report.status != "invalid" && steps.Count >= 10 && Report.postRestorationNativeSteps >= 2 && Report.stockContinuationVerified && treatmentComplete && screenshotCaptured && Report.cleanupStatus == "restored-original-ownership" &&
                 Report.velocityReads > 0 && Report.accelerationCalls > 0 && Report.maxProxyPositionError <= 1e-4 && Report.maxProxyRotationError <= .002;
             if (Report.status != "invalid") Report.status = Report.passed ? "passed" : "incomplete";
             File.WriteAllText(output, ReportJson.Encode(Report));
@@ -589,6 +680,7 @@ namespace KspContinuum
         static Vec Subtract(Vec a, Vec b) { return new Vec(a.X - b.X, a.Y - b.Y, a.Z - b.Z); }
         static Vec Vector(float[] value) { return new Vec(value[0], value[1], value[2]); }
         static Rotation Rotate(Quaternion value) { return new Rotation(value.x, value.y, value.z, value.w); }
+        static Quaternion Normalized(Quaternion value) { return Unity(Rotate(value)); }
         static Rotation Rotate(float[] value) { return new Rotation(value[0], value[1], value[2], value[3]); }
         static Vector3 Unity(Vec value) { return new Vector3((float)value.X, (float)value.Y, (float)value.Z); }
         static Quaternion Unity(Rotation value) { return new Quaternion((float)value.X, (float)value.Y, (float)value.Z, (float)value.W); }
