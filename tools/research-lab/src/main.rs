@@ -842,12 +842,19 @@ fn smoke(
     let resolved_profile_sha = hash(&resolved_profile_path)?;
     let asset_generation_sha = resolved_profile.asset_generation.identity()?;
     let observer_directory = instance.join("GameData/KspContinuum/PluginData");
+    let observer_output = output.canonicalize().map_err(|e| e.to_string())?;
     let started = Instant::now();
     let admission_seconds = admission_started.elapsed().as_secs_f64();
     let mut child = Command::new(&executable)
         .current_dir(&instance)
+        .env_remove("CONTINUUM_MONO_JIT_SAMPLE")
+        .env_remove("CONTINUUM_MONO_JIT_MAP")
         .envs(if flight.as_ref().is_some_and(|request| request.native_sample) {
-            vec![("CONTINUUM_PROCESS_CAPTURE", "1")]
+            vec![
+                ("CONTINUUM_PROCESS_CAPTURE", std::ffi::OsString::from("1")),
+                ("CONTINUUM_MONO_JIT_SAMPLE", observer_output.join("native-flight-sample.txt").into_os_string()),
+                ("CONTINUUM_MONO_JIT_MAP", observer_output.join("mono-jit-map.json").into_os_string()),
+            ]
         } else { Vec::new() })
         .env("CONTINUUM_AERO_STEP_CONTEXT",selection.diagnostics.aero_step_context.as_deref().unwrap_or(""))
         .env("CONTINUUM_AERO_DRAG_TRANSACTION",if selection.diagnostics.aero_drag_transaction {"1"} else {""})
@@ -1347,6 +1354,57 @@ fn smoke(
             "requested owned native sample incomplete; retained diagnostic receipt".to_string()
         });
     }
+    let mono_jit_map = if flight.as_ref().is_some_and(|request| request.native_sample) {
+        let result = (|| -> Result<Value> {
+            let path = output.join("mono-jit-map.json");
+            let map: Value = read(&path)?;
+            if map["schema"] != "continuum-mono-jit-sample-map/v1"
+                || map["status"] != "completed"
+                || map["runId"] != run_id
+                || map["processId"] != child.id()
+                || map["sampleHeaderPid"] != child.id()
+                || map["sampleSha256"] != hash(&output.join("native-flight-sample.txt"))?
+                || map["runtimeLibrarySha256"] != hash(&instance.join("KSP.app/Contents/Frameworks/libmonobdwgc-2.0.dylib"))?
+            { return Err("Mono JIT map ownership, runtime or sample identity rejected".into()); }
+            let end: Value = read(&output.join("flight-capture-end.json"))?;
+            let signal_directory = continuum_research_lab::flight::capture_directory(&observer_directory, &run_id, child.id())?
+                .ok_or("owned JIT capture signal directory absent")?;
+            let original_signal = signal_directory.join("capture-end.json");
+            if read::<Value>(&original_signal)? != end { return Err("JIT capture signal changed during retention".into()); }
+            let signal_hash = hash(&original_signal)?;
+            let capture_end = end["clockTimestamp"].as_u64().ok_or("capture-end clock absent")?;
+            let begin = map["mapBeginTicks"].as_u64().ok_or("JIT mapping begin absent")?;
+            let finish = map["mapEndTicks"].as_u64().ok_or("JIT mapping end absent")?;
+            if map["signalSha256"] != signal_hash || map["captureEndTicks"] != capture_end
+                || begin < capture_end || finish < begin || map["clockFrequency"] != end["clockFrequency"]
+            { return Err("Mono JIT map post-capture boundary rejected".into()); }
+            let rows = map["rows"].as_array().filter(|rows| rows.len() <= 8192).ok_or("JIT address rows absent or unbounded")?;
+            let mut mapped = 0;
+            for row in rows {
+                if row["status"] != "mapped" { continue; }
+                let number = |key: &str| -> Result<u64> {
+                    let value = row[key].as_str().ok_or("JIT address absent")?;
+                    u64::from_str_radix(value.trim_start_matches("0x"), 16).map_err(|e| e.to_string())
+                };
+                let pc = number("pc")?; let start = number("codeStart")?; let end = number("codeEnd")?;
+                if pc < start || pc >= end || end - start != row["codeSize"].as_u64().ok_or("JIT code size absent")?
+                    || row["methodName"].as_str().is_none_or(str::is_empty)
+                { return Err("JIT method code interval rejected".into()); }
+                mapped += 1;
+            }
+            if mapped == 0 || map["mappedCount"] != mapped || map["addressCount"] != rows.len()
+            { return Err("JIT positive mapping coverage rejected".into()); }
+            Ok(json!({"status":"completed","sha256":hash(&path)?,"report":map,
+                "scope":"Late same-process JIT metadata lookup; stack presence is inclusive and nonadditive. Does not independently prove sampled-time code lifetime or exclusive CPU duration."}))
+        })();
+        match result {
+            Ok(value) => Some(value),
+            Err(error) => {
+                flight_error.get_or_insert_with(|| format!("requested Mono JIT attribution incomplete: {error}"));
+                Some(json!({"status":"failed","error":error}))
+            }
+        }
+    } else { None };
     let mut flight_failure_evidence = None;
     let mut flight_recovery_error = None;
     if flight_error.is_some() {
@@ -1568,7 +1626,7 @@ fn smoke(
         "resolvedLaunchSha256":resolved_profile_sha,"selectionSha256":selection_sha,
         "assetGenerationSha256":asset_generation_sha,"assetGenerationEvidence":generation_evidence,"assetGenerationError":generation_error,
         "flightRequest":flight,"flightCapture":flight_summary,"flightCaptureError":flight_error,"flightEntry":flight_entry,
-        "flightNativeSample":native_sample_receipt,"flightFailureEvidence":flight_failure_evidence,"flightRecoveryError":flight_recovery_error,
+        "flightNativeSample":native_sample_receipt,"flightMonoJitMap":mono_jit_map,"flightFailureEvidence":flight_failure_evidence,"flightRecoveryError":flight_recovery_error,
         "captureCpuRss":flight_summary.as_ref().map(|summary| &summary["processCapture"]),"wallSeconds":started.elapsed().as_secs_f64(),"exitCode":status.code(),
         "runId":run_id,"mainMenuStartObservedWallSeconds":menu_elapsed,"startupBoundary":"first-owned-addon-Start-in-main-menu","startupPollingResolutionSeconds":0.1,
         "admissionWallSeconds":admission_seconds,"admissionPlusMenuSeconds":menu_elapsed.map(|seconds| seconds+admission_seconds),

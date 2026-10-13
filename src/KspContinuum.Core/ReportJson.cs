@@ -78,6 +78,9 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.LiveRigidFlightDriver+Receipt" ||
                  type.FullName == "KspContinuum.LiveRigidFlightDriver+ElectricDraw" ||
                  type.FullName == "KspContinuum.LiveRigidVesselBridge+CallsiteRow" ||
+                 type.FullName == "KspContinuum.MonoJitSampleMap+ReportData" ||
+                 type.FullName == "KspContinuum.MonoJitSampleMap+DomainRow" ||
+                 type.FullName == "KspContinuum.MonoJitSampleMap+AddressRow" ||
                  type.FullName == "KspContinuum.ConvectionCapture+CaptureReport" ||
                  type.FullName == "KspContinuum.ConvectionReplacement+ReportData" ||
                  type.FullName == "KspContinuum.ConvectionReplacement+Sample" ||

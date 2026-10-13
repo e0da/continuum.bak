@@ -6,6 +6,44 @@ at a one-millisecond interval. Historical five-second receipts are unchanged.
 
 Selecting native sampling now automatically enables the existing process capture diagnostics in the owned player, supplying its Mach clock/timebase boundaries. Unrequested runs retain their ambient process-capture behavior. A failed controlled sample exposed the missing request wiring; its original failed receipt remains preserved. The repaired run passes conservative enclosure without changing the validator or assuming Stopwatch/UTC equivalence.
 
+Native sampling also requests a cold same-process Mono JIT address map. After
+the player publishes its capture-end signal, it reads the finished sample and
+queries only its actual call-graph PCs in the current/root Mono domains. The
+map binds the original signal, raw sample and embedded runtime hashes to the
+owned PID/run; each mapped PC must lie inside its returned JIT code interval.
+The runner independently verifies those identities, positive mapped coverage
+and post-capture timing before admitting this diagnostic. Missing/incomplete
+samples or zero mapped coverage fail explicitly. Unrequested launches clear
+these map request variables.
+
+`mono-jit-map.json` retains actual method signatures, image identities, tokens,
+dynamic-wrapper flags and unresolved addresses. Sentinel/non-user addresses
+are retained without native lookup. Parsing stops before collapsed summary
+tables; row occurrence counts are textual call-tree appearances, not weighted
+sample counts. No force compilation or per-part observer is introduced.
+Lookup uses borrowed Mono handles/metadata; the allocated method-full-name
+string is released with `mono_free`.
+
+This is a late metadata lookup, not proof that compiled code was never retired
+or reused between collection and lookup. The controlled owner unpatches before
+its stock continuation; wrappers may already be gone. Trampolines, other
+domains and unsupported translated addresses can remain unresolved. Positive
+mapping is partial coverage, not complete attribution. Inclusive call-tree
+presence is nonadditive and cannot be converted into exclusive CPU or GPU
+milliseconds.
+
+The first controlled 512-part witness resolved 466 PCs and named managed
+ancestors in 1,147/1,376 main-thread observations. Direct managed terminals
+remained unresolved; no exclusive method CPU-time attribution was established.
+The publication path had 239 inclusive observations in three distinct contexts:
+floating-origin shifts (90), post-physics publication (78), and property refresh
+(71). The owner independently recorded 1,351 publications for 450 steps.
+Patch-state checking also exposed `Harmony.GetPatchInfo` calling
+`BinaryFormatter.Deserialize`. These findings prioritize retained pose/frame
+publication and unchanged-state detection over another unqualified scalar
+FlightIntegrator rewrite. Sampling and lifetime counters have different windows
+and must not be combined into full-flight cost percentages.
+
 The runner retains capture signals, sampler PID/exit/hash, and native
 `mach_absolute_time` readings before/after spawning and observing completion.
 The game must publish `machClockStatus=available`,

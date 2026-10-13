@@ -763,6 +763,8 @@ namespace KspContinuum
                     finally { trailEmitter.Dispose(); }
                 }
                 if (report.captureStartClockTimestamp > 0) Signal("capture-end", report.completionReason);
+                if (!MonoJitSampleMap.ResolveRequested(report.runId, report.captureEndClockTimestamp, signalDirectory, captureActive))
+                { report.status = "invalid"; report.completionReason = "mono-jit-sample-map-failed"; }
                 callback(report);
             }
             catch (Exception error)
