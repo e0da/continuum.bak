@@ -152,6 +152,7 @@ namespace KspContinuum
                 if(geometry!=null) { string path=Path.Combine(stage,"geometry.bin");WholeCraftSceneFormat.WriteGeometry(path,geometry);manifest.geometry="geometry.bin";manifest.geometrySha256=ScaleCheckpointLoadState.HashFile(path);geometry=WholeCraftSceneFormat.ReadGeometry(path); }
                 NativeAssemblySceneFormat.Validate(manifest,geometry);
                 string json=ReportJson.Encode(manifest);string manifestPath=Path.Combine(stage,"manifest.json"); using(var stream=new FileStream(manifestPath,FileMode.CreateNew,FileAccess.Write)) using(var writer=new StreamWriter(stream,new UTF8Encoding(false))) writer.Write(json);
+                if(Environment.GetEnvironmentVariable("CONTINUUM_OWNED_RUNTIME_CAPTURE")=="1")OwnedRuntimeKspCapture.Capture(vessel,manifest,manifestPath,Path.Combine(stage,"owned-parts.json"));
                 Need(File.ReadAllText(manifestPath)==json,"Native assembly manifest readback differs.");SafeParent(parent);Need(!Directory.Exists(output)&&!File.Exists(output),"Native assembly output appeared during capture.");Directory.Move(stage,output);return Path.Combine(output,"manifest.json");
             }
             catch { if(Directory.Exists(stage)) Directory.Delete(stage,true);throw; }

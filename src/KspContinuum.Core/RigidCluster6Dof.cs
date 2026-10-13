@@ -16,6 +16,17 @@ namespace KspContinuum
             X = x / norm; Y = y / norm; Z = z / norm; W = w / norm;
         }
 
+        Rotation(double x, double y, double z, double w, bool retained)
+        { X = x; Y = y; Z = z; W = w; }
+
+        public static Rotation FromUnitComponents(double x, double y, double z, double w)
+        {
+            AssemblyModel.Finite(x); AssemblyModel.Finite(y); AssemblyModel.Finite(z); AssemblyModel.Finite(w);
+            if (Math.Abs(x*x+y*y+z*z+w*w-1) > 1e-12)
+                throw new ArgumentException("Retained rotation must already be unit length.");
+            return new Rotation(x,y,z,w,true);
+        }
+
         public static Rotation Identity { get { return new Rotation(0, 0, 0, 1); } }
 
         public static Rotation AxisAngle(Vec axis, double radians)

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const DOTNET_TESTS: &[&str] = &[
+    "tests/KspContinuum.OwnedRuntime.Tests",
     "tests/KspContinuum.Tests",
     "tests/KspContinuum.Worker.Tests",
     "tests/KspContinuum.Handoff.Tests",
