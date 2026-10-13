@@ -71,12 +71,18 @@ static class Program
         if(controlled && receipt.TryGetProperty("poseMaterializations",out var materializations))
         {
             int writes=materializations.GetInt32(), reuses=I(receipt,"poseReuses"), requests=I(receipt,"publishCalls");
+            bool presentation=receipt.TryGetProperty("forestMode",out var mode)&&mode.GetString()=="owned-presentation-root";
             Need(writes>0&&reuses>0&&writes+reuses==requests&&receipt.GetProperty("poseGeneration").GetInt64()==writes,"retained pose request/materialization coverage");
-            Need(I(receipt,"publishSyncCalls")==writes&&I(receipt,"publishedMembers")==checked(requests*bodies),"every retained request preserves full proxy readback; sync only materializations");
+            Need(I(receipt,"publishSyncCalls")==writes+(presentation?1:0)&&I(receipt,"publishedMembers")==checked((requests+(presentation?1:0))*bodies),"every retained request preserves full proxy readback; presentation setup sync/readbacks charged");
             Need(I(receipt,"poseRefreshRequests")+I(receipt,"posePostPhysicsRequests")+I(receipt,"poseFrameRequests")+I(receipt,"poseAdmissionRequests")==requests,"publication cause coverage");
-            Console.WriteLine("Retained publication: "+writes+" materializations, "+reuses+" target reuses; "+requests*bodies+" native/Transform member validations retained.");
+            Console.WriteLine("Retained publication: "+writes+" materializations, "+reuses+" target reuses; "+I(receipt,"publishedMembers")+" native/Transform member validations retained.");
         }
         bool principalFrame=controlled && receipt.TryGetProperty("aggregatePoseFrame",out var frameKind) && frameKind.GetString()=="native-com-principal";
+        if(controlled && receipt.TryGetProperty("forestStatus",out var forest))
+        {
+            if(forest.GetString()=="admitted")VerifyForest(receipt,bodies);
+            else Need(forest.GetString()=="eager-fallback"&&!string.IsNullOrEmpty(receipt.GetProperty("forestFallbackReason").GetString()),"forest rejection must remain explicit");
+        }
         if(principalFrame)Need(D(receipt,"maxNativeFramePositionError")>=0&&D(receipt,"maxNativeFramePositionError")<=1e-4&&D(receipt,"maxNativeFrameRotationError")>=0&&D(receipt,"maxNativeFrameRotationError")<=.002,"native aggregate writer/frame guards");
         foreach(string flag in new[]{"originalBodiesRestored","aggregateRetired","bridgeReleased"})Need(B(receipt,flag),"closure "+flag);
         if(!controlled)Need(B(receipt,"pulseQueued"),"closure pulseQueued");
@@ -215,6 +221,54 @@ static class Program
         Need(positive==I(driver,"electricPositiveCalls")&&withdrawn>0&&attitude&&warp,"actual gross wheel withdrawal in delivered attitude and warp phases");
         Need(Math.Abs(D(driver,"grossElectricChargeRequested")-requested)<=1e-8+1e-10*Math.Abs(requested)&&Math.Abs(D(driver,"grossElectricChargeWithdrawn")-withdrawn)<=1e-8+1e-10*Math.Abs(withdrawn),"independent gross electric withdrawal sum");
         Console.WriteLine("Original wheel electric withdrawals: "+rows.Length+" calls; "+roundedOverdraw+" one-ULP over-request readbacks; raw values retained.");
+    }
+    static void VerifyForest(JsonElement receipt,int bodyCount)
+    {
+        int[] Integers(string name,int bound){var rows=Rows(receipt,name,bound);return rows.Select(row=>row.GetInt32()).ToArray();}
+        var bodies=Integers("forestBodyIds",2048);var transforms=Integers("forestBodyTransformIds",2048);var roots=Integers("forestRootBodyIds",2048);
+        var nodes=Integers("forestTransformIds",32768);var parents=Integers("forestParentIds",32768);
+        Need(bodies.Length==bodyCount&&transforms.Length==bodyCount&&roots.Length==bodyCount&&bodies.Distinct().Count()==bodyCount&&transforms.Distinct().Count()==bodyCount,"forest body/transform bijection");
+        Need(nodes.Length>0&&nodes.Length==parents.Length&&nodes.Distinct().Count()==nodes.Length&&nodes.All(id=>id!=0)&&I(receipt,"forestEdges")==nodes.Length,"bounded closed forest node ledger");
+        var restored=Rows(receipt,"restoredRows",2048).Select(row=>I(row,"originalId")).ToHashSet();Need(restored.SetEquals(bodies),"forest covers original restored bodies");
+        var parentMap=nodes.Zip(parents,(id,parent)=>(id,parent)).ToDictionary(pair=>pair.id,pair=>pair.parent);
+        Need(parents.All(id=>id==0||parentMap.ContainsKey(id)),"forest parent closure");
+        var transformBodies=transforms.Zip(bodies,(transform,body)=>(transform,body)).ToDictionary(pair=>pair.transform,pair=>pair.body);
+        var fixedPoses=Rows(receipt,"forestFixedLocalPose",32768).Select(row=>row.GetBoolean()).ToArray();Need(fixedPoses.Length==nodes.Length,"forest local lease cardinality");
+        A(receipt,"forestLocalPositions",nodes.Length*3);var rotations=A(receipt,"forestLocalRotations",nodes.Length*4);var scales=A(receipt,"forestLocalScales",nodes.Length*3);
+        if(receipt.GetProperty("forestMode").GetString()=="owned-presentation-root")
+        {
+            int pivot=I(receipt,"presentationPivotTransformId");Need(pivot!=0&&I(receipt,"presentationPivotId")!=0&&parentMap.ContainsKey(pivot)&&parentMap[pivot]==0&&!transformBodies.ContainsKey(pivot)&&nodes.Length==bodyCount+1,"separate unparented presentation root");
+            var rootTransforms=Integers("forestRootTransformIds",2048);var originalParents=Integers("presentationOriginalParentIds",2048);var restoredParents=Integers("presentationRestoredParentIds",2048);
+            var originalSiblings=Integers("presentationOriginalSiblingIndices",2048);var restoredSiblings=Integers("presentationRestoredSiblingIndices",2048);var restoredBodies=Integers("presentationRestoredBodyIds",2048);
+            var originalScales=A(receipt,"presentationOriginalScales",bodyCount*3);var restoredScales=A(receipt,"presentationRestoredScales",bodyCount*3);
+            Need(rootTransforms.Length==bodyCount&&rootTransforms.All(id=>id==pivot)&&roots.All(id=>id==0)&&originalParents.Length==bodyCount&&originalParents.All(id=>id==0)&&restoredParents.SequenceEqual(originalParents)&&restoredSiblings.SequenceEqual(originalSiblings)&&restoredBodies.SequenceEqual(bodies)&&restoredScales.SequenceEqual(originalScales),"presentation transaction restores original identity/parent/sibling/scale");
+            Need(originalSiblings.Length==bodyCount&&originalSiblings.All(index=>index>=0)&&B(receipt,"presentationParentsRestored")&&B(receipt,"presentationPivotRetired"),"presentation captured sibling indices and retirement");
+            for(int i=0;i<nodes.Length;i++){R(rotations.Skip(i*4).Take(4).ToArray());Need(fixedPoses[i]==(nodes[i]!=pivot),"presentation pivot/leaf pose ownership");if(nodes[i]==pivot)Need(scales.Skip(i*3).Take(3).All(scale=>scale==1),"unit presentation root");else Need(parentMap[nodes[i]]==pivot&&transformBodies.ContainsKey(nodes[i]),"direct presentation leaves");}
+            for(int i=0;i<bodyCount;i++){int node=Array.IndexOf(nodes,transforms[i]);Need(node>=0&&scales.Skip(node*3).Take(3).SequenceEqual(originalScales.Skip(i*3).Take(3))&&originalScales.Skip(i*3).Take(3).All(scale=>scale>0),"fixed original leaf scale");}
+            long pivotMaterializations=receipt.GetProperty("forestMaterializations").GetInt64();
+            Need(I(receipt,"forestRoots")==1&&I(receipt,"forestDescendants")==bodyCount&&I(receipt,"forestInitialFullWrites")==bodyCount&&I(receipt,"poseMaterializations")==pivotMaterializations+1,"presentation materialization coverage");
+            Need(receipt.GetProperty("presentationPivotWriteCalls").GetInt64()==pivotMaterializations+1&&receipt.GetProperty("forestWriteCalls").GetInt64()==bodyCount+pivotMaterializations+1&&receipt.GetProperty("forestReadbackChecks").GetInt64()==(long)I(receipt,"publishCalls")*bodyCount&&I(receipt,"presentationSetupWrites")==bodyCount,"presentation cold setup and steady writes/readbacks charged");
+            Need(D(receipt,"maxPresentationWorldScaleRelativeError")>=0&&D(receipt,"maxPresentationWorldScaleRelativeError")<=1e-5&&receipt.GetProperty("presentationScaleReadbacks").GetInt64()==((long)I(receipt,"publishCalls")+1)*bodyCount,"world scale preservation and restoration coverage");
+            Console.WriteLine("Owned presentation: one root for "+bodyCount+" original bodies; "+receipt.GetProperty("forestWriteCalls").GetInt64()+" publication writes; all pose/scale readbacks retained.");return;
+        }
+        Need(scales.All(scale=>scale==1),"rigid forest unit scale");
+        for(int i=0;i<nodes.Length;i++)
+        {
+            R(rotations.Skip(i*4).Take(4).ToArray());bool ownedAncestor=false;var seen=new HashSet<int>{nodes[i]};
+            for(int cursor=parents[i];cursor!=0;cursor=parentMap[cursor]){Need(seen.Add(cursor),"acyclic transform forest");ownedAncestor|=transformBodies.ContainsKey(cursor);}
+            Need(fixedPoses[i]==ownedAncestor,"descendant local pose lease follows actual ancestry");
+        }
+        for(int i=0;i<bodyCount;i++)
+        {
+            Need(parentMap.ContainsKey(transforms[i]),"body transform in ledger");int highest=bodies[i];
+            for(int cursor=parentMap[transforms[i]];cursor!=0;cursor=parentMap[cursor])if(transformBodies.TryGetValue(cursor,out int ancestor))highest=ancestor;
+            Need(roots[i]==highest,"publication root is highest owned transform ancestor");
+        }
+        int rootCount=roots.Distinct().Count();long materializations=receipt.GetProperty("forestMaterializations").GetInt64();
+        Need(rootCount>0&&rootCount<bodyCount&&I(receipt,"forestRoots")==rootCount&&I(receipt,"forestDescendants")==bodyCount-rootCount,"positive forest compression coverage");
+        Need(I(receipt,"forestInitialFullWrites")==bodyCount&&I(receipt,"poseMaterializations")==materializations+1,"first materialization eager; subsequent forest coverage");
+        Need(receipt.GetProperty("forestWriteCalls").GetInt64()==bodyCount+materializations*rootCount&&receipt.GetProperty("forestReadbackChecks").GetInt64()==((long)I(receipt,"publishCalls")-1)*bodyCount&&receipt.GetProperty("forestInvariantChecks").GetInt64()>0,"forest work and full readback accounting");
+        Console.WriteLine("Transform forest: "+rootCount+" publication roots for "+bodyCount+" bodies; "+receipt.GetProperty("forestWriteCalls").GetInt64()+" writes, all original pose readbacks retained.");
     }
     public static int Main(string[] args)
     {

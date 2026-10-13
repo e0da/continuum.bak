@@ -80,3 +80,31 @@ are required before admitting the real seal.
 only its exact normal/LOW4 clocks, requires actual unshadowed sunlight and
 records planetary framing without changing the orbit to force a background.
 The existing entry/planet-limb presets keep their original contracts.
+
+Controlled publication now inventories the original Transform forest. Existing
+owned ancestry can compress writes only when its retained scale and local-pose
+invariants hold. Flat parentless body layouts instead admit an owned, unparented,
+unit-scale presentation root without a Rigidbody. Original body/Part identities
+become direct leaves, retain their exact positive scales, and use the canonical
+craft-local geometry. This root remains separate from the native aggregate's
+COM/principal-axis frame. Unsupported layouts retain explicit eager fallback;
+drift after admission invalidates the run rather than silently falling back.
+
+Each changed pose still computes every independent member target, writes the
+publication roots, synchronizes once, and reads every original native/Transform
+pose. Retained parent/local-TRS checks remain exact. A separate frozen 1e-5
+relative world-scale budget covers shape readback without changing pose budgets.
+Restoration reinstates captured parent, sibling-index API value and scale for
+every original member before restoring body ownership; the empty owned root is
+then retired. Captured sibling-index equality does not establish global scene
+root ordering.
+
+The bounded 426-body native witness used one presentation root and 1,329 world
+transform writes instead of 384,678 eager writes. It passed the original control,
+momentum, frame, pose and stock-handback gates, including 577,230 member readbacks
+and 904 synchronizations. There were 2,256 forest validation passes, each scanning
+427 nodes. Timed writes fell from 97.12 to 12.28 ms, but total publication rose
+from 1,079.27 to 1,245.90 ms with the additional hierarchy/scale proof work. This
+qualifies the representation and restoration, not a total-speed or FPS gain.
+The next boundary is ownership/invalidation and duplicated laboratory proof cost,
+while preserving detection of external writers.

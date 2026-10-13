@@ -61,6 +61,10 @@ namespace KspContinuum
         Quaternion retainedAggregateRotation;
         Vector3 canonicalRootPosition;
         Quaternion canonicalRootRotation;
+        bool forestPrepared, forestAdmitted;
+        ForestNode[] forestNodes;
+        GameObject presentationPivot, retiredPresentationPivot;
+        bool presentationRootAdmitted;
         Step pending;
         LiveRigidFlightDriver driver;
         public readonly Receipt Report;
@@ -94,6 +98,23 @@ namespace KspContinuum
             public long poseGeneration;
             public string poseRequestReason, poseMaterializationReason;
             public string aggregatePoseFrame = "craft-root";
+            public string forestStatus = "not-requested", forestFallbackReason;
+            public string forestMode = "existing-owned-body-forest";
+            public int presentationPivotId, presentationPivotTransformId, presentationSetupWrites;
+            public long presentationPivotWriteCalls;
+            public bool presentationParentsRestored, presentationPivotRetired;
+            public long presentationScaleReadbacks;
+            public double maxPresentationWorldScaleRelativeError;
+            public int forestRoots, forestDescendants, forestEdges, forestInitialFullWrites;
+            public long forestWriteCalls, forestMaterializations, forestInvariantChecks, forestReadbackChecks;
+            public int[] forestBodyIds, forestBodyTransformIds, forestRootBodyIds, forestRootTransformIds, forestTransformIds, forestParentIds;
+            public int[] presentationOriginalParentIds, presentationOriginalSiblingIndices;
+            public float[] presentationOriginalScales;
+            public int[] presentationRestoredBodyIds, presentationRestoredParentIds, presentationRestoredSiblingIndices;
+            public float[] presentationRestoredScales;
+            public bool[] forestFixedLocalPose;
+            public float[] forestLocalPositions, forestLocalRotations, forestLocalScales;
+            public string forestScope = "Controlled publication retains existing owned-body ancestry or, only for flat parentless bodies, adopts an owned unit-scale no-Rigidbody presentation pivot. Existing-forest ancestry requires unit scales; presentation leaves preserve exact positive finite original scales. Every changed-pose request computes all independent targets, writes publication roots, synchronizes once and reads every original native/Transform pose. Every retained parent/local invariant remains exact; admitted drift invalidates rather than falling back. forestEdges is ledger-node count including null-parent roots. presentationSetupWrites counts prepared leaves; forestWriteCalls/presentationPivotWriteCalls count world SetPositionAndRotation calls including initial pivot placement. World-scale readback has a frozen 1e-5 relative shape budget, separate from unchanged pose budgets.";
             public string poseReuseScope = "Controlled owner only: exact IEEE canonical craft-root position and normalized rotation with fixed admitted member locals permit target reuse. Native aggregate pose is the COM/principal frame and can change during a property refresh without moving that canonical root. Every request still validates all original native and Transform poses; only unchanged target recomputation, writes and SyncTransforms are omitted. Controlled maxPropertyPositionShift/maxPropertyRotationShift measure canonical root; quiet-pulse measures native root and remains eager.";
             public string publicationMode = "explicit-transform-and-native", propertyReductionMode = "reference";
             public bool originalAutoSyncTransforms, autoSyncTransformsUnchanged;
@@ -180,11 +201,23 @@ namespace KspContinuum
             public Quaternion NativeInertiaRotation;
             public Vector3 PublishedPosition;
             public Quaternion PublishedRotation;
+            public bool ForestRoot;
+            public Transform PresentationOriginalParent;
+            public int PresentationOriginalSibling;
+            public Vector3 PresentationOriginalScale;
+            public bool PresentationSnapshot;
         }
         sealed class PendingView
         {
             public Texture2D image;
             public string path;
+        }
+        sealed class ForestNode
+        {
+            public Transform transform, parent;
+            public Vector3 localPosition, localScale;
+            public Quaternion localRotation;
+            public bool fixedLocalPose;
         }
         [StructLayout(LayoutKind.Explicit)] struct PoseFloatBits
         {
@@ -206,6 +239,7 @@ namespace KspContinuum
                 Report.schema = "continuum-live-rigid-owner/v2"; Report.scenario = scenario;
                 Report.imageEncodingPolicy = "retained-readback-encode-after-capture";
                 Report.aggregatePoseFrame = "native-com-principal";
+                Report.forestStatus = "awaiting-initial-publication";
                 Report.scope = "Twelve simulated seconds of original pilot attitude/RCS input, LOW 4x physics warp and normal return. Fixed topology, no-contact vacuum, original identities and default-scene native aggregate. Rigid projection, zero damping and material velocity preservation at mass/COM changes are declared model choices. Fuel-flow momentum, contact, arbitrary mods, human control feel and FPS remain unqualified.";
             }
             bridge = new LiveRigidVesselBridge();
@@ -330,6 +364,7 @@ namespace KspContinuum
                             vessel.ctrlState.pitch == 0 && vessel.ctrlState.yaw == 0 && vessel.ctrlState.roll == 0 && vessel.ctrlState.X == 0 && vessel.ctrlState.Y == 0 && vessel.ctrlState.Z == 0 &&
                             TimeWarp.CurrentRate == 1 && TimeWarp.CurrentRateIndex == 0, "Controlled stock continuation changed.");
                         Report.postRestorationNativeSteps++; Report.aggregateRetired = retiredRoot == null;
+                        if (presentationRootAdmitted) Report.presentationPivotRetired = retiredPresentationPivot == null && presentationPivot == null;
                         Report.postRestorationSimulatedSeconds += Time.fixedDeltaTime;
                         Report.stockContinuationVerified = Report.postRestorationNativeSteps >= 2;
                     }
@@ -520,6 +555,7 @@ namespace KspContinuum
         {
             Eligible(); Need(vessel.parts.Count == parts.Length, "Part count changed.");
             if (controlled) Need(Physics.autoSyncTransforms == autoSyncTransforms, "Global physics synchronization setting changed.");
+            if (forestAdmitted) ValidateForest();
             if (driver != null)
             {
                 long start = Stopwatch.GetTimestamp();
@@ -660,6 +696,7 @@ namespace KspContinuum
                 else if (reason == "admission") Report.poseAdmissionRequests++;
                 else Need(false, "Unknown retained pose publication reason.");
                 Need(Physics.autoSyncTransforms == autoSyncTransforms, "Global physics synchronization setting changed during publication.");
+                if (forestAdmitted) ValidateForest();
                 if (retainedPoseReady && ExactPose(aggregatePosition, retainedAggregatePosition) && ExactPose(aggregateRotation, retainedAggregateRotation))
                 {
                     foreach (Member member in ordered) ValidatePublished(member, step);
@@ -678,17 +715,31 @@ namespace KspContinuum
                 member.PublishedPosition = position; member.PublishedRotation = rotation;
                 Report.publishPlanTicks += Stopwatch.GetTimestamp() - start;
                 start = Stopwatch.GetTimestamp();
-                member.Body.transform.SetPositionAndRotation(position, rotation);
+                bool write = !controlled || !forestAdmitted || !presentationRootAdmitted && member.ForestRoot;
+                if (write)
+                {
+                    member.Body.transform.SetPositionAndRotation(position, rotation);
+                    if (controlled) Report.forestWriteCalls++;
+                }
                 if (!controlled) { member.Body.position = position; member.Body.rotation = rotation; }
                 Report.publishWriteTicks += Stopwatch.GetTimestamp() - start;
                 if (!controlled) ValidatePublished(member, step);
             }
             if (controlled)
             {
+                if (presentationRootAdmitted)
+                {
+                    long writeStart = Stopwatch.GetTimestamp();
+                    presentationPivot.transform.SetPositionAndRotation(aggregatePosition, aggregateRotation);
+                    Report.publishWriteTicks += Stopwatch.GetTimestamp() - writeStart;
+                    Report.forestWriteCalls++; Report.presentationPivotWriteCalls++;
+                }
                 long start = Stopwatch.GetTimestamp();
                 try { Need(Physics.autoSyncTransforms == autoSyncTransforms, "Global physics synchronization setting changed during publication."); Physics.SyncTransforms(); }
                 finally { Report.publishSyncTicks += Stopwatch.GetTimestamp() - start; Report.publishSyncCalls++; }
                 foreach (Member member in ordered) ValidatePublished(member, step);
+                if (forestAdmitted) Report.forestMaterializations++;
+                if (!forestPrepared) PrepareForest();
                 retainedAggregatePosition = aggregatePosition; retainedAggregateRotation = aggregateRotation; retainedPoseReady = true;
                 Report.poseMaterializations++; Report.poseGeneration++; Report.poseMaterializationReason = reason;
             }
@@ -699,6 +750,223 @@ namespace KspContinuum
         { return ExactPose(a.x,b.x) && ExactPose(a.y,b.y) && ExactPose(a.z,b.z); }
         static bool ExactPose(Quaternion a, Quaternion b)
         { return ExactPose(a.x,b.x) && ExactPose(a.y,b.y) && ExactPose(a.z,b.z) && ExactPose(a.w,b.w); }
+        void PrepareForest()
+        {
+            forestPrepared = true; Report.forestInitialFullWrites = ordered.Count;
+            var owners = new Dictionary<Transform, Member>();
+            foreach (Member member in ordered)
+            {
+                Transform transform = member.Body.transform;
+                if (owners.ContainsKey(transform)) { ForestFallback("multiple-owned-bodies-on-one-transform"); return; }
+                owners.Add(transform, member);
+            }
+            var nodes = new Dictionary<Transform, ForestNode>();
+            var bodyIds = new int[ordered.Count]; var bodyTransformIds = new int[ordered.Count]; var rootIds = new int[ordered.Count];
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                Member member = ordered[i], forestRoot = member;
+                Transform transform = member.Body.transform;
+                int depth = 0;
+                for (Transform ancestor = transform.parent; ancestor != null; ancestor = ancestor.parent)
+                {
+                    Need(++depth <= 4096, "Owned transform ancestry exceeds bound.");
+                    Member parentOwner; if (owners.TryGetValue(ancestor, out parentOwner)) forestRoot = parentOwner;
+                }
+                member.ForestRoot = ReferenceEquals(forestRoot, member);
+                if (member.ForestRoot) Report.forestRoots++; else Report.forestDescendants++;
+                bodyIds[i] = member.Body.GetInstanceID(); rootIds[i] = forestRoot.Body.GetInstanceID();
+                bodyTransformIds[i] = transform.GetInstanceID();
+                for (Transform node = transform; node != null; node = node.parent)
+                {
+                    if (nodes.ContainsKey(node)) continue;
+                    Need(nodes.Count < 32768, "Owned forest transform bound exceeded.");
+                    bool fixedLocal = false;
+                    for (Transform ancestor = node.parent; ancestor != null; ancestor = ancestor.parent)
+                        if (owners.ContainsKey(ancestor)) { fixedLocal = true; break; }
+                    nodes.Add(node, new ForestNode { transform = node, parent = node.parent, localPosition = node.localPosition,
+                        localRotation = node.localRotation, localScale = node.localScale, fixedLocalPose = fixedLocal });
+                }
+            }
+            forestNodes = nodes.Values.OrderBy(node => node.transform.GetInstanceID()).ToArray();
+            Report.forestBodyIds = bodyIds; Report.forestBodyTransformIds = bodyTransformIds; Report.forestRootBodyIds = rootIds;
+            Report.forestTransformIds = forestNodes.Select(node => node.transform.GetInstanceID()).ToArray();
+            Report.forestParentIds = forestNodes.Select(node => node.parent == null ? 0 : node.parent.GetInstanceID()).ToArray();
+            Report.forestFixedLocalPose = forestNodes.Select(node => node.fixedLocalPose).ToArray();
+            Report.forestLocalPositions = new float[forestNodes.Length * 3]; Report.forestLocalRotations = new float[forestNodes.Length * 4]; Report.forestLocalScales = new float[forestNodes.Length * 3];
+            for (int i = 0; i < forestNodes.Length; i++)
+            {
+                ForestNode node = forestNodes[i];
+                Report.forestLocalPositions[i*3] = node.localPosition.x; Report.forestLocalPositions[i*3+1] = node.localPosition.y; Report.forestLocalPositions[i*3+2] = node.localPosition.z;
+                Report.forestLocalRotations[i*4] = node.localRotation.x; Report.forestLocalRotations[i*4+1] = node.localRotation.y; Report.forestLocalRotations[i*4+2] = node.localRotation.z; Report.forestLocalRotations[i*4+3] = node.localRotation.w;
+                Report.forestLocalScales[i*3] = node.localScale.x; Report.forestLocalScales[i*3+1] = node.localScale.y; Report.forestLocalScales[i*3+2] = node.localScale.z;
+            }
+            Report.forestEdges = forestNodes.Length;
+            if (Report.forestDescendants == 0 && ordered.All(member => member.Body.transform.parent == null))
+            {
+                PreparePresentationRoot(); return;
+            }
+            if (forestNodes.Any(node => !ExactPose(node.localScale, Vector3.one))) { ForestFallback("non-unit-scale-in-owned-transform-ancestry"); return; }
+            if (Report.forestDescendants == 0) { ForestFallback("no-owned-body-descendants"); return; }
+            forestAdmitted = true; Report.forestStatus = "admitted";
+            ValidateForest();
+        }
+        void ForestFallback(string reason)
+        { forestAdmitted = false; Report.forestStatus = "eager-fallback"; Report.forestFallbackReason = reason; }
+        void PreparePresentationRoot()
+        {
+            Need(controlled && ordered.All(member => member.Body.transform.parent == null), "Presentation root requires the cold flat parentless body layout.");
+            if (ordered.Any(member => !Finite(member.Body.transform.localScale) || member.Body.transform.localScale.x <= 0 || member.Body.transform.localScale.y <= 0 || member.Body.transform.localScale.z <= 0))
+            { ForestFallback("nonpositive-or-nonfinite-presentation-leaf-scale"); return; }
+            Report.forestMode = "owned-presentation-root";
+            Report.presentationOriginalParentIds = new int[ordered.Count]; Report.presentationOriginalSiblingIndices = new int[ordered.Count];
+            Report.presentationOriginalScales = new float[ordered.Count * 3];
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                Member member = ordered[i]; Transform transform = member.Body.transform;
+                member.PresentationOriginalParent = transform.parent; member.PresentationOriginalSibling = transform.GetSiblingIndex(); member.PresentationOriginalScale = transform.localScale;
+                Need(Finite(member.PresentationOriginalScale), "Presentation leaf scale is nonfinite.");
+                member.PresentationSnapshot = true;
+                Report.presentationOriginalParentIds[i] = 0; Report.presentationOriginalSiblingIndices[i] = member.PresentationOriginalSibling;
+                Report.presentationOriginalScales[i*3] = member.PresentationOriginalScale.x; Report.presentationOriginalScales[i*3+1] = member.PresentationOriginalScale.y; Report.presentationOriginalScales[i*3+2] = member.PresentationOriginalScale.z;
+            }
+            presentationPivot = new GameObject("Continuum owned craft presentation");
+            presentationRootAdmitted = true;
+            try
+            {
+                presentationPivot.transform.SetPositionAndRotation(canonicalRootPosition, canonicalRootRotation); presentationPivot.transform.localScale = Vector3.one;
+                Report.forestWriteCalls++; Report.presentationPivotWriteCalls++;
+                Report.presentationPivotId = presentationPivot.GetInstanceID(); Report.presentationPivotTransformId = presentationPivot.transform.GetInstanceID();
+                foreach (Member member in ordered)
+                {
+                    Transform transform = member.Body.transform;
+                    transform.SetParent(presentationPivot.transform, false);
+                    transform.localPosition = member.Position; transform.localRotation = member.Rotation; transform.localScale = member.PresentationOriginalScale;
+                    member.ForestRoot = false; Report.presentationSetupWrites++;
+                }
+                var nodes = new List<ForestNode>(ordered.Count + 1);
+                Transform pivot = presentationPivot.transform;
+                nodes.Add(new ForestNode { transform = pivot, parent = null, localPosition = pivot.localPosition, localRotation = pivot.localRotation, localScale = pivot.localScale, fixedLocalPose = false });
+                foreach (Member member in ordered)
+                {
+                    Transform transform = member.Body.transform;
+                    nodes.Add(new ForestNode { transform = transform, parent = pivot, localPosition = transform.localPosition, localRotation = transform.localRotation, localScale = transform.localScale, fixedLocalPose = true });
+                }
+                forestNodes = nodes.OrderBy(node => node.transform.GetInstanceID()).ToArray();
+                Report.forestRoots = 1; Report.forestDescendants = ordered.Count; Report.forestEdges = forestNodes.Length;
+                Report.forestRootBodyIds = new int[ordered.Count];
+                Report.forestRootTransformIds = Enumerable.Repeat(Report.presentationPivotTransformId, ordered.Count).ToArray();
+                ExportForestNodes();
+                forestAdmitted = true; Report.forestStatus = "admitted"; Report.forestFallbackReason = null;
+                ValidateForest();
+                long start = Stopwatch.GetTimestamp();
+                try { Physics.SyncTransforms(); }
+                finally { Report.publishSyncTicks += Stopwatch.GetTimestamp() - start; Report.publishSyncCalls++; }
+                foreach (Member member in ordered) ValidatePublished(member, null);
+            }
+            catch { Report.forestStatus = "invalid-presentation-setup"; throw; }
+        }
+        void ExportForestNodes()
+        {
+            Report.forestTransformIds = forestNodes.Select(node => node.transform.GetInstanceID()).ToArray();
+            Report.forestParentIds = forestNodes.Select(node => node.parent == null ? 0 : node.parent.GetInstanceID()).ToArray();
+            Report.forestFixedLocalPose = forestNodes.Select(node => node.fixedLocalPose).ToArray();
+            Report.forestLocalPositions = new float[forestNodes.Length * 3]; Report.forestLocalRotations = new float[forestNodes.Length * 4]; Report.forestLocalScales = new float[forestNodes.Length * 3];
+            for (int i = 0; i < forestNodes.Length; i++)
+            {
+                ForestNode node = forestNodes[i];
+                Report.forestLocalPositions[i*3] = node.localPosition.x; Report.forestLocalPositions[i*3+1] = node.localPosition.y; Report.forestLocalPositions[i*3+2] = node.localPosition.z;
+                Report.forestLocalRotations[i*4] = node.localRotation.x; Report.forestLocalRotations[i*4+1] = node.localRotation.y; Report.forestLocalRotations[i*4+2] = node.localRotation.z; Report.forestLocalRotations[i*4+3] = node.localRotation.w;
+                Report.forestLocalScales[i*3] = node.localScale.x; Report.forestLocalScales[i*3+1] = node.localScale.y; Report.forestLocalScales[i*3+2] = node.localScale.z;
+            }
+        }
+        void RestorePresentationParents(List<string> faults)
+        {
+            if (!presentationRootAdmitted) return;
+            bool complete = true;
+            Report.presentationRestoredBodyIds = new int[ordered.Count]; Report.presentationRestoredParentIds = new int[ordered.Count];
+            Report.presentationRestoredSiblingIndices = new int[ordered.Count]; Report.presentationRestoredScales = new float[ordered.Count*3];
+            foreach (Member member in ordered)
+            {
+                if (!member.PresentationSnapshot) continue;
+                try
+                {
+                    Need(member.Body != null, "Presentation body destroyed during restoration.");
+                    Transform transform = member.Body.transform;
+                    transform.SetParent(member.PresentationOriginalParent, true); transform.localScale = member.PresentationOriginalScale;
+                }
+                catch (Exception error) { complete = false; faults.Add("presentation-parent:" + member.LocalId + ":" + error.Message); }
+            }
+            foreach (Member member in ordered.OrderBy(member => member.PresentationOriginalSibling))
+            {
+                if (!member.PresentationSnapshot) continue;
+                try { Need(member.Body != null, "Presentation sibling owner destroyed."); member.Body.transform.SetSiblingIndex(member.PresentationOriginalSibling); }
+                catch (Exception error) { complete = false; faults.Add("presentation-sibling:" + member.LocalId + ":" + error.Message); }
+            }
+            foreach (Member member in ordered)
+            {
+                if (!member.PresentationSnapshot) continue;
+                try
+                {
+                    Need(member.Body != null, "Presentation pose owner destroyed.");
+                    Vector3 position = motionInitialized ? canonicalRootPosition + canonicalRootRotation * member.Position : member.InitialPosition;
+                    Quaternion rotation = motionInitialized ? Normalized(canonicalRootRotation * member.Rotation) : member.InitialRotation;
+                    member.Body.transform.SetPositionAndRotation(position, rotation); member.Body.position = position; member.Body.rotation = rotation;
+                }
+                catch (Exception error) { complete = false; faults.Add("presentation-full-pose:" + member.LocalId + ":" + error.Message); }
+            }
+            try { Physics.SyncTransforms(); }
+            catch (Exception error) { complete = false; faults.Add("presentation-restoration-sync:" + error.Message); }
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                Member member = ordered[i];
+                if (!member.PresentationSnapshot) continue;
+                bool restored = false;
+                try
+                {
+                    if (member.Body != null)
+                    {
+                        Transform transform = member.Body.transform; Vector3 scale = transform.localScale;
+                        Report.presentationRestoredBodyIds[i] = member.Body.GetInstanceID(); Report.presentationRestoredParentIds[i] = transform.parent == null ? 0 : transform.parent.GetInstanceID();
+                        Report.presentationRestoredSiblingIndices[i] = transform.GetSiblingIndex();
+                        Report.presentationRestoredScales[i*3] = scale.x; Report.presentationRestoredScales[i*3+1] = scale.y; Report.presentationRestoredScales[i*3+2] = scale.z;
+                        Vector3 position = motionInitialized ? canonicalRootPosition + canonicalRootRotation * member.Position : member.InitialPosition;
+                        Quaternion rotation = motionInitialized ? Normalized(canonicalRootRotation * member.Rotation) : member.InitialRotation;
+                        restored = ReferenceEquals(member.Body.transform.parent, member.PresentationOriginalParent) && member.Body.transform.GetSiblingIndex() == member.PresentationOriginalSibling && ExactPose(member.Body.transform.localScale, member.PresentationOriginalScale) &&
+                            (member.Body.position - position).magnitude <= 1e-4 && (member.Body.transform.position - position).magnitude <= 1e-4 &&
+                            RotationError(member.Body.rotation, rotation) <= .002 && RotationError(member.Body.transform.rotation, rotation) <= .002;
+                        ValidatePresentationScale(member);
+                    }
+                }
+                catch (Exception error) { restored = false; faults.Add("presentation-restoration-readback-error:" + member.LocalId + ":" + error.Message); }
+                if (!restored) { complete = false; faults.Add("presentation-restoration-readback:" + member.LocalId); }
+            }
+            Report.presentationParentsRestored = complete;
+            forestAdmitted = false;
+            if (presentationPivot != null)
+            {
+                if (presentationPivot.transform.childCount == 0)
+                {
+                    retiredPresentationPivot = presentationPivot; UnityEngine.Object.Destroy(presentationPivot); presentationPivot = null;
+                }
+                else { complete = false; Report.presentationParentsRestored = false; faults.Add("presentation-pivot-still-has-children"); }
+            }
+            Report.presentationPivotRetired = retiredPresentationPivot == null && presentationPivot == null;
+        }
+        void ValidateForest()
+        {
+            Report.forestInvariantChecks++;
+            if (presentationRootAdmitted)
+                Need(presentationPivot != null && presentationPivot.transform.childCount == ordered.Count, "Owned presentation root/leaf count changed.");
+            foreach (ForestNode node in forestNodes)
+            {
+                Need(node.transform != null && ReferenceEquals(node.transform.parent, node.parent) && ExactPose(node.transform.localScale, node.localScale), "Admitted forest parent/scale identity changed.");
+                if (node.fixedLocalPose)
+                    if (!(ExactPose(node.transform.localPosition, node.localPosition) && ExactPose(node.transform.localRotation, node.localRotation)))
+                        Need(false, "Admitted descendant/intermediate local pose changed: transform=" + node.transform.GetInstanceID() +
+                            " expectedPosition=" + node.localPosition.ToString("F8") + " actualPosition=" + node.transform.localPosition.ToString("F8") +
+                            " expectedRotation=" + node.localRotation.ToString("F8") + " actualRotation=" + node.transform.localRotation.ToString("F8"));
+            }
+        }
         void ValidatePublished(Member member, Step step)
         {
             long start = Stopwatch.GetTimestamp();
@@ -710,8 +978,22 @@ namespace KspContinuum
                 Report.maxProxyPositionError = Math.Max(Report.maxProxyPositionError, pe); Report.maxProxyRotationError = Math.Max(Report.maxProxyRotationError, re);
                 if (step != null) { step.proxyPositionError = Math.Max(step.proxyPositionError, pe); step.proxyRotationError = Math.Max(step.proxyRotationError, re); if (!member.Body.isKinematic) step.dynamicProxies++; }
                 Need(pe <= 1e-4 && re <= .002, "Published native/Transform pose does not match its retained target.");
+                if (presentationRootAdmitted) ValidatePresentationScale(member);
             }
-            finally { Report.publishReadbackTicks += Stopwatch.GetTimestamp() - start; Report.publishedMembers++; }
+            finally { Report.publishReadbackTicks += Stopwatch.GetTimestamp() - start; Report.publishedMembers++; if (forestAdmitted) Report.forestReadbackChecks++; }
+        }
+        void ValidatePresentationScale(Member member)
+        {
+            try
+            {
+                Vector3 actual = member.Body.transform.lossyScale, expected = member.PresentationOriginalScale;
+                Need(Finite(actual) && actual.x > 0 && actual.y > 0 && actual.z > 0, "Presentation world scale is nonpositive/nonfinite.");
+                double error = Math.Max(Math.Abs((double)actual.x-expected.x)/expected.x,
+                    Math.Max(Math.Abs((double)actual.y-expected.y)/expected.y,Math.Abs((double)actual.z-expected.z)/expected.z));
+                Report.maxPresentationWorldScaleRelativeError = Math.Max(Report.maxPresentationWorldScaleRelativeError,error);
+                Need(error <= 1e-5, "Presentation world scale exceeds frozen relative shape budget.");
+            }
+            finally { Report.presentationScaleReadbacks++; }
         }
         RigidAssemblyMember Properties(Member member)
         {
@@ -939,6 +1221,7 @@ namespace KspContinuum
                 try { Report.restoredAggregate = State(body, false); Report.ownerEndUt = Planetarium.GetUniversalTime(); }
                 catch (Exception error) { faults.Add("aggregate-state:" + error.Message); }
             }
+            RestorePresentationParents(faults);
             var restored = new List<RestoredRow>();
             foreach (Member member in ordered)
             {
@@ -1042,11 +1325,13 @@ namespace KspContinuum
             Report.autoSyncTransformsUnchanged = !controlled || Physics.autoSyncTransforms == autoSyncTransforms;
             Report.screenshots = screenshots.ToArray();
             Report.aggregateRetired = retiredRoot == null && Report.originalBodiesRestored;
+            if (presentationRootAdmitted) Report.presentationPivotRetired = retiredPresentationPivot == null && presentationPivot == null;
             Report.cleanupStatus = Report.originalBodiesRestored && Report.aggregateRetired && Report.bridgeReleased && !frameInstalled ? "restored-original-ownership" : "incomplete";
             bool stagesComplete = !controlled || Report.stageCosts != null && Report.stageFaults == 0 && Report.stageHooksRemoved &&
                 Report.stageCosts.All(row => row.installed && row.removed && row.activeCalls == 0 && row.originalExceptions == 0);
             if (controlled) Report.stageStatus = stagesComplete ? "observed" : "invalid";
-            bool treatmentComplete = controlled ? driver != null && driver.Report.passed && steps.Sum(step => (double)step.dt) >= 11.99 &&
+            bool presentationComplete = !presentationRootAdmitted || Report.presentationParentsRestored && Report.presentationPivotRetired;
+            bool treatmentComplete = controlled ? driver != null && driver.Report.passed && presentationComplete && steps.Sum(step => (double)step.dt) >= 11.99 &&
                 Report.postRestorationSimulatedSeconds >= 1.9999 && screenshots.Count == captureTimes.Length && Report.imageEncodingStatus == "completed" && Report.pendingViewCount == 0 : Report.pulseQueued;
             Report.passed = Report.status != "invalid" && stagesComplete && Report.autoSyncTransformsUnchanged && steps.Count >= 10 && Report.postRestorationNativeSteps >= 2 && Report.stockContinuationVerified && treatmentComplete && screenshotCaptured && Report.cleanupStatus == "restored-original-ownership" &&
                 Report.velocityReads > 0 && Report.accelerationCalls > 0 && Report.maxProxyPositionError <= 1e-4 && Report.maxProxyRotationError <= .002;
