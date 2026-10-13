@@ -55,6 +55,12 @@ Time warp requires a regime choice: bounded coast propagation, internal resource
 
 ## Next implementation and resolving questions
 
+The current delivery is the [whole-runtime reconstruction and redesign](whole-runtime-redesign.md).
+Compile the retained world/vessel state, topology, systems scheduling, physics,
+presentation and compatibility boundaries as one coordinated implementation
+package. The earlier aero-first sequence below records proven donors and
+unfinished capabilities; it is superseded as an execution order.
+
 Finish the retained ordered aero input/command transaction and its real publication owner. Build the compact bank around actual provider and publication dependencies, with enforced refresh/revision semantics. Use it as the first complete consumer of the shared support, then integrate further systems against the same ownership and measurement principles. Extract a library where repeated real use establishes the invariant.
 
 Advance rigid aggregate motion and bulk part-system execution as connected fronts. The next rigid boundary is an admitted native compound body with real mass/force ownership and an actual separation transaction. The next systems boundary completes providers/acquisition/queued inputs and ordered publication beyond the now-executable dry ECS pass. Optional compliant solver comparisons and CPU-versus-GPU crossover remain research paths without gating the selected rigid experience. New fixtures complement real flights; they do not replace gameplay qualification. Do not rerun unchanged FPS arms to answer an algorithm question.

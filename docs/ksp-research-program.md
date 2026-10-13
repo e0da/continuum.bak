@@ -1,6 +1,11 @@
 # Local KSP research program
 
-Continuum supports local reconstruction and performance research. The milestones are a trustworthy lab, controlled managed reconstruction, faster playable KSP, private native modern-Unity KSP, and interchangeable subsystems. They are independently qualified capabilities; a full replacement runtime is an optional destination.
+Continuum's research target is a better implementation of the KSP experience,
+including complete runtime replacement where it serves that outcome. The
+milestones are a trustworthy lab, controlled managed reconstruction, faster
+playable KSP, private native modern-Unity KSP, and interchangeable subsystems.
+These are useful checkpoints within the larger program. The current execution
+scope is [whole-runtime reconstruction and coordinated redesign](whole-runtime-redesign.md).
 
 Continuum and Gimbal share a longer-term goal: support Kerbal-like, toy and realism experiences. The [project boundary](continuum-gimbal-boundary.md) is provisional. Continuum may replace both KSP's runtime systems and Unity, then support further Gimbal capabilities; findings and original components may also move in the other direction. Shared components, a common runtime or a repository merger remain available without being prerequisites. Each experience retains its own behavior, fidelity and performance contract.
 
@@ -21,6 +26,8 @@ The offline [.NET flight fixture tool](../tools/KspContinuum.FlightFixture/READM
 | `resolve` | `--instance OWNED_INSTANCE --output NEW_JSON` plus existing launch switches | Freeze startup/flight selection and required binary, settings, checkpoint and prepared-metadata identities without starting KSP. |
 | `index` | `--assembly DLL --ilspy PINNED_ILSPY --output NEW_DIRECTORY` | Metadata, identities, references, native bindings and decompiled project; retains failed decompilation evidence. |
 | `index` source | `--project PROJECT.csproj --output NEW_JSON` | Freeze project inputs by tree hash, explicitly excluding compiler `bin`/`obj` outputs. |
+| Whole-installation metadata/IL map | `dotnet run --project tools/KspContinuum.RuntimeMap -c Release -- map INSTANCE NEW_DIRECTORY` | All discovered managed identities, types, fields, declared calls, field accesses, dynamic-resolution obligations and native binary headers; game/launcher closures are separate. |
+| Whole-installation source atlas | `dotnet run --project tools/KspContinuum.SourceAtlas -c Release -- --instance INSTANCE --ilspy PINNED_ILSPY --output NEW_DIRECTORY` | Bounded parallel source recovery, input/source hashes, preserved errors; exact-hash incremental reuse through `--reuse-atlas` or legacy core `--reuse-index`. |
 | `recompose` | `--assembly DLL --sha256 INPUT_SHA --output NEW_DIRECTORY` | Unchanged unsigned-assembly rewrite with API/normalized-IL checks. |
 | `recompose` probe | Add `--method TYPE.METHOD --suffix TEXT` | Append text to every return of one static parameterless string method. This is a local visible-version canary. |
 | `recompose` source | Add `--project PROJECT.csproj --project-sha256 TREE_SHA` | Hash-guarded C# rebuild to private output with log, 15-minute bound and terminal receipt. Reference and runtime behavior qualification remain separate. |

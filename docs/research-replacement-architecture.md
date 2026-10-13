@@ -1,5 +1,9 @@
 # Replace expensive work, not just its implementation
 
+The current implementation scope is the [whole-runtime redesign](whole-runtime-redesign.md).
+The observations below remain evidence for it. Method-level findings no longer
+define delivery boundaries or require separate optimization cycles.
+
 Continuum's direction is to replace the systems that create avoidable work. A small optimization is useful when it reveals a boundary or supplies a component of that replacement. A smaller draw count, native implementation or asynchronous API is not the outcome by itself.
 
 ## What the current evidence says
