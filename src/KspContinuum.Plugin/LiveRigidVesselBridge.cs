@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -26,6 +27,8 @@ namespace KspContinuum
         readonly Dictionary<MethodBase,Plan> plans=new Dictionary<MethodBase,Plan>();
         readonly Dictionary<MethodBase,FrameHooks> frames=new Dictionary<MethodBase,FrameHooks>();
         readonly List<MethodBase> attempted=new List<MethodBase>();
+        HarmonyPatchStateCertificate ownershipCertificate;
+        bool ownershipSealed;
         bool installing,cleaning,disposed;
         public bool Installed {get;private set;}
         public int PatchedMethods {get;private set;}
@@ -36,6 +39,13 @@ namespace KspContinuum
         public string[] CleanupErrors {get;private set;}=new string[0];
         public CallsiteRow[] SourceCallsites {get;private set;}=new CallsiteRow[0];
         public static string LastFailureCleanupStatus {get;private set;}
+        public string OwnershipSealStatus {get;private set;}="not-sealed";
+        public string OwnershipSealDetail {get;private set;}
+        public long OwnershipSealTicks {get;private set;}
+        public int SealedPatchMethods {get{return ownershipCertificate==null?0:ownershipCertificate.MethodCount;}}
+        public int SealedPatchBytes {get{return ownershipCertificate==null?0:ownershipCertificate.SerializedBytes;}}
+        public long RawPatchStateChecks {get{return ownershipCertificate==null?0:ownershipCertificate.Checks;}}
+        public long RawPatchStateComparedBytes {get{return ownershipCertificate==null?0:ownershipCertificate.ComparedBytes;}}
         [Serializable] public sealed class CallsiteRow
         {
             public string assembly,assemblySha256,assemblyMvid,declaringType,method,ilSha256;
@@ -43,7 +53,7 @@ namespace KspContinuum
             public string[] replacedCalls,unroutedCalls;
             public bool patched,removed;
         }
-        sealed class Plan {internal MethodBase method;internal CallsiteRow row;internal int expected;internal string il;internal string[] calls;}
+        sealed class Plan {internal MethodBase method;internal CallsiteRow row;internal int expected;internal string il;internal byte[] ilBytes;internal string[] calls;}
         sealed class FrameHooks {internal string owner;internal MethodInfo prefix,finalizer;}
         static void Need(bool pass,string why) {if(!pass)throw new InvalidOperationException(why);}
         static string Hash(byte[] bytes) {using(var sha=SHA256.Create())return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-","").ToLowerInvariant();}
@@ -108,7 +118,7 @@ namespace KspContinuum
                         if(Same(method,Integrate))Need(accelerations==2&&calls.Count==5&&calls.Count(x=>x.EndsWith(" -> Force",StringComparison.Ordinal))==1&&calls.Count(x=>x.EndsWith(" -> Torque",StringComparison.Ordinal))==1&&calls.Count(x=>x.EndsWith(" -> PointForce",StringComparison.Ordinal))==1,"Pinned Integrate own/servo acceleration and queued-force callsite shape differs.");
                         if(calls.Count==0&&others.Count==0)continue;
                         var row=new CallsiteRow {assembly=assembly.GetName().Name,assemblySha256=sha,assemblyMvid=method.Module.ModuleVersionId.ToString("D"),declaringType=type.FullName,method=method.Name,metadataToken=method.MetadataToken,ilSha256=Hash(body.GetILAsByteArray()),instructionCount=code.Length,expectedReplacements=calls.Count,replacedCalls=calls.ToArray(),unroutedCalls=others.ToArray()};rows.Add(row);
-                        if(calls.Count>0){Need(plans.Count<MaxSelected,"Live rigid selected method bound exceeded.");Need(Harmony.GetPatchInfo(method)?.Owners.Any()!=true,"Live rigid callsite already patched: "+method);plans.Add(method,new Plan {method=method,row=row,expected=calls.Count,il=row.ilSha256,calls=row.replacedCalls});}
+                        if(calls.Count>0){Need(plans.Count<MaxSelected,"Live rigid selected method bound exceeded.");Need(Harmony.GetPatchInfo(method)?.Owners.Any()!=true,"Live rigid callsite already patched: "+method);plans.Add(method,new Plan {method=method,row=row,expected=calls.Count,il=row.ilSha256,ilBytes=(byte[])body.GetILAsByteArray().Clone(),calls=row.replacedCalls});}
                     }
                     Need(FileHash(assembly.Location)==sha,"Live rigid original assembly file changed during scan.");
                 }
@@ -138,7 +148,7 @@ namespace KspContinuum
         }
         public bool DeclareFrameHooks(MethodBase target,string ownerId,MethodInfo prefix,MethodInfo finalizer)
         {
-            Need(Installed&&!disposed&&Thread.CurrentThread.ManagedThreadId==thread,"Frame hooks must be declared on installed bridge thread.");
+            Need(Installed&&!disposed&&!ownershipSealed&&Thread.CurrentThread.ManagedThreadId==thread,"Frame hooks must be declared before the ownership seal on installed bridge thread.");
             if(!plans.ContainsKey(target))return false;
             Need(!string.IsNullOrEmpty(ownerId)&&ownerId!=PatchOwner&&(prefix!=null||finalizer!=null)&&!frames.ContainsKey(target)&&Owned(target),"Invalid/repeated live rigid frame declaration.");
             foreach(MethodInfo method in new[]{prefix,finalizer})if(method!=null)Need(method.IsStatic&&method.DeclaringType==typeof(LiveRigidVesselOwner),"Frame hook must belong to the exact live rigid owner facade.");
@@ -147,8 +157,36 @@ namespace KspContinuum
         public bool ExactInstalled()
         {
             if(!Installed||disposed||!ReferenceEquals(active,this)||Thread.CurrentThread.ManagedThreadId!=thread)return false;
+            if(ownershipCertificate!=null)
+            {
+                if(!ownershipCertificate.Matches()){OwnershipSealStatus="raw-state-changed";OwnershipSealDetail=ownershipCertificate.Failure;return false;}
+                foreach(Plan plan in plans.Values)if(!HarmonyPatchStateCertificate.SameBytes(plan.method.GetMethodBody().GetILAsByteArray(),plan.ilBytes))
+                {ownershipCertificate.Fail("Original caller IL bytes changed: "+plan.method);OwnershipSealStatus="raw-state-changed";OwnershipSealDetail=ownershipCertificate.Failure;return false;}
+                return true;
+            }
+            return ExactInstalledFull();
+        }
+        bool ExactInstalledFull()
+        {
             foreach(MethodInfo api in Routes.Keys)if(Harmony.GetPatchInfo(api)?.Owners.Any()==true)return false;
-            foreach(Plan plan in plans.Values)if(!Owned(plan.method)||Hash(plan.method.GetMethodBody().GetILAsByteArray())!=plan.il)return false;return true;
+            foreach(Plan plan in plans.Values)if(!Owned(plan.method)||Hash(plan.method.GetMethodBody().GetILAsByteArray())!=plan.il)return false;
+            if(ownershipSealed)foreach(MethodBase method in frames.Keys)if(!HasExactFrameHooks(method))return false;
+            return true;
+        }
+        public void SealOwnership(string runId=null)
+        {
+            Need(Installed&&!disposed&&!ownershipSealed&&ReferenceEquals(active,this)&&Thread.CurrentThread.ManagedThreadId==thread,"Ownership must be sealed once after all hooks on the installed bridge thread.");
+            long begin=Stopwatch.GetTimestamp();
+            Action qualify=()=>
+            {
+                Need(ExactInstalledFull(),"Live rigid final ownership/IL qualification failed.");
+                foreach(MethodBase method in frames.Keys)Need(HasExactFrameHooks(method),"Declared live rigid frame hooks are not fully installed: "+method);
+            };
+            HarmonyPatchStateCertificate.RunRequestedWitness(runId,plans.Keys.Concat<MethodBase>(Routes.Keys),qualify);
+            string unsupported;
+            if(HarmonyPatchStateCertificate.TrySeal(plans.Keys.Concat<MethodBase>(Routes.Keys),qualify,out ownershipCertificate,out unsupported))OwnershipSealStatus="raw-state-sealed";
+            else {qualify();OwnershipSealStatus="full-graph-fallback";OwnershipSealDetail=unsupported;}
+            ownershipSealed=true;OwnershipSealTicks=Stopwatch.GetTimestamp()-begin;
         }
         public bool HasExactFrameHooks(MethodBase target)
         {

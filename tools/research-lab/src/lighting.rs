@@ -2,7 +2,7 @@ use crate::Result;
 use serde_json::{json, Value};
 
 pub fn validate(mode: &str, receipt: &Value, capture: &Value, run_id: &str, pid: u32, entry: &Value) -> Result<Value> {
-    let phase = match mode { "frontlit" => 0.0, "three-quarter-lit" | "three-quarter-overview" => 45.0, "side-lit" => 75.0, "backlit" => 150.0, _ => return Err("unknown physical lighting preset".into()) };
+    let phase = match mode { "frontlit" => 0.0, "three-quarter-lit" | "three-quarter-overview" | "three-quarter-inspection" => 45.0, "side-lit" => 75.0, "backlit" => 150.0, _ => return Err("unknown physical lighting preset".into()) };
     if receipt["schema"] != "continuum-flight-lighting/v1" || receipt["mode"] != mode
         || receipt["runId"] != run_id || receipt["processId"].as_u64() != Some(pid as u64)
         || receipt["vesselId"] != capture["frames"][0]["vesselId"] || receipt["parts"] != capture["frames"][0]["parts"]
@@ -41,10 +41,16 @@ pub fn validate(mode: &str, receipt: &Value, capture: &Value, run_id: &str, pid:
             return Err("three-quarter lighting framing admission absent or invalid".into());
         }
     }
-    if entry["lightingPlacement"] != "sunward-entry-at-source-epoch/v1"
+    if mode == "three-quarter-inspection" && (number(receipt, "cameraDistanceMeters")? != 50.0
+        || !(0.0..90.0).contains(&number(receipt, "bodyAngularRadiusDegrees")?)
+        || !(0.0..=180.0).contains(&number(receipt, "bodyLimbViewAngleDegrees")?)
+        || !(0.0..=180.0).contains(&number(receipt, "maxCaptureBodyLimbViewAngleDegrees")?)
+        || !receipt["framingPolicy"].as_str().unwrap_or("").starts_with("Camera-only root inspection:"))
+    { return Err("orbital inspection framing or recorded body geometry invalid".into()); }
+    if mode != "three-quarter-inspection" && (entry["lightingPlacement"] != "sunward-entry-at-source-epoch/v1"
         || !(0.0..=0.0001).contains(&number(entry, "preparedSolarAlignmentDegrees")?)
         || number(entry, "placementSpeedErrorMetersPerSecond")?.abs() > 0.0001
-        || number(entry, "placementRadialSpeedErrorMetersPerSecond")?.abs() > 0.0001
+        || number(entry, "placementRadialSpeedErrorMetersPerSecond")?.abs() > 0.0001)
     { return Err("lighting entry preparation did not preserve declared orbital invariants".into()); }
     for field in ["toSun", "bodyRadial", "cameraOffset", "lightRayDirection"] {
         let vector = receipt[field].as_array().filter(|v| v.len() == 3).ok_or("lighting direction witness absent")?;
@@ -52,6 +58,6 @@ pub fn validate(mode: &str, receipt: &Value, capture: &Value, run_id: &str, pid:
         for x in vector { square += x.as_f64().filter(|x| x.is_finite()).ok_or("lighting direction is nonfinite")?.powi(2); }
         if (square - 1.0).abs() > 1e-5 { return Err("lighting direction is not normalized".into()); }
     }
-    Ok(json!({"schema":"continuum-flight-lighting-summary/v1","recipe":mode,"receipt":receipt,"placement":entry["lightingPlacement"],
-        "qualification":"Physical preset and restoration observed for this capture; actual image inspection is a separate gate. Sunward entry is a new workload treatment; observer overhead unqualified."}))
+    Ok(json!({"schema":"continuum-flight-lighting-summary/v1","recipe":mode,"receipt":receipt,"placement":if mode=="three-quarter-inspection" {json!("camera-only-frozen-orbit")} else {entry["lightingPlacement"].clone()},
+        "qualification":if mode=="three-quarter-inspection" {"Camera-only orbital inspection, sunlight/pose/restoration observed. Controlled normal/LOW4 clock admitted separately; physical orbit unchanged. Presentation treatment differs from older fixed cameras; no matched rendering performance claim."} else {"Physical preset and restoration observed for this capture; actual image inspection is a separate gate. Sunward entry is a new workload treatment; observer overhead unqualified."}}))
 }

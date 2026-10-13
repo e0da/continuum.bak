@@ -38,6 +38,45 @@ The controlled stock-camera observer also tracks exact original depth requests a
 
 Three controlled stage envelopes now measure the original active `FlightIntegrator.FixedUpdate`, root-only `Integrate(Part)` and bound MechJeb `VesselState.AnalyzeParts`. Exact assembly/body/instance and installed/removed graph evidence accompany their counters. Original exceptions propagate unchanged. Integrate is nested in FI; inclusive costs are not additive. Its timing hook still dispatches on recursive child calls even though only the root is timed, so these are intrusive diagnostic observations. Positive calls establish reached coverage; zero calls do not mean zero cost.
 
-The first three-envelope observation reached each stage 451 times: FI averaged 1.695 ms, nested root integration 0.767 ms and MechJeb analysis 0.502 ms. These stages do not explain the largest managed-phase remainder. Sampled configurations are separate observations, not clean performance arms; their wall costs can include suspension and observer effects. Native stack addresses still need a same-process Mono JIT map before attributing the unnamed managed work.
+The first three-envelope observation reached each stage 451 times: FI averaged 1.695 ms, nested root integration 0.767 ms and MechJeb analysis 0.502 ms. These stages do not explain the largest managed-phase remainder. Sampled configurations are separate observations, not clean performance arms; their wall costs can include suspension and observer effects. The subsequent same-process Mono map identified repeated owner publication and patch-state checks; its inclusive stack presence does not establish exclusive method CPU time.
 
 Controlled images retain at most four original end-of-frame `ReadPixels`/`Apply` results. PNG encoding and fresh-file writing happen after capture closes, using those retained pixels rather than re-rendering. All textures are released even on failure; interruption while capture remains active discards pending pixels and cannot qualify. Completion still requires all four real files. The quiet-pulse path keeps inline encoding. Readback remains in-window overhead. A qualified native observation encoded four images in 412.988 ms and wrote them in 3.420 ms after its capture-end timestamp; this removes diagnostic contamination, not production gameplay work.
+
+Controlled geometry now has a retained craft-root frame distinct from the
+native aggregate's COM/principal-axis frame. The native body has zero local
+COM and identity inertia rotation; its world pose is `p_root + R_root C` and
+`R_root Q_principal`. Property updates preserve the canonical root pose exactly,
+remap the native mass/COM/inertia frame, and transport COM velocity by
+`omega × (newCOM - oldCOM)`. After native physics the inverse mapping updates
+the canonical pose. Force lever arms, point velocity, native receipts and world
+inertia remain physical-frame quantities; member readers, publication and
+handback use the canonical craft frame. Original frame shifts move both poses
+and queued world points exactly once. Quiet-pulse v1 retains its original frame.
+
+Publication retains exact canonical pose bits and immutable member-local poses.
+Every request still validates every member's native and Transform pose with
+the original budgets. Identical targets omit planning, writes and global
+synchronization; materialization/reuse/generation and request-reason counters
+make the distinction explicit. Native aggregate writer audits independently
+check the canonical-to-physical mapping. Per-step root/COM/principal evidence
+lets the independent reader verify that mapping without changing its original
+world-tensor and control/motion equations. Controlled property-shift counters
+now measure the canonical root; they are not the previous native-setter metric.
+
+The bridge cold-seals the exact admitted graph after all cooperating frame
+hooks. On the pinned installed Harmony 2.2.1 ABI, it compares cloned serialized
+entries under Harmony's own state lock and compares current original IL bytes;
+it does not deserialize unchanged graphs on each periodic check. Presence,
+nullness, length, every byte and dictionary identity must match. Rejection is
+latched, including in-place array changes. Unsupported ABI uses full graph/IL
+checks with exact declared frame cardinality. Original IL reads still allocate.
+An optional fresh absolute `CONTINUUM_PATCH_STATE_WITNESS` path runs isolated
+foreign-prefix, byte-mutation and previously absent method tests cold in the
+actual Unity/Mono process; owned-only cleanup and unchanged selected game state
+are required before admitting the real seal.
+
+`--flight-lighting three-quarter-inspection` is a camera-only 50m root-detail,
+45-degree solar preset for the declared controlled orbital run. It permits
+only its exact normal/LOW4 clocks, requires actual unshadowed sunlight and
+records planetary framing without changing the orbit to force a background.
+The existing entry/planet-limb presets keep their original contracts.

@@ -1287,9 +1287,15 @@ fn smoke(
                 &report,
             )?;
             if let Some(mode) = selection.diagnostics.flight_lighting.as_deref() {
+                let no_entry_treatment = Value::Null;
+                let placement = if mode == "three-quarter-inspection" {
+                    flight_entry.as_ref().map(|entry| &entry["report"]).unwrap_or(&no_entry_treatment)
+                } else {
+                    &flight_entry.as_ref().ok_or("lighting entry evidence absent")?["report"]
+                };
                 summary["lighting"] = continuum_research_lab::lighting::validate(
                     mode, &read::<Value>(&output.join("flight-lighting.json"))?, &report, &run_id, child.id(),
-                    &flight_entry.as_ref().ok_or("lighting entry evidence absent")?["report"],
+                    placement,
                 )?;
             }
             summary["localCamera"] = continuum_research_lab::flight::local_camera_summary(

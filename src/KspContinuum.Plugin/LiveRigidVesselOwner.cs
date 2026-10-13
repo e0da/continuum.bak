@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Threading;
 using HarmonyLib;
@@ -55,6 +56,11 @@ namespace KspContinuum
         RigidAssemblyProperties properties;
         RetainedRigidAssemblyProperties retainedProperties;
         bool autoSyncTransforms;
+        bool retainedPoseReady;
+        Vector3 retainedAggregatePosition;
+        Quaternion retainedAggregateRotation;
+        Vector3 canonicalRootPosition;
+        Quaternion canonicalRootRotation;
         Step pending;
         LiveRigidFlightDriver driver;
         public readonly Receipt Report;
@@ -80,10 +86,20 @@ namespace KspContinuum
             public long costClockFrequency = Stopwatch.Frequency;
             public long auditTicks, driverAuditTicks, refreshTicks, combineTicks, publishTicks, publishPlanTicks, publishWriteTicks, publishReadbackTicks, publishSyncTicks, bridgeCheckTicks;
             public int auditCalls, driverAuditCalls, refreshCalls, combineCalls, publishCalls, publishedMembers, publishSyncCalls, bridgeCheckCalls;
+            public int poseMaterializations, poseReuses, poseRefreshRequests, posePostPhysicsRequests, poseFrameRequests, poseAdmissionRequests;
+            public int poseRefreshReuses, posePostPhysicsReuses, poseFrameReuses, poseAdmissionReuses;
+            public string bridgeSealStatus, bridgeSealDetail;
+            public long bridgeSealTicks, rawPatchStateChecks, rawPatchStateComparedBytes;
+            public int sealedPatchMethods, sealedPatchBytes;
+            public long poseGeneration;
+            public string poseRequestReason, poseMaterializationReason;
+            public string aggregatePoseFrame = "craft-root";
+            public string poseReuseScope = "Controlled owner only: exact IEEE canonical craft-root position and normalized rotation with fixed admitted member locals permit target reuse. Native aggregate pose is the COM/principal frame and can change during a property refresh without moving that canonical root. Every request still validates all original native and Transform poses; only unchanged target recomputation, writes and SyncTransforms are omitted. Controlled maxPropertyPositionShift/maxPropertyRotationShift measure canonical root; quiet-pulse measures native root and remains eager.";
             public string publicationMode = "explicit-transform-and-native", propertyReductionMode = "reference";
             public bool originalAutoSyncTransforms, autoSyncTransformsUnchanged;
             public string costScope = "Synchronous owner method wall costs over its lifetime. Driver audit is nested in audit; combine and property-triggered publication are nested in refresh; planning/write/readback are nested in publication. Periodic bridge checks exclude admission/cleanup. Nested costs are not additive and include timer overhead.";
             public double maxPropertyPositionShift, maxPropertyRotationShift;
+            public double maxNativeFramePositionError, maxNativeFrameRotationError;
             public double ownerStartUt, ownerEndUt, postRestorationSimulatedSeconds;
             public bool pulseQueued, originalBodiesRestored, aggregateRetired, bridgeReleased, passed;
             public bool stockContinuationVerified;
@@ -139,6 +155,8 @@ namespace KspContinuum
             public float warpRate;
             public int warpRateIndex;
             public float[] controls;
+            public float[] canonicalRootPositionBefore, canonicalRootRotationBefore, canonicalRootPositionAfter, canonicalRootRotationAfter;
+            public float[] centerInCraft, principalRotation;
             public BodyState before, after;
             public double[] force, torque, impulse, angularImpulse;
             public float[] commonAcceleration;
@@ -168,6 +186,11 @@ namespace KspContinuum
             public Texture2D image;
             public string path;
         }
+        [StructLayout(LayoutKind.Explicit)] struct PoseFloatBits
+        {
+            [FieldOffset(0)] public float value;
+            [FieldOffset(0)] public int bits;
+        }
 
         public LiveRigidVesselOwner(string output, string runId, Func<bool> capturing)
         {
@@ -182,13 +205,14 @@ namespace KspContinuum
             {
                 Report.schema = "continuum-live-rigid-owner/v2"; Report.scenario = scenario;
                 Report.imageEncodingPolicy = "retained-readback-encode-after-capture";
+                Report.aggregatePoseFrame = "native-com-principal";
                 Report.scope = "Twelve simulated seconds of original pilot attitude/RCS input, LOW 4x physics warp and normal return. Fixed topology, no-contact vacuum, original identities and default-scene native aggregate. Rigid projection, zero damping and material velocity preservation at mass/COM changes are declared model choices. Fuel-flow momentum, contact, arbitrary mods, human control feel and FPS remain unqualified.";
             }
             bridge = new LiveRigidVesselBridge();
             try
             {
                 Need(bridge.Installed, "Rigid body bridge not installed.");
-                InstallFramePatches(); Report.status = "waiting-for-native-boundary";
+                InstallFramePatches(); bridge.SealOwnership(runId); Report.status = "waiting-for-native-boundary";
             }
             catch { Dispose(); throw; }
         }
@@ -201,7 +225,12 @@ namespace KspContinuum
         public Vector3 ReadVelocity(Rigidbody receiver) { Report.velocityReads++; return ReadPointVelocity(receiver, ReadWorldCenter(receiver)); }
         public Vector3 ReadAngularVelocity(Rigidbody receiver) { Report.angularReads++; return body.angularVelocity; }
         public Vector3 ReadWorldCenter(Rigidbody receiver)
-        { Report.centerReads++; Member member = members[receiver]; return body.position + Normalized(body.rotation) * (member.Position + member.Rotation * receiver.centerOfMass); }
+        {
+            Report.centerReads++; Member member = members[receiver];
+            Vector3 position = controlled ? canonicalRootPosition : body.position;
+            Quaternion rotation = controlled ? canonicalRootRotation : Normalized(body.rotation);
+            return position + rotation * (member.Position + member.Rotation * receiver.centerOfMass);
+        }
         public Vector3 ReadPointVelocity(Rigidbody receiver, Vector3 point) { Report.pointReads++; return body.GetPointVelocity(point); }
         public void WriteVelocity(Rigidbody receiver, Vector3 value)
         { Abort("Unsupported direct constituent velocity writer."); receiver.velocity = value; }
@@ -263,6 +292,11 @@ namespace KspContinuum
                     before = State(body, false), commonReceivers = accelerationReceivers.Count,
                     commonAcceleration = Array(commonSet ? commonAcceleration : Vector3.zero), commands = commands.Count,
                     nonzeroCommands = commands.ToArray(), force = Array(force), torque = Array(torque), impulse = Array(impulse), angularImpulse = Array(angularImpulse) };
+                if (controlled)
+                {
+                    pending.canonicalRootPositionBefore = Array(canonicalRootPosition); pending.canonicalRootRotationBefore = Array(canonicalRootRotation);
+                    pending.centerInCraft = Array(Unity(properties.CenterOfMass)); pending.principalRotation = Array(Unity(properties.PrincipalRotation));
+                }
                 if (commonSet) body.AddForce(commonAcceleration, ForceMode.Acceleration);
                 body.AddForce(Unity(force), ForceMode.Force); body.AddTorque(Unity(torque), ForceMode.Force);
                 body.AddForce(Unity(impulse), ForceMode.Impulse); body.AddTorque(Unity(angularImpulse), ForceMode.Impulse);
@@ -302,7 +336,13 @@ namespace KspContinuum
                     return;
                 }
                 Need(pending != null && pending.frame == frame && pending.fixedTime == (float)time, "Missing matched native boundary.");
-                pending.after = State(body, false); Publish(pending);
+                pending.after = State(body, false);
+                if (controlled)
+                {
+                    ReadCanonicalPoseAfterPhysics();
+                    pending.canonicalRootPositionAfter = Array(canonicalRootPosition); pending.canonicalRootRotationAfter = Array(canonicalRootRotation);
+                }
+                Publish(pending, "postphysics");
                 steps.Add(pending); pending = null; Report.physicsSteps = steps.Count;
                 if (steps.Count % 16 == 0) Need(CheckBridge(), "Live bridge graph changed during native ownership.");
                 Report.status = "running";
@@ -436,6 +476,7 @@ namespace KspContinuum
             root = new GameObject("Continuum live rigid authority"); root.transform.SetPositionAndRotation(position, rotation);
             body = root.AddComponent<Rigidbody>(); body.isKinematic = true; body.useGravity = false; body.detectCollisions = false;
             body.drag = 0; body.angularDrag = 0; body.maxAngularVelocity = 100;
+            if (controlled) { canonicalRootPosition = position; canonicalRootRotation = rotation; }
             PublishProperties();
             try
             {
@@ -444,7 +485,7 @@ namespace KspContinuum
                 entered = true; active = this; enteredTime = Time.fixedTime;
                 Report.ownerStartUt = Planetarium.GetUniversalTime();
                 Report.sourceParts = parts.Length; Report.sourceBodies = found.Count; Report.retractedWheelParts = retractedWheels.Count; Report.aggregateId = body.GetInstanceID();
-                Report.removedKineticEnergy = projection.RemovedKineticEnergy; Report.initial = State(body, false); Publish(null);
+                Report.removedKineticEnergy = projection.RemovedKineticEnergy; Report.initial = State(body, false); Publish(null, "admission");
                 motionInitialized = true;
                 if (controlled) { driver = new LiveRigidFlightDriver(vessel, enteredTime); Report.controlDriver = driver.Report; }
             }
@@ -490,8 +531,20 @@ namespace KspContinuum
                 (parts[i].parent == null ? 0 : parts[i].parent.GetInstanceID()) == parents[i] &&
                 (parts[i].rb == null ? 0 : parts[i].rb.GetInstanceID()) == aliases[i] && parts[i].servoRb == null, "Topology or alias changed.");
             Need(body != null && !body.isKinematic && !body.detectCollisions, "Aggregate ownership changed.");
+            if (controlled)
+            {
+                Need(Same(body.centerOfMass, Vector3.zero) && Same(body.inertiaTensorRotation, Quaternion.identity), "Native aggregate COM/principal-axis frame changed.");
+                Vector3 expectedNativePosition = canonicalRootPosition + canonicalRootRotation * Unity(properties.CenterOfMass);
+                Quaternion expectedNativeRotation = Normalized(canonicalRootRotation * Unity(properties.PrincipalRotation));
+                double positionError = (body.position - expectedNativePosition).magnitude;
+                double rotationError = RotationError(body.rotation, expectedNativeRotation);
+                Report.maxNativeFramePositionError = Math.Max(Report.maxNativeFramePositionError, positionError);
+                Report.maxNativeFrameRotationError = Math.Max(Report.maxNativeFrameRotationError, rotationError);
+                Need(positionError <= 1e-4 && rotationError <= .002, "Unrouted aggregate native-frame pose writer.");
+            }
             foreach (Member member in ordered) Need(member.Body != null && member.Body.isKinematic && !member.Body.detectCollisions, "Proxy ownership changed.");
-            Vector3 aggregatePosition = body.position; Quaternion aggregateRotation = Normalized(body.rotation);
+            Vector3 aggregatePosition = controlled ? canonicalRootPosition : body.position;
+            Quaternion aggregateRotation = controlled ? canonicalRootRotation : Normalized(body.rotation);
             foreach (Member member in ordered)
             {
                 Vector3 position = aggregatePosition + aggregateRotation * member.Position; Quaternion rotation = Normalized(aggregateRotation * member.Rotation);
@@ -525,8 +578,9 @@ namespace KspContinuum
             }
             Need(target != null && largestArm > 1, "Off-center source queue target missing.");
             Vector3 point = target.transform.position, lever = point - body.worldCenterOfMass;
-            Vector3 direction = Vector3.Cross(lever, Normalized(body.rotation) * Vector3.forward);
-            if (direction.sqrMagnitude < .001f) direction = Vector3.Cross(lever, Normalized(body.rotation) * Vector3.up);
+            Quaternion pulseBasis = controlled ? canonicalRootRotation : Normalized(body.rotation);
+            Vector3 direction = Vector3.Cross(lever, pulseBasis * Vector3.forward);
+            if (direction.sqrMagnitude < .001f) direction = Vector3.Cross(lever, pulseBasis * Vector3.up);
             Vector3 force = direction.normalized * (body.mass * .25f / Time.fixedDeltaTime);
             target.AddForceAtPosition(force, point); pulseApplied = true; Report.pulseQueued = true;
         }
@@ -555,31 +609,68 @@ namespace KspContinuum
             if (!changed) return;
             Report.propertyRebuilds++;
             Vector3 oldCenter = body.worldCenterOfMass, velocity = body.velocity, omega = body.angularVelocity;
-            Vector3 oldPosition = body.position; Quaternion oldRotation = body.rotation;
+            Vector3 oldPosition = controlled ? canonicalRootPosition : body.position;
+            Quaternion oldRotation = controlled ? canonicalRootRotation : body.rotation;
             long start = Stopwatch.GetTimestamp();
             try { properties = retainedProperties == null ? RigidAssemblyProperties.Combine(propertyScratch) : retainedProperties.Combine(); }
             finally { Report.combineTicks += Stopwatch.GetTimestamp() - start; Report.combineCalls++; }
             PublishProperties();
             body.velocity = velocity + Vector3.Cross(omega, body.worldCenterOfMass - oldCenter);
-            Report.maxPropertyPositionShift = Math.Max(Report.maxPropertyPositionShift, (body.position - oldPosition).magnitude);
-            Report.maxPropertyRotationShift = Math.Max(Report.maxPropertyRotationShift, RotationError(body.rotation, oldRotation));
-            Publish(null);
+            if (controlled) body.angularVelocity = omega;
+            Report.maxPropertyPositionShift = Math.Max(Report.maxPropertyPositionShift, ((controlled ? canonicalRootPosition : body.position) - oldPosition).magnitude);
+            Report.maxPropertyRotationShift = Math.Max(Report.maxPropertyRotationShift, RotationError(controlled ? canonicalRootRotation : body.rotation, oldRotation));
+            Publish(null, "refresh");
         }
         void PublishProperties()
         {
-            body.mass = (float)properties.Mass; body.centerOfMass = Unity(properties.CenterOfMass);
-            body.inertiaTensor = Unity(properties.PrincipalInertia); body.inertiaTensorRotation = Unity(properties.PrincipalRotation);
+            body.mass = (float)properties.Mass;
+            body.centerOfMass = controlled ? Vector3.zero : Unity(properties.CenterOfMass);
+            body.inertiaTensor = Unity(properties.PrincipalInertia);
+            body.inertiaTensorRotation = controlled ? Quaternion.identity : Unity(properties.PrincipalRotation);
+            if (controlled)
+            {
+                body.position = canonicalRootPosition + canonicalRootRotation * Unity(properties.CenterOfMass);
+                body.rotation = Normalized(canonicalRootRotation * Unity(properties.PrincipalRotation));
+                Need(Same(body.centerOfMass, Vector3.zero) && Same(body.inertiaTensorRotation, Quaternion.identity), "Native COM/principal properties were not published.");
+            }
             Need(float.IsNaN(body.mass) == false && float.IsInfinity(body.mass) == false && body.mass > 0, "Native mass admission failed.");
         }
-        void Publish(Step step)
+        void ReadCanonicalPoseAfterPhysics()
+        {
+            canonicalRootRotation = Normalized(Normalized(body.rotation) * Quaternion.Inverse(Unity(properties.PrincipalRotation)));
+            canonicalRootPosition = body.position - canonicalRootRotation * Unity(properties.CenterOfMass);
+            Need(Finite(canonicalRootPosition), "Native principal-frame readback produced nonfinite canonical root.");
+        }
+        void Publish(Step step, string reason)
         {
             long start = Stopwatch.GetTimestamp();
-            try { PublishCore(step); }
+            try { PublishCore(step, reason); }
             finally { Report.publishTicks += Stopwatch.GetTimestamp() - start; Report.publishCalls++; }
         }
-        void PublishCore(Step step)
+        void PublishCore(Step step, string reason)
         {
-            Vector3 aggregatePosition = body.position; Quaternion aggregateRotation = Normalized(body.rotation);
+            Vector3 aggregatePosition = controlled ? canonicalRootPosition : body.position;
+            Quaternion aggregateRotation = controlled ? canonicalRootRotation : Normalized(body.rotation);
+            if (controlled)
+            {
+                Report.poseRequestReason = reason;
+                if (reason == "refresh") Report.poseRefreshRequests++;
+                else if (reason == "postphysics") Report.posePostPhysicsRequests++;
+                else if (reason == "frame") Report.poseFrameRequests++;
+                else if (reason == "admission") Report.poseAdmissionRequests++;
+                else Need(false, "Unknown retained pose publication reason.");
+                Need(Physics.autoSyncTransforms == autoSyncTransforms, "Global physics synchronization setting changed during publication.");
+                if (retainedPoseReady && ExactPose(aggregatePosition, retainedAggregatePosition) && ExactPose(aggregateRotation, retainedAggregateRotation))
+                {
+                    foreach (Member member in ordered) ValidatePublished(member, step);
+                    Report.poseReuses++;
+                    if (reason == "refresh") Report.poseRefreshReuses++;
+                    else if (reason == "postphysics") Report.posePostPhysicsReuses++;
+                    else if (reason == "frame") Report.poseFrameReuses++;
+                    else Report.poseAdmissionReuses++;
+                    return;
+                }
+            }
             foreach (Member member in ordered)
             {
                 long start = Stopwatch.GetTimestamp();
@@ -598,8 +689,16 @@ namespace KspContinuum
                 try { Need(Physics.autoSyncTransforms == autoSyncTransforms, "Global physics synchronization setting changed during publication."); Physics.SyncTransforms(); }
                 finally { Report.publishSyncTicks += Stopwatch.GetTimestamp() - start; Report.publishSyncCalls++; }
                 foreach (Member member in ordered) ValidatePublished(member, step);
+                retainedAggregatePosition = aggregatePosition; retainedAggregateRotation = aggregateRotation; retainedPoseReady = true;
+                Report.poseMaterializations++; Report.poseGeneration++; Report.poseMaterializationReason = reason;
             }
         }
+        static bool ExactPose(float a, float b)
+        { return new PoseFloatBits { value = a }.bits == new PoseFloatBits { value = b }.bits; }
+        static bool ExactPose(Vector3 a, Vector3 b)
+        { return ExactPose(a.x,b.x) && ExactPose(a.y,b.y) && ExactPose(a.z,b.z); }
+        static bool ExactPose(Quaternion a, Quaternion b)
+        { return ExactPose(a.x,b.x) && ExactPose(a.y,b.y) && ExactPose(a.z,b.z) && ExactPose(a.w,b.w); }
         void ValidatePublished(Member member, Step step)
         {
             long start = Stopwatch.GetTimestamp();
@@ -803,13 +902,14 @@ namespace KspContinuum
                 {
                     Vector3 offset = (Vector3)(value - (Vector3d)owner.vessel.transform.position);
                     owner.body.position += offset;
+                    if (owner.controlled) owner.canonicalRootPosition += offset;
                     foreach (Command command in owner.commands)
                     {
                         command.point = Array(Unity(Vector(command.point)) + offset);
                         command.source.position = Array(Unity(Vector(command.source.position)) + offset);
                         command.source.center = Array(Unity(Vector(command.source.center)) + offset);
                     }
-                    owner.Publish(null); owner.Report.frameTranslations++; return false;
+                    owner.Publish(null, "frame"); owner.Report.frameTranslations++; return false;
                 }
                 if (name == "SetWorldVelocity") owner.body.velocity = value;
                 else owner.body.velocity += (Vector3)value;
@@ -854,8 +954,8 @@ namespace KspContinuum
                     try
                     {
                         BodyState state = Report.restoredAggregate;
-                        Quaternion rotation = Normalized(new Quaternion(state.rotation[0], state.rotation[1], state.rotation[2], state.rotation[3]));
-                        Vector3 position = Unity(Vector(state.position)) + rotation * member.Position;
+                        Quaternion rotation = controlled ? canonicalRootRotation : Normalized(new Quaternion(state.rotation[0], state.rotation[1], state.rotation[2], state.rotation[3]));
+                        Vector3 position = (controlled ? canonicalRootPosition : Unity(Vector(state.position))) + rotation * member.Position;
                         Quaternion orientation = Normalized(rotation * member.Rotation);
                         Vector3 center = position + orientation * member.Body.centerOfMass;
                         omega = Unity(Vector(state.angularVelocity)); velocity = Unity(Vector(state.velocity)) + Vector3.Cross(omega, center - Unity(Vector(state.center)));
@@ -935,6 +1035,10 @@ namespace KspContinuum
             catch (Exception error) { Report.status = "invalid"; Report.detail = "Hook cleanup failed: " + error; }
             FlushPendingViews();
             Report.steps = steps.ToArray(); Report.bridgeSites = bridge.SourceCallsites;
+            Report.bridgeSealStatus = bridge.OwnershipSealStatus; Report.bridgeSealDetail = bridge.OwnershipSealDetail;
+            Report.bridgeSealTicks = bridge.OwnershipSealTicks; Report.rawPatchStateChecks = bridge.RawPatchStateChecks;
+            Report.rawPatchStateComparedBytes = bridge.RawPatchStateComparedBytes;
+            Report.sealedPatchMethods = bridge.SealedPatchMethods; Report.sealedPatchBytes = bridge.SealedPatchBytes;
             Report.autoSyncTransformsUnchanged = !controlled || Physics.autoSyncTransforms == autoSyncTransforms;
             Report.screenshots = screenshots.ToArray();
             Report.aggregateRetired = retiredRoot == null && Report.originalBodiesRestored;

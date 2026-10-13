@@ -2213,9 +2213,11 @@ pub fn validate_controls(
     output: &Path,
     report: &Value,
 ) -> Result<()> {
-    let distance = if matches!(lighting, Some("three-quarter-lit" | "three-quarter-overview")) {
+    let distance = if matches!(lighting, Some("three-quarter-lit" | "three-quarter-overview" | "three-quarter-inspection")) {
         let receipt: Value = read(&output.join("flight-lighting.json"))?;
-        receipt["cameraDistanceMeters"].as_f64().filter(|x| x.is_finite() && (50.0..=750000.0).contains(x)).ok_or("framed camera distance witness absent")?
+        let distance = receipt["cameraDistanceMeters"].as_f64().filter(|x| x.is_finite() && (50.0..=750000.0).contains(x)).ok_or("framed camera distance witness absent")?;
+        if lighting == Some("three-quarter-inspection") && distance != 50.0 { return Err("camera-only inspection requires exact50m root detail".into()); }
+        distance
     } else if lighting.is_some() { 150.0 } else { 50.0 };
     let aero_treatment = request.no_aero_fx || request.aero_quality.is_some();
     if let Some(parts) = request.expected_parts {

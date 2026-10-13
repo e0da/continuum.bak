@@ -68,6 +68,16 @@ static class Program
         Need((controlled||schema=="continuum-live-rigid-owner/v1")&&receipt.GetProperty("status").GetString()=="passed"&&B(receipt,"passed"),"completed live receipt");Need(!string.IsNullOrEmpty(receipt.GetProperty("runId").GetString()),"run identity");
         if(controlled)Need(receipt.GetProperty("scenario").GetString()=="control-warp","controlled scenario identity");
         Need(I(receipt,"sourceParts")==512&&I(receipt,"sourceBodies")>0&&I(receipt,"sourceBodies")<=2048,"frozen real craft domain");int bodies=I(receipt,"sourceBodies"),owner=I(receipt,"aggregateId");Need(owner!=0,"aggregate identity");
+        if(controlled && receipt.TryGetProperty("poseMaterializations",out var materializations))
+        {
+            int writes=materializations.GetInt32(), reuses=I(receipt,"poseReuses"), requests=I(receipt,"publishCalls");
+            Need(writes>0&&reuses>0&&writes+reuses==requests&&receipt.GetProperty("poseGeneration").GetInt64()==writes,"retained pose request/materialization coverage");
+            Need(I(receipt,"publishSyncCalls")==writes&&I(receipt,"publishedMembers")==checked(requests*bodies),"every retained request preserves full proxy readback; sync only materializations");
+            Need(I(receipt,"poseRefreshRequests")+I(receipt,"posePostPhysicsRequests")+I(receipt,"poseFrameRequests")+I(receipt,"poseAdmissionRequests")==requests,"publication cause coverage");
+            Console.WriteLine("Retained publication: "+writes+" materializations, "+reuses+" target reuses; "+requests*bodies+" native/Transform member validations retained.");
+        }
+        bool principalFrame=controlled && receipt.TryGetProperty("aggregatePoseFrame",out var frameKind) && frameKind.GetString()=="native-com-principal";
+        if(principalFrame)Need(D(receipt,"maxNativeFramePositionError")>=0&&D(receipt,"maxNativeFramePositionError")<=1e-4&&D(receipt,"maxNativeFrameRotationError")>=0&&D(receipt,"maxNativeFrameRotationError")<=.002,"native aggregate writer/frame guards");
         foreach(string flag in new[]{"originalBodiesRestored","aggregateRetired","bridgeReleased"})Need(B(receipt,flag),"closure "+flag);
         if(!controlled)Need(B(receipt,"pulseQueued"),"closure pulseQueued");
         Need(receipt.GetProperty("cleanupStatus").GetString()=="restored-original-ownership","ownership cleanup");foreach(string field in new[]{"velocityReads","angularReads","centerReads","pointReads"})Need(I(receipt,field)>0,"read coverage "+field);
@@ -79,6 +89,20 @@ static class Program
         {
             var step=steps[index];double time=F(step,"fixedTime"),dt=F(step,"dt");Need(I(step,"index")==index&&I(step,"frame")>=priorFrame&&time>priorTime&&dt>0&&dt<=1&&I(step,"dynamicProxies")==0,"matched ordered native steps");priorTime=time;priorFrame=I(step,"frame");
             Need(I(step,"commonReceivers")==bodies,"uniform acceleration reaches distinct source bodies once");common+=I(step,"commonReceivers");var before=step.GetProperty("before");var after=step.GetProperty("after");State(before,owner);State(after,owner);Need(F(before,"mass")==F(after,"mass"),"within-step mass stable");
+            if(principalFrame)
+            {
+                var center=A(step,"centerInCraft");var principal=R(A(step,"principalRotation",4));
+                foreach(var boundary in new[]{("Before",before),("After",after)})
+                {
+                    var root=A(step,"canonicalRootPosition"+boundary.Item1);var rotation=R(A(step,"canonicalRootRotation"+boundary.Item1,4));
+                    Error(A(boundary.Item2,"position"),Add(root,Mul(rotation,center)),0,1e-4,"independent canonical-root/native-COM correspondence");
+                    Error(A(boundary.Item2,"center"),A(boundary.Item2,"position"),0,1e-4,"native COM frame has zero local COM");
+                    Error(A(boundary.Item2,"inertiaRotation",4),new[]{0d,0d,0d,1d},0,0,"native principal frame inertia rotation identity");
+                    var expected=Mul(rotation,principal);var actual=R(A(boundary.Item2,"rotation",4));
+                    double angleBudget=2*Math.Sin(.002*Math.PI/360);
+                    for(int axis=0;axis<3;axis++)Error(Enumerable.Range(0,3).Select(row=>actual[row,axis]).ToArray(),Enumerable.Range(0,3).Select(row=>expected[row,axis]).ToArray(),0,angleBudget,"independent canonical-root/native-principal axes correspondence");
+                }
+            }
             Wrench(step,out var force,out var torque,out var impulse,out var angularImpulse,out int reached,sourceIds);offcenter+=reached;commands+=I(step,"commands");
             // The fixed diagnostic queues .25 m/s worth of force perpendicular to its lever.
             double pulseMagnitude=F(before,"mass")*.25/dt;

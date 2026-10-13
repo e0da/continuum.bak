@@ -25,6 +25,7 @@ namespace KspContinuum
         readonly float oldDistance, oldFov, oldPitch, oldHeading;
         readonly Vector3 offsetDirection, viewUp;
         readonly double cameraDistance;
+        readonly bool controlledInspection;
         readonly MethodInfo update = AccessTools.DeclaredMethod(typeof(FlightCamera), "LateUpdate");
         readonly MethodInfo effectUpdate = AccessTools.DeclaredMethod(typeof(FXCamera), "LateUpdate");
         readonly MethodInfo depthUpdate = AccessTools.DeclaredMethod(typeof(FXDepthCamera), "LateUpdate");
@@ -45,6 +46,7 @@ namespace KspContinuum
             public double bodyAngularRadiusDegrees, bodyLimbViewAngleDegrees, maxCaptureBodyLimbViewAngleDegrees;
             public int framingRenderers;
             public string framingPolicy;
+            public string clockScope;
             public double[] toSun, bodyRadial, cameraOffset, lightRayDirection;
             public long captureStartTicks, captureEndTicks, clockFrequency = Stopwatch.Frequency;
         }
@@ -56,12 +58,14 @@ namespace KspContinuum
             if (modes.Length == 0) return null;
             if (modes.Length != 1) throw new InvalidOperationException("Exactly one flight lighting preset is required.");
             string mode = modes[0].Substring(prefix.Length);
-            if (mode != "frontlit" && mode != "three-quarter-lit" && mode != "three-quarter-overview" && mode != "side-lit" && mode != "backlit") throw new InvalidOperationException("Unknown physical lighting preset.");
+            if (mode != "frontlit" && mode != "three-quarter-lit" && mode != "three-quarter-overview" && mode != "three-quarter-inspection" && mode != "side-lit" && mode != "backlit") throw new InvalidOperationException("Unknown physical lighting preset.");
             return new FlightLighting(args, vessel, mode);
         }
         FlightLighting(string[] args, Vessel vessel, string mode)
         {
             this.vessel = vessel; body = vessel == null ? null : vessel.mainBody; flight = FlightCamera.fetch;
+            controlledInspection=mode=="three-quarter-inspection";
+            if(controlledInspection && (!InspectionDeclared() || !NormalClock()))throw new InvalidOperationException("Camera-only inspection requires declared controlled rigid owner at exact normal-time entry.");
             root = vessel == null || vessel.rootPart == null ? null : vessel.rootPart.transform;
             pivot = flight == null ? null : flight.transform.parent;
             if (active != null || root == null || pivot == null || body == null || body.bodyName != "Kerbin" ||
@@ -80,8 +84,8 @@ namespace KspContinuum
             if (perpendicular.sqrMagnitude < 1e-10f) perpendicular = Vector3.ProjectOnPlane(body.transform.up, sun);
             if (perpendicular.sqrMagnitude < 1e-10f) perpendicular = Vector3.ProjectOnPlane(Vector3.right, sun);
             perpendicular.Normalize();
-            if(mode=="three-quarter-lit")perpendicular=-perpendicular;
-            double phase = mode == "frontlit" ? 0 : (mode == "three-quarter-lit" || mode=="three-quarter-overview") ? 45 : mode == "side-lit" ? 75 : 150;
+            if(mode=="three-quarter-lit" || controlledInspection)perpendicular=-perpendicular;
+            double phase = mode == "frontlit" ? 0 : (mode == "three-quarter-lit" || mode=="three-quarter-overview" || controlledInspection) ? 45 : mode == "side-lit" ? 75 : 150;
             double radians = phase * Math.PI / 180;
             offsetDirection = (sun * (float)Math.Cos(radians) + perpendicular * (float)Math.Sin(radians)).normalized;
             viewUp = Vector3.ProjectOnPlane(outward, -offsetDirection);
@@ -96,10 +100,10 @@ namespace KspContinuum
                 altitudeMeters = vessel.altitude, density = vessel.atmDensity, surfaceSpeed = vessel.srfSpeed, universalTime = Planetarium.GetUniversalTime() };
             cameraDistance=Distance;
             Report.framingPolicy="Original fixed 150m distance, vessel-root tracking.";
-            if(mode=="three-quarter-lit")
+            if(mode=="three-quarter-lit" || controlledInspection)
             {
                 cameraDistance=50;
-                Report.framingPolicy="Root detail: fixed50m, vessel-root tracking; long booms may extend outside frame. Real45-degree solar phase; opposing radial-projected solar-plane offset frames the planetary limb, not the full craft envelope.";
+                Report.framingPolicy=controlledInspection?"Camera-only root inspection: fixed50m and real45-degree solar phase; vessel-root tracking with cropped long booms. Planetary limb geometry observed without a planet framing requirement; no orbit preparation or physics writes.":"Root detail: fixed50m, vessel-root tracking; long booms may extend outside frame. Real45-degree solar phase; opposing radial-projected solar-plane offset frames the planetary limb, not the full craft envelope.";
             }
             if(mode=="three-quarter-overview")
             {
@@ -125,11 +129,12 @@ namespace KspContinuum
                 Report.framingPolicy="One-time active visible Part model MeshRenderer/SkinnedMeshRenderer bounds; particles and volumetric effect components excluded. Root-centered enclosing sphere, limiting vertical/horizontal 60-degree FOV, 25 percent sphere margin plus 5m, minimum150m. Frozen distance; no future deformation fit guarantee.";
             }
             Report.cameraDistanceMeters=cameraDistance;
+            Report.clockScope=controlledInspection?"Declared control-warp owner only: exact normal rate1/index0/timeScale1/native dt0.02 or LOW rate4/index3/timeScale4/native dt0.08; camera-only treatment.":"Original normal-time physical lighting preset.";
             foreach (string arg in args) if (arg.StartsWith("--continuum-research-run=", StringComparison.Ordinal)) Report.runId = arg.Substring("--continuum-research-run=".Length);
             Vector3 cameraPosition = root.position + offsetDirection * (float)cameraDistance;
             Vector3d cameraToBody=body.position-(Vector3d)cameraPosition;
             Report.bodyCenterViewAngleDegrees = Angle(-offsetDirection, (Vector3)cameraToBody);
-            if(mode=="three-quarter-lit" || mode=="three-quarter-overview")
+            if(mode=="three-quarter-lit" || mode=="three-quarter-overview" || controlledInspection)
             {
                 Report.bodyAngularRadiusDegrees=BodyAngularRadius(cameraToBody);
                 Report.bodyLimbViewAngleDegrees=Math.Abs(Report.bodyCenterViewAngleDegrees-Report.bodyAngularRadiusDegrees);
@@ -172,7 +177,7 @@ namespace KspContinuum
         void Check()
         {
             if (vessel == null || root == null || flight == null || FlightGlobals.ActiveVessel != vessel || vessel.mainBody != body ||
-                !vessel.loaded || vessel.packed || MapView.MapIsEnabled || vessel.parts.Count != Report.parts || TimeWarp.CurrentRate != 1)
+                !vessel.loaded || vessel.packed || MapView.MapIsEnabled || vessel.parts.Count != Report.parts || !ClockAdmitted())
                 throw new InvalidOperationException("Physical lighting ownership/context changed.");
             if (Planetarium.fetch == null || Planetarium.fetch.Sun == null || Sun.Instance == null || Sun.Instance.sunLight == null)
                 throw new InvalidOperationException("Physical sunlight ownership changed.");
@@ -187,7 +192,7 @@ namespace KspContinuum
             Vector3d cameraToBody=body.position-(Vector3d)cameraPosition;
             double bodyAngle = Angle(-offsetDirection, (Vector3)cameraToBody);
             double limbAngle=0;
-            if(Report.mode=="three-quarter-lit" || Report.mode=="three-quarter-overview")limbAngle=Math.Abs(bodyAngle-BodyAngularRadius(cameraToBody));
+            if(Report.mode=="three-quarter-lit" || Report.mode=="three-quarter-overview" || controlledInspection)limbAngle=Math.Abs(bodyAngle-BodyAngularRadius(cameraToBody));
             double lightAgreement = Angle(sun, -Sun.Instance.sunLight.transform.forward);
             if (window)
             {
@@ -259,6 +264,17 @@ namespace KspContinuum
             Report.status = Report.faults == 0 && Report.captureCallbacks > 0 && Report.captureEndTicks > Report.captureStartTicks ? "complete-experimental" : "invalid";
         }
         static bool Finite(double value) { return !double.IsNaN(value) && !double.IsInfinity(value); }
+        static bool InspectionDeclared()
+        {
+            string output=Environment.GetEnvironmentVariable("CONTINUUM_LIVE_RIGID_OWNER");
+            return Environment.GetEnvironmentVariable("CONTINUUM_LIVE_RIGID_SCENARIO")=="control-warp" && !string.IsNullOrEmpty(output) && System.IO.Path.IsPathRooted(output);
+        }
+        static bool NormalClock(){return TimeWarp.CurrentRate==1 && TimeWarp.CurrentRateIndex==0 && Time.timeScale==1 && Time.fixedDeltaTime==.02f;}
+        bool ClockAdmitted()
+        {
+            if(!controlledInspection)return TimeWarp.CurrentRate==1;
+            return InspectionDeclared() && (NormalClock() || TimeWarp.WarpMode==TimeWarp.Modes.LOW && TimeWarp.CurrentRate==4 && TimeWarp.CurrentRateIndex==3 && Time.timeScale==4 && Time.fixedDeltaTime==.08f);
+        }
         double BodyAngularRadius(Vector3d cameraToBody)
         {
             double distance=cameraToBody.magnitude;
