@@ -100,6 +100,8 @@ pub struct Diagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_assembly_scene: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_rigid_owner: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zero_native_force_pruning: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scientific_attachment_nodes: Option<String>,
@@ -265,6 +267,7 @@ impl ResolvedLaunch {
                 fixed_dispatch_attribution: boolean("--flight-fixed-dispatch-attribution")?,
                 ordered_body_aero_capture: path("--flight-ordered-body-aero-capture"),
                 native_assembly_scene: path("--flight-native-assembly-scene"),
+                live_rigid_owner: path("--flight-live-rigid-owner"),
                 zero_native_force_pruning: options.get("--flight-zero-native-force-pruning").cloned(),
                 scientific_attachment_nodes: options.get("--flight-scientific-attachment-nodes").cloned(),
                 trail_emitter: options.get("--flight-trail-emitter").map(|output| Ok::<TrailEmitterSelection,String>(TrailEmitterSelection {
@@ -304,6 +307,17 @@ impl ResolvedLaunch {
 
     pub fn validate(&self) -> Result<()> {
         let d=&self.diagnostics;
+        if d.live_rigid_owner.is_some() {
+            let f=self.flight.as_ref().ok_or("live rigid owner requires pinned flight")?;
+            if self.live_play || f.expected_parts.is_none() || f.warp!=1 || f.atmosphere || f.seconds<=2.0 || !f.seconds.is_finite()
+                || f.perturbation!="quiet" || f.callback_attribution || d.checkpoint_reload || d.docking.is_some()
+                || d.aero_step_context.is_some() || d.aero_drag_transaction || d.ordered_body_aero_capture.is_some()
+                || d.zero_native_force_pruning.is_some() || d.fixed_step_owner_attribution || d.fixed_dispatch_attribution
+                || d.convection_replacement.is_some() || d.cylinder_occlusion_replacement.is_some() || d.integrator_update_attribution
+                || d.convection_capture.is_some() || d.native_assembly_scene.is_some() {
+                return Err("live rigid owner requires exclusive normal-time pinned vacuum, quiet capture longer than two simulated seconds".into());
+            }
+        }
         if d.native_assembly_scene.is_some() && self.flight.as_ref().is_some_and(|f| !f.seconds.is_finite() || f.seconds<=1.25) {
             return Err("native assembly capture must extend beyond the harness default pulse window (1.25 simulated seconds), including quiet captures".into());
         }
@@ -506,6 +520,7 @@ impl ResolvedLaunch {
         for path in [
             &self.diagnostics.multiscale_scene,
             &self.diagnostics.native_assembly_scene,
+            &self.diagnostics.live_rigid_owner,
             &self.diagnostics.menu_material_facts,
         ]
         .into_iter()
@@ -677,6 +692,21 @@ const FLIGHT_KEYS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_rigid_owner_freezes_vacuum_selection_and_rejects_overlap() {
+        let directory=tempfile::tempdir().unwrap();
+        let output=directory.path().canonicalize().unwrap().join("rigid.json");
+        let mut input=options(&[("--flight-save","lab"),("--flight-checkpoint","checkpoint"),("--flight-expected-parts","512"),("--flight-seconds","3"),("--flight-perturbation","quiet")]);
+        input.insert("--flight-live-rigid-owner".into(),output.to_str().unwrap().into());
+        let launch=ResolvedLaunch::parse(&input).unwrap();
+        let replay=ResolvedLaunch::parse_from_json(&launch.identity_json().unwrap()).unwrap();
+        assert_eq!(replay.diagnostics.live_rigid_owner,Some(output.clone()));
+        input.insert("--flight-atmosphere".into(),"true".into()); assert!(ResolvedLaunch::parse(&input).is_err());
+        input.remove("--flight-atmosphere");
+        input.insert("--flight-aero-step-context".into(),"query".into()); assert!(ResolvedLaunch::parse(&input).is_err());
+        input.remove("--flight-aero-step-context");
+        std::fs::write(output,b"existing").unwrap(); assert!(ResolvedLaunch::parse(&input).is_err());
+    }
     #[test]
     fn native_assembly_capture_rejects_short_windows_before_boot_and_freezes_selection() {
         let directory=tempfile::tempdir().unwrap();

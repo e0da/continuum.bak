@@ -69,6 +69,12 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.AssetGenerationReport" ||
                  type.FullName == "KspContinuum.AssetGenerationCapability" ||
                  type.FullName == "KspContinuum.VesselRuntimeCapture+CaptureReport" ||
+                 type.FullName == "KspContinuum.LiveRigidVesselOwner+Receipt" ||
+                 type.FullName == "KspContinuum.LiveRigidVesselOwner+BodyState" ||
+                 type.FullName == "KspContinuum.LiveRigidVesselOwner+RestoredRow" ||
+                 type.FullName == "KspContinuum.LiveRigidVesselOwner+Step" ||
+                 type.FullName == "KspContinuum.LiveRigidVesselOwner+Command" ||
+                 type.FullName == "KspContinuum.LiveRigidVesselBridge+CallsiteRow" ||
                  type.FullName == "KspContinuum.ConvectionCapture+CaptureReport" ||
                  type.FullName == "KspContinuum.ConvectionReplacement+ReportData" ||
                  type.FullName == "KspContinuum.ConvectionReplacement+Sample" ||

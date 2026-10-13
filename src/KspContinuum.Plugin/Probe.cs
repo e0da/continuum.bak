@@ -34,6 +34,7 @@ namespace KspContinuum
         FixedDispatchAttribution fixedDispatchAttribution;
         RetainedOrderedBodyAeroCapture orderedBodyAeroCapture;
         NativeAssemblyCaptureObserver nativeAssemblyCapture;
+        LiveRigidVesselOwner liveRigidOwner;
         ZeroNativeForcePruning zeroNativeForcePruning;
         TrailEmitterCapture trailEmitter;
         ConvectionCapture convectionCapture;
@@ -248,7 +249,9 @@ namespace KspContinuum
                 }
                 string nativeAssemblyOutput=Environment.GetEnvironmentVariable("CONTINUUM_NATIVE_ASSEMBLY_SCENE");
                 if(!string.IsNullOrEmpty(nativeAssemblyOutput))nativeAssemblyCapture=new NativeAssemblyCaptureObserver(nativeAssemblyOutput,report.runId,()=>captureActive);
-                if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || updateCallbackAttribution != null || integratorUpdateAttribution != null || cylinderOcclusionReplacement != null || fixedStepOwnerAttribution != null || dryBuoyancy != null || nativeAssemblyCapture != null)
+                string liveRigidOutput=Environment.GetEnvironmentVariable("CONTINUUM_LIVE_RIGID_OWNER");
+                if(!string.IsNullOrEmpty(liveRigidOutput))liveRigidOwner=new LiveRigidVesselOwner(liveRigidOutput,report.runId,()=>captureActive);
+                if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || updateCallbackAttribution != null || integratorUpdateAttribution != null || cylinderOcclusionReplacement != null || fixedStepOwnerAttribution != null || dryBuoyancy != null || nativeAssemblyCapture != null || liveRigidOwner != null)
                 {
                     IPlayerLoopBracketObserver observer = writerCensus == null ? null : writerCensus.Census;
                     if (substitutionCanary != null) observer = new CompositePlayerLoopObserver(observer, substitutionCanary);
@@ -259,9 +262,12 @@ namespace KspContinuum
                     if (fixedDispatchAttribution != null) observer = new CompositePlayerLoopObserver(observer, fixedDispatchAttribution);
                     if (dryBuoyancy != null) observer = new CompositePlayerLoopObserver(observer, dryBuoyancy);
                     if (nativeAssemblyCapture != null) observer = new CompositePlayerLoopObserver(observer, nativeAssemblyCapture);
+                    if (liveRigidOwner != null) observer = new CompositePlayerLoopObserver(observer, liveRigidOwner);
                     playerLoop = new PlayerLoopTiming(observer); playerLoop.Start(); report.playerLoop = playerLoop.Report;
                     if (updateCallbackAttribution != null && playerLoop.Report.integrityStatus != "verified-at-boundaries")
                         throw new InvalidOperationException("Update attribution requires intact PlayerLoop brackets.");
+                    if (liveRigidOwner != null && playerLoop.Report.integrityStatus != "verified-at-boundaries")
+                        throw new InvalidOperationException("Live rigid owner requires intact PlayerLoop brackets.");
                     if (substitutionCanary != null) substitutionCanary.Start();
                 }
                 if (Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-part-forces") >= 0)
@@ -488,6 +494,12 @@ namespace KspContinuum
             if (finished) return;
             finished = true;
             var errors = new List<string>();
+            if(liveRigidOwner!=null)
+            {
+                try { liveRigidOwner.Dispose(); if(!liveRigidOwner.Report.passed)errors.Add("LiveRigidOwner: "+liveRigidOwner.Report.status+" "+liveRigidOwner.Report.detail); }
+                catch(Exception error) {errors.Add("LiveRigidOwner: "+error);}
+                liveRigidOwner=null;
+            }
             if(nativeAssemblyCapture!=null)
             {
                 if(nativeAssemblyCapture.Error!=null||nativeAssemblyCapture.ManifestPath==null)errors.Add("NativeAssemblyScene: "+(nativeAssemblyCapture.Error??"No completed native boundary capture."));

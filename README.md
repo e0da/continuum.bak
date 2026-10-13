@@ -1,6 +1,6 @@
 # Continuum
 
-An experimental KSP 1 mechanics and performance lab with an addon, captured workloads, and system replacements. Continuum and Gimbal share a longer-term goal of supporting Kerbal-like, toy and realism experiences. Their [runtime and repository boundary](docs/continuum-gimbal-boundary.md) remains provisional, including a possible complete KSP/Unity replacement. Rigid grouping remains one experiment, not a commitment to making every ship rigid. `KspContinuum` remains the addon namespace.
+An experimental KSP 1 mechanics and performance lab with an addon, captured workloads, and system replacements. Continuum and Gimbal share a longer-term goal of supporting Kerbal-like, toy and realism experiences. Their [runtime and repository boundary](docs/continuum-gimbal-boundary.md) remains provisional, including a possible complete KSP/Unity replacement. Rigid assembled craft is the primary motion model; optional flexibility and wobble remain research capabilities. `KspContinuum` remains the addon namespace.
 
 **Status: experimental laboratory and opt-in replacements.** Prepared startup providers and batched flight rendering have run in an owned KSP instance. The [delivery ledger](docs/research-delivery.md) records their measured scope and remaining qualification. Complete playable performance, broad mod compatibility and an independent runtime remain open outcomes.
 
@@ -10,6 +10,7 @@ The [local research program](docs/ksp-research-program.md) adds guarded inventor
 
 ## What exists
 
+- A [live rigid vessel owner](docs/live-rigid-owner.md) routes original part force queues and motion reads to one aggregate while retaining gameplay identities. Its bounded vacuum diagnostic restores stock physics afterward; independent receipt verification and visible capture qualify this limited transaction separately from playability and FPS.
 - A main-menu benchmark compares 8, 32, and 128 aligned boxes as a chain of Unity fixed joints and as one compound rigid body. Both retain the same collider geometry. It uses separate physics scenes and does not change global simulation settings.
 - The benchmark checks collider ray hits, spacing error, a compound body's contact with a floor, and momentum at separation. It reports raw repeated timings. These are synthetic bodies, not stock parts or KSP joints.
 - A flight panel inventories the active vessel without modifying it. A small structural allowlist identifies inspection candidates; it does not approve them for merging.

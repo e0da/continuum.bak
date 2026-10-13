@@ -448,6 +448,18 @@ namespace KspContinuum
             }
         }
 
+        internal static void CaptureAtEndOfFrame(Action capture)
+        {
+            if (instance == null) throw new InvalidOperationException("Active flight capture host required.");
+            instance.StartCoroutine(EndOfFrameAction(capture));
+        }
+
+        static IEnumerator EndOfFrameAction(Action capture)
+        {
+            yield return new WaitForEndOfFrame();
+            capture();
+        }
+
         static bool Stable(ProbeReport report, out string reason)
         { return Stable(report, 1, out reason); }
 
