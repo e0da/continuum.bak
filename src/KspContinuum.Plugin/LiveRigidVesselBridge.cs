@@ -134,7 +134,7 @@ namespace KspContinuum
             var p=Harmony.GetPatchInfo(method);FrameHooks f;frames.TryGetValue(method,out f);
             return p!=null&&p.Owners.All(o=>o==PatchOwner||f!=null&&o==f.owner)&&p.Postfixes.Count==0&&p.Transpilers.Count==1&&p.Transpilers[0].owner==PatchOwner&&p.Transpilers[0].priority==Priority.Normal&&p.Transpilers[0].before.Length==0&&p.Transpilers[0].after.Length==0&&Same(p.Transpilers[0].PatchMethod,Transpiler)&&
                 p.Prefixes.Count<=(f!=null&&f.prefix!=null?1:0)&&p.Finalizers.Count<=(f!=null&&f.finalizer!=null?1:0)&&
-                p.Prefixes.All(x=>f!=null&&x.owner==f.owner&&Same(x.PatchMethod,f.prefix))&&p.Finalizers.All(x=>f!=null&&x.owner==f.owner&&Same(x.PatchMethod,f.finalizer));
+                p.Prefixes.All(x=>f!=null&&x.owner==f.owner&&Same(x.PatchMethod,f.prefix)&&x.priority==Priority.Normal&&x.before.Length==0&&x.after.Length==0)&&p.Finalizers.All(x=>f!=null&&x.owner==f.owner&&Same(x.PatchMethod,f.finalizer)&&x.priority==Priority.Normal&&x.before.Length==0&&x.after.Length==0);
         }
         public bool DeclareFrameHooks(MethodBase target,string ownerId,MethodInfo prefix,MethodInfo finalizer)
         {
@@ -149,6 +149,13 @@ namespace KspContinuum
             if(!Installed||disposed||!ReferenceEquals(active,this)||Thread.CurrentThread.ManagedThreadId!=thread)return false;
             foreach(MethodInfo api in Routes.Keys)if(Harmony.GetPatchInfo(api)?.Owners.Any()==true)return false;
             foreach(Plan plan in plans.Values)if(!Owned(plan.method)||Hash(plan.method.GetMethodBody().GetILAsByteArray())!=plan.il)return false;return true;
+        }
+        public bool HasExactFrameHooks(MethodBase target)
+        {
+            FrameHooks frame;
+            if (!plans.ContainsKey(target) || !frames.TryGetValue(target, out frame) || !Owned(target)) return false;
+            Patches graph = Harmony.GetPatchInfo(target);
+            return graph.Prefixes.Count == (frame.prefix == null ? 0 : 1) && graph.Finalizers.Count == (frame.finalizer == null ? 0 : 1);
         }
         static IEnumerable<CodeInstruction> Transform(IEnumerable<CodeInstruction> input,MethodBase __originalMethod)
         {

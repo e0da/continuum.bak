@@ -4,6 +4,8 @@
 not an unprofiled performance arm. Native sample receipt v3 requests two seconds
 at a one-millisecond interval. Historical five-second receipts are unchanged.
 
+Selecting native sampling now automatically enables the existing process capture diagnostics in the owned player, supplying its Mach clock/timebase boundaries. Unrequested runs retain their ambient process-capture behavior. A failed controlled sample exposed the missing request wiring; its original failed receipt remains preserved. The repaired run passes conservative enclosure without changing the validator or assuming Stopwatch/UTC equivalence.
+
 The runner retains capture signals, sampler PID/exit/hash, and native
 `mach_absolute_time` readings before/after spawning and observing completion.
 The game must publish `machClockStatus=available`,

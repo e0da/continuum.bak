@@ -846,6 +846,9 @@ fn smoke(
     let admission_seconds = admission_started.elapsed().as_secs_f64();
     let mut child = Command::new(&executable)
         .current_dir(&instance)
+        .envs(if flight.as_ref().is_some_and(|request| request.native_sample) {
+            vec![("CONTINUUM_PROCESS_CAPTURE", "1")]
+        } else { Vec::new() })
         .env("CONTINUUM_AERO_STEP_CONTEXT",selection.diagnostics.aero_step_context.as_deref().unwrap_or(""))
         .env("CONTINUUM_AERO_DRAG_TRANSACTION",if selection.diagnostics.aero_drag_transaction {"1"} else {""})
         .env("CONTINUUM_FIXED_STEP_OWNER_ATTRIBUTION",if selection.diagnostics.fixed_step_owner_attribution {"1"} else {""})

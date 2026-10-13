@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Threading;
 using HarmonyLib;
 using UnityEngine;
@@ -28,11 +29,17 @@ namespace KspContinuum
         readonly HashSet<int> accelerationReceivers = new HashSet<int>();
         readonly List<Step> steps = new List<Step>();
         readonly List<string> screenshots = new List<string>();
+        readonly List<PendingView> pendingViews = new List<PendingView>(4);
         readonly float[] captureTimes = { 1.8f, 4.5f, 8.5f, 11.5f };
         int captureIndex;
         readonly List<RigidAssemblyMember> propertyScratch = new List<RigidAssemblyMember>();
         readonly Harmony framePatches = new Harmony(FrameOwner);
         readonly List<MethodBase> frameMethods = new List<MethodBase>();
+        readonly MethodInfo[] stageMethods = new MethodInfo[3];
+        readonly HashSet<object> stageStates = new HashSet<object>();
+        FlightIntegrator stageIntegrator;
+        Type stageCoreType;
+        FieldInfo stageStateField;
         readonly LiveRigidVesselBridge bridge;
         static readonly FieldInfo StatsComplete = AccessTools.Field(typeof(VesselPrecalculate), "firstStatsRunComplete");
         Vessel vessel;
@@ -61,6 +68,10 @@ namespace KspContinuum
             public string screenshotPath;
             public string scenario = "quiet-pulse";
             public string[] screenshots;
+            public string imageEncodingPolicy = "inline", imageEncodingStatus = "not-started";
+            public long imageReadbackTicks, imageEncodeTicks, imageFileWriteTicks, imageEncodingBeginTicks, imageEncodingEndTicks;
+            public int imageReadbackCalls, imageEncodeCalls, imageFileWriteCalls, pendingViewCount, peakPendingViews;
+            public string imageCostScope = "Image readback includes owned Texture2D creation, original end-of-frame ReadPixels and Apply. Controlled PNG encoding and fresh-file writes run only after capture is inactive, using those retained pixels. Readback remains inside the capture window; costs include timer overhead and do not establish playable FPS.";
             public LiveRigidFlightDriver.Receipt controlDriver;
             public string scope = "Fixed topology, no-contact vacuum, normal time. Original Part/Rigidbody identities retained as kinematic proxies; independent default-scene aggregate advances in unchanged native physics. Rigid projection, native mass weighting and zero aggregate damping are declared model choices. No stock trajectory, contact, arbitrary mod writer, long-flight, feel or performance qualification.";
             public int sourceParts, sourceBodies, retractedWheelParts, aggregateId, physicsSteps, postRestorationNativeSteps, routedCommands, omittedZeroCommands, accelerationCalls, duplicateAccelerationReceivers;
@@ -81,6 +92,24 @@ namespace KspContinuum
             public RestoredRow[] restoredRows;
             public Step[] steps;
             public LiveRigidVesselBridge.CallsiteRow[] bridgeSites;
+            public BoundedStageCost[] stageCosts;
+            public string stageStatus = "not-requested", stageCleanupStatus = "not-installed";
+            public int stageFaults;
+            public bool stageHooksRemoved;
+            public string stageCostScope = "Controlled native ownership only. Three inclusive original method wall envelopes: exact active FI.FixedUpdate, root-only FI.Integrate and actual bound MechJeb AnalyzeParts. Integrate is nested in FI; MechJeb may overlap other declared scopes. Never add inclusive stages together. Entry filtering and finalizer dispatch/timer overhead are not independently removed. Zero calls means no observed execution, not zero cost. Original exceptions remain unchanged.";
+        }
+        [Serializable] public sealed class BoundedStageCost
+        {
+            public int slot, metadataToken, boundInstances, activeCalls;
+            public string assembly, assemblySha256, assemblyMvid, declaringType, method, signature, ilSha256;
+            public long calls, ticks, originalExceptions, clockFrequency = Stopwatch.Frequency;
+            public bool installed, removed;
+        }
+        struct StageState
+        {
+            public LiveRigidVesselOwner owner;
+            public long start;
+            public int slot;
         }
         [Serializable] public sealed class RestoredRow
         {
@@ -134,6 +163,11 @@ namespace KspContinuum
             public Vector3 PublishedPosition;
             public Quaternion PublishedRotation;
         }
+        sealed class PendingView
+        {
+            public Texture2D image;
+            public string path;
+        }
 
         public LiveRigidVesselOwner(string output, string runId, Func<bool> capturing)
         {
@@ -147,6 +181,7 @@ namespace KspContinuum
             if (controlled)
             {
                 Report.schema = "continuum-live-rigid-owner/v2"; Report.scenario = scenario;
+                Report.imageEncodingPolicy = "retained-readback-encode-after-capture";
                 Report.scope = "Twelve simulated seconds of original pilot attitude/RCS input, LOW 4x physics warp and normal return. Fixed topology, no-contact vacuum, original identities and default-scene native aggregate. Rigid projection, zero damping and material velocity preservation at mass/COM changes are declared model choices. Fuel-flow momentum, contact, arbitrary mods, human control feel and FPS remain unqualified.";
             }
             bridge = new LiveRigidVesselBridge();
@@ -282,13 +317,75 @@ namespace KspContinuum
             Texture2D image = null; RenderTexture previous = RenderTexture.active;
             try
             {
-                RenderTexture.active = null; image = new Texture2D(Screen.width, Screen.height, TextureFormat.RGB24, false);
-                image.ReadPixels(new Rect(0, 0, Screen.width, Screen.height), 0, 0); image.Apply();
+                long readbackStart = Stopwatch.GetTimestamp();
+                try
+                {
+                    RenderTexture.active = null; image = new Texture2D(Screen.width, Screen.height, TextureFormat.RGB24, false);
+                    image.ReadPixels(new Rect(0, 0, Screen.width, Screen.height), 0, 0); image.Apply();
+                }
+                finally { Report.imageReadbackTicks += Stopwatch.GetTimestamp() - readbackStart; Report.imageReadbackCalls++; }
                 string path = output + (controlled ? ".view-" + index : "") + ".png"; Need(!File.Exists(path), "Rigid flight screenshot already exists.");
-                File.WriteAllBytes(path, image.EncodeToPNG()); screenshots.Add(path); Report.screenshotPath = path; screenshotCaptured = true;
+                if (controlled)
+                {
+                    Need(pendingViews.Count < 4 && !pendingViews.Any(view => view.path == path), "Controlled image pending ownership bound/identity differs.");
+                    pendingViews.Add(new PendingView { image = image, path = path }); image = null;
+                    Report.pendingViewCount = pendingViews.Count; Report.peakPendingViews = Math.Max(Report.peakPendingViews, pendingViews.Count);
+                    Report.imageEncodingStatus = "retained-readbacks";
+                }
+                else { File.WriteAllBytes(path, image.EncodeToPNG()); screenshots.Add(path); Report.screenshotPath = path; screenshotCaptured = true; }
             }
             catch (Exception error) { Abort("Render readback: " + error); }
             finally { RenderTexture.active = previous; if (image != null) UnityEngine.Object.Destroy(image); }
+        }
+        void FlushPendingViews()
+        {
+            if (!controlled || Report.imageEncodingStatus == "completed") return;
+            bool captureInactive = false;
+            try { captureInactive = !capturing(); }
+            catch (Exception error) { ImageFailure("capture-state: " + error); }
+            try
+            {
+                if (!captureInactive)
+                {
+                    ImageFailure("Controlled image encoding interrupted while capture remained active; retained views discarded.");
+                    Report.imageEncodingStatus = "discarded-active-capture";
+                    return;
+                }
+                if (pendingViews.Count > 0) Report.imageEncodingBeginTicks = Stopwatch.GetTimestamp();
+                bool complete = pendingViews.Count == captureTimes.Length;
+                foreach (PendingView view in pendingViews)
+                {
+                    try
+                    {
+                        Need(view.image != null && !File.Exists(view.path), "Retained image ownership/fresh path differs.");
+                        byte[] bytes; long encodeStart = Stopwatch.GetTimestamp();
+                        try { bytes = view.image.EncodeToPNG(); }
+                        finally { Report.imageEncodeTicks += Stopwatch.GetTimestamp() - encodeStart; Report.imageEncodeCalls++; }
+                        Need(bytes != null && bytes.Length > 0, "Retained PNG encoder returned no bytes.");
+                        long writeStart = Stopwatch.GetTimestamp();
+                        try { using (var stream = new FileStream(view.path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) stream.Write(bytes, 0, bytes.Length); }
+                        finally { Report.imageFileWriteTicks += Stopwatch.GetTimestamp() - writeStart; Report.imageFileWriteCalls++; }
+                        screenshots.Add(view.path); Report.screenshotPath = view.path; screenshotCaptured = true;
+                    }
+                    catch (Exception error) { complete = false; ImageFailure("retained-image: " + error); }
+                }
+                Report.imageEncodingStatus = complete ? "completed" : "incomplete";
+            }
+            finally
+            {
+                foreach (PendingView view in pendingViews)
+                {
+                    try { if (view.image != null) UnityEngine.Object.Destroy(view.image); }
+                    catch (Exception error) { ImageFailure("retained-image cleanup: " + error); Report.imageEncodingStatus = "cleanup-error"; }
+                    view.image = null;
+                }
+                pendingViews.Clear(); Report.pendingViewCount = 0; Report.imageEncodingEndTicks = Stopwatch.GetTimestamp();
+            }
+        }
+        void ImageFailure(string detail)
+        {
+            Report.status = "invalid"; failed = true;
+            Report.detail = (Report.detail ?? "") + " Image: " + detail;
         }
         public void Fault(string phase, Exception error) { if (!disposed) Abort(phase + ": " + error); }
 
@@ -298,6 +395,7 @@ namespace KspContinuum
             vessel = FlightGlobals.ActiveVessel; Eligible(); VerifyLoopOrder(PlayerLoop.GetCurrentPlayerLoop());
             Need(bridge.ExactInstalled() && vessel.precalc != null && vessel.precalc.GetType() == typeof(VesselPrecalculate) && StatsComplete != null && StatsComplete.FieldType == typeof(bool), "Reader/bridge graph admission changed.");
             parts = vessel.parts.ToArray(); parents = new int[parts.Length]; aliases = new int[parts.Length];
+            if (controlled) BindStages();
             var found = new HashSet<Rigidbody>();
             for (int i = 0; i < parts.Length; i++)
             {
@@ -528,7 +626,8 @@ namespace KspContinuum
         void InstallFramePatches()
         {
             AddHook(AccessTools.DeclaredMethod(typeof(VesselPrecalculate), "CalculatePhysicsStats", Type.EmptyTypes), nameof(StatsPrefix));
-            AddHook(AccessTools.DeclaredMethod(typeof(FlightIntegrator), "Integrate", new[] { typeof(Part) }), nameof(PulsePrefix));
+            if (controlled) InstallStages();
+            else AddHook(AccessTools.DeclaredMethod(typeof(FlightIntegrator), "Integrate", new[] { typeof(Part) }), nameof(PulsePrefix));
             foreach (string name in new[] { "ChangeWorldVelocity", "SetWorldVelocity", "OffsetVelocity" }) AddFrame(typeof(Vessel), name, new[] { typeof(Vector3d) });
             AddFrame(typeof(Vessel), "SetPosition", new[] { typeof(Vector3d), typeof(bool) });
             AddFrame(typeof(Vessel), "SetRotation", new[] { typeof(Quaternion), typeof(bool) });
@@ -539,14 +638,121 @@ namespace KspContinuum
         {
             AddHook(AccessTools.DeclaredMethod(type, name, parameters), nameof(FramePrefix));
         }
-        void AddHook(MethodInfo method, string callback)
+        static string StageHash(byte[] bytes)
+        { using (var sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant(); }
+        static string StageAssemblyHash(Assembly assembly)
+        { using (var stream = File.OpenRead(assembly.Location)) using (var sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").ToLowerInvariant(); }
+        void InstallStages()
         {
-            Need(method != null && method.GetMethodBody() != null && method.Module.ModuleVersionId == new Guid("10657063-2fc3-43a7-84fa-d39e75e877bf"), "Frame method pin missing.");
+            Report.stageStatus = "installing";
+            var rows = new List<BoundedStageCost>();
+            Assembly stock = typeof(FlightIntegrator).Assembly;
+            const string stockSha = "8a20892953fc14c02f352b393eb6712c665156d94a7d846d16c20a7de3e22f27";
+            Need(StageAssemblyHash(stock) == stockSha, "Stage stock assembly content differs.");
+            StageMethod(rows, 0, typeof(FlightIntegrator), "FixedUpdate", 100677457, typeof(void), Type.EmptyTypes, stockSha, "10657063-2fc3-43a7-84fa-d39e75e877bf", null);
+            StageMethod(rows, 1, typeof(FlightIntegrator), "Integrate", 100677461, typeof(void), new[] { typeof(Part) }, stockSha, "10657063-2fc3-43a7-84fa-d39e75e877bf", null);
+            Assembly[] mods = AppDomain.CurrentDomain.GetAssemblies().Where(a => a.GetName().Name == "MechJeb2").ToArray();
+            Need(mods.Length <= 1, "Multiple stage MechJeb assemblies.");
+            if (mods.Length == 1)
+            {
+                const string mechSha = "6851b17fd2a73cb09e399f55a3322de3eaa8f047136251f52a343fae2f3df929";
+                Need(StageAssemblyHash(mods[0]) == mechSha, "Stage MechJeb assembly content differs.");
+                stageCoreType = mods[0].GetType("MuMech.MechJebCore", true); Type stateType = mods[0].GetType("MuMech.VesselState", true);
+                stageStateField = AccessTools.DeclaredField(stageCoreType, "VesselState");
+                Need(stageStateField != null && !stageStateField.IsStatic && stageStateField.IsInitOnly && stageStateField.FieldType == stateType, "Stage MechJeb readonly state ownership differs.");
+                StageMethod(rows, 2, stateType, "AnalyzeParts", 100665304, typeof(void), new[] { typeof(Vessel), stateType.GetNestedType("EngineInfo", BindingFlags.Public | BindingFlags.NonPublic), stateType.GetNestedType("IntakeInfo", BindingFlags.Public | BindingFlags.NonPublic) }, mechSha, "30fbe3c4-e77e-4abc-895b-a635d5924a08", "4abbb739651c412f89141209b17bf46213069d599c45dea10dd463baad7c175b");
+            }
+            Report.stageCosts = rows.ToArray(); Report.stageCleanupStatus = "installed";
+            string[] prefixes = { nameof(StageFiPrefix), nameof(StagePulsePrefix), nameof(StageMechPrefix) };
+            foreach (BoundedStageCost row in Report.stageCosts)
+            {
+                AddHook(stageMethods[row.slot], prefixes[row.slot], nameof(StageFinalizer));
+                Need(ExactStageGraph(row.slot), "Stage installed owner graph differs."); row.installed = true;
+            }
+            Report.stageStatus = "installed";
+        }
+        void StageMethod(List<BoundedStageCost> rows, int slot, Type type, string name, int token, Type result, Type[] parameters, string sha, string mvid, string expectedIl)
+        {
+            Need(type != null && parameters.All(t => t != null), "Stage declared signature type absent.");
+            MethodInfo method = AccessTools.DeclaredMethod(type, name, parameters);
+            Need(method != null && !method.IsStatic && method.DeclaringType == type && method.MetadataToken == token && method.ReturnType == result && method.Module.ModuleVersionId == new Guid(mvid) && method.GetMethodBody() != null, "Stage declared source signature differs.");
+            string il = StageHash(method.GetMethodBody().GetILAsByteArray());
+            Need(expectedIl == null || il == expectedIl, "Stage original IL differs.");
+            stageMethods[slot] = method;
+            rows.Add(new BoundedStageCost { slot = slot, metadataToken = token, assembly = method.Module.Assembly.GetName().Name,
+                assemblySha256 = sha, assemblyMvid = mvid, declaringType = type.FullName, method = name, signature = method.ToString(), ilSha256 = il });
+        }
+        void BindStages()
+        {
+            stageIntegrator = FlightIntegrator.ActiveVesselFI;
+            Need(stageIntegrator != null && stageIntegrator.GetType() == typeof(FlightIntegrator) && ReferenceEquals(AccessTools.Field(typeof(VesselModule), "vessel").GetValue(stageIntegrator), vessel), "Stage active FI owner differs.");
+            Report.stageCosts[0].boundInstances = 1; Report.stageCosts[1].boundInstances = 1;
+            if (stageCoreType == null) return;
+            foreach (Part part in parts) foreach (PartModule module in part.Modules)
+            {
+                if (module.GetType() != stageCoreType) continue;
+                object state = stageStateField.GetValue(module);
+                Need(state != null && state.GetType() == stageStateField.FieldType && stageStates.Add(state), "Stage MechJeb state identity differs.");
+            }
+            Report.stageCosts[2].boundInstances = stageStates.Count;
+        }
+        bool ExactStageGraph(int slot)
+        {
+            MethodInfo method = stageMethods[slot];
+            if (bridge.HasExactFrameHooks(method)) return true;
+            Patches graph = Harmony.GetPatchInfo(method);
+            string prefix = slot == 0 ? nameof(StageFiPrefix) : slot == 1 ? nameof(StagePulsePrefix) : nameof(StageMechPrefix);
+            return graph != null && graph.Owners.Count() == 1 && graph.Owners.Contains(FrameOwner) && graph.Transpilers.Count == 0 && graph.Postfixes.Count == 0 && graph.Prefixes.Count == 1 && graph.Finalizers.Count == 1 &&
+                graph.Prefixes[0].owner == FrameOwner && graph.Prefixes[0].PatchMethod == AccessTools.DeclaredMethod(typeof(LiveRigidVesselOwner), prefix) &&
+                graph.Finalizers[0].owner == FrameOwner && graph.Finalizers[0].PatchMethod == AccessTools.DeclaredMethod(typeof(LiveRigidVesselOwner), nameof(StageFinalizer)) &&
+                graph.Prefixes[0].priority == Priority.Normal && graph.Prefixes[0].before.Length == 0 && graph.Prefixes[0].after.Length == 0 &&
+                graph.Finalizers[0].priority == Priority.Normal && graph.Finalizers[0].before.Length == 0 && graph.Finalizers[0].after.Length == 0;
+        }
+        static void StageEnter(LiveRigidVesselOwner owner, int slot, out StageState state)
+        {
+            state = default(StageState);
+            if (owner == null || !owner.controlled || !owner.entered) return;
+            if (Thread.CurrentThread.ManagedThreadId != owner.thread) { owner.Report.stageFaults++; return; }
+            state.owner = owner; state.slot = slot; state.start = Stopwatch.GetTimestamp();
+            owner.Report.stageCosts[slot].activeCalls++;
+        }
+        static void StageFiPrefix(FlightIntegrator __instance, out StageState __state)
+        {
+            LiveRigidVesselOwner owner = active;
+            StageEnter(owner != null && ReferenceEquals(__instance, owner.stageIntegrator) ? owner : null, 0, out __state);
+        }
+        static void StagePulsePrefix(FlightIntegrator __instance, Part __0, out StageState __state)
+        {
+            PulsePrefix(__0);
+            LiveRigidVesselOwner owner = active;
+            StageEnter(owner != null && ReferenceEquals(__instance, owner.stageIntegrator) && ReferenceEquals(__0, owner.vessel.rootPart) ? owner : null, 1, out __state);
+        }
+        static void StageMechPrefix(object __instance, Vessel __0, out StageState __state)
+        {
+            LiveRigidVesselOwner owner = active;
+            StageEnter(owner != null && ReferenceEquals(__0, owner.vessel) && owner.stageStates.Contains(__instance) ? owner : null, 2, out __state);
+        }
+        static Exception StageFinalizer(Exception __exception, StageState __state)
+        {
+            LiveRigidVesselOwner owner = __state.owner;
+            if (owner == null) return __exception;
+            long elapsed = Stopwatch.GetTimestamp() - __state.start;
+            BoundedStageCost row = owner.Report.stageCosts[__state.slot];
+            if (elapsed < 0 || row.activeCalls <= 0) owner.Report.stageFaults++;
+            else { row.ticks += elapsed; row.calls++; row.activeCalls--; if (__exception != null) row.originalExceptions++; }
+            return __exception;
+        }
+        void AddHook(MethodInfo method, string callback, string finalizerName = null)
+        {
+            Need(method != null && method.GetMethodBody() != null &&
+                (method.Module.ModuleVersionId == new Guid("10657063-2fc3-43a7-84fa-d39e75e877bf") ||
+                 controlled && method == stageMethods[2] && method.Module.ModuleVersionId == new Guid("30fbe3c4-e77e-4abc-895b-a635d5924a08")), "Frame method pin missing.");
             Patches patches = Harmony.GetPatchInfo(method);
             MethodInfo prefix = AccessTools.DeclaredMethod(typeof(LiveRigidVesselOwner), callback);
-            bool bridgeSelected = bridge.DeclareFrameHooks(method, FrameOwner, prefix, null);
+            MethodInfo finalizer = finalizerName == null ? null : AccessTools.DeclaredMethod(typeof(LiveRigidVesselOwner), finalizerName);
+            bool bridgeSelected = bridge.DeclareFrameHooks(method, FrameOwner, prefix, finalizer);
             Need(bridgeSelected || patches == null || !patches.Owners.Any(), "Existing frame method owner: " + method.Name);
-            frameMethods.Add(method); framePatches.Patch(method, prefix: new HarmonyMethod(prefix));
+            frameMethods.Add(method); framePatches.Patch(method, prefix: new HarmonyMethod(prefix), finalizer: finalizer == null ? null : new HarmonyMethod(finalizer));
         }
         static void PulsePrefix(Part __0)
         {
@@ -691,10 +897,26 @@ namespace KspContinuum
         void ReleaseHooks()
         {
             if (Report.bridgeReleased) return;
+            if (controlled && Report.stageCosts != null)
+                foreach (BoundedStageCost row in Report.stageCosts)
+                    if (row.installed && (!ExactStageGraph(row.slot) || StageHash(stageMethods[row.slot].GetMethodBody().GetILAsByteArray()) != row.ilSha256)) Report.stageFaults++;
             if (bridge.Installed) Need(bridge.ExactInstalled(), "Bridge graph changed before cleanup.");
             if (frameMethods.Count > 0) framePatches.UnpatchAll(FrameOwner);
             frameInstalled = false; bridge.Dispose(); Report.bridgeReleased = bridge.CleanupStatus == "removed";
             foreach (MethodBase method in frameMethods) if (Harmony.GetPatchInfo(method)?.Owners.Contains(FrameOwner) == true) Report.bridgeReleased = false;
+            if (controlled && Report.stageCosts != null)
+            {
+                bool removed = true;
+                foreach (BoundedStageCost row in Report.stageCosts)
+                {
+                    MethodInfo method = stageMethods[row.slot];
+                    row.removed = Harmony.GetPatchInfo(method)?.Owners.Any() != true && StageHash(method.GetMethodBody().GetILAsByteArray()) == row.ilSha256;
+                    removed &= row.removed;
+                }
+                Report.stageHooksRemoved = removed;
+                Report.stageCleanupStatus = removed ? "removed-owned-hooks-original-graphs" : "incomplete";
+                if (!removed) Report.stageFaults++;
+            }
             Need(Report.bridgeReleased, "Owned bridge cleanup incomplete.");
         }
         public void Dispose()
@@ -711,14 +933,18 @@ namespace KspContinuum
                 ReleaseHooks();
             }
             catch (Exception error) { Report.status = "invalid"; Report.detail = "Hook cleanup failed: " + error; }
+            FlushPendingViews();
             Report.steps = steps.ToArray(); Report.bridgeSites = bridge.SourceCallsites;
             Report.autoSyncTransformsUnchanged = !controlled || Physics.autoSyncTransforms == autoSyncTransforms;
             Report.screenshots = screenshots.ToArray();
             Report.aggregateRetired = retiredRoot == null && Report.originalBodiesRestored;
             Report.cleanupStatus = Report.originalBodiesRestored && Report.aggregateRetired && Report.bridgeReleased && !frameInstalled ? "restored-original-ownership" : "incomplete";
+            bool stagesComplete = !controlled || Report.stageCosts != null && Report.stageFaults == 0 && Report.stageHooksRemoved &&
+                Report.stageCosts.All(row => row.installed && row.removed && row.activeCalls == 0 && row.originalExceptions == 0);
+            if (controlled) Report.stageStatus = stagesComplete ? "observed" : "invalid";
             bool treatmentComplete = controlled ? driver != null && driver.Report.passed && steps.Sum(step => (double)step.dt) >= 11.99 &&
-                Report.postRestorationSimulatedSeconds >= 1.9999 && screenshots.Count == captureTimes.Length : Report.pulseQueued;
-            Report.passed = Report.status != "invalid" && Report.autoSyncTransformsUnchanged && steps.Count >= 10 && Report.postRestorationNativeSteps >= 2 && Report.stockContinuationVerified && treatmentComplete && screenshotCaptured && Report.cleanupStatus == "restored-original-ownership" &&
+                Report.postRestorationSimulatedSeconds >= 1.9999 && screenshots.Count == captureTimes.Length && Report.imageEncodingStatus == "completed" && Report.pendingViewCount == 0 : Report.pulseQueued;
+            Report.passed = Report.status != "invalid" && stagesComplete && Report.autoSyncTransformsUnchanged && steps.Count >= 10 && Report.postRestorationNativeSteps >= 2 && Report.stockContinuationVerified && treatmentComplete && screenshotCaptured && Report.cleanupStatus == "restored-original-ownership" &&
                 Report.velocityReads > 0 && Report.accelerationCalls > 0 && Report.maxProxyPositionError <= 1e-4 && Report.maxProxyRotationError <= .002;
             if (Report.status != "invalid") Report.status = Report.passed ? "passed" : "incomplete";
             File.WriteAllText(output, ReportJson.Encode(Report));

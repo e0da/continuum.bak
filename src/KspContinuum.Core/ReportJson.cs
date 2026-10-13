@@ -70,6 +70,7 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.AssetGenerationCapability" ||
                  type.FullName == "KspContinuum.VesselRuntimeCapture+CaptureReport" ||
                  type.FullName == "KspContinuum.LiveRigidVesselOwner+Receipt" ||
+                 type.FullName == "KspContinuum.LiveRigidVesselOwner+BoundedStageCost" ||
                  type.FullName == "KspContinuum.LiveRigidVesselOwner+BodyState" ||
                  type.FullName == "KspContinuum.LiveRigidVesselOwner+RestoredRow" ||
                  type.FullName == "KspContinuum.LiveRigidVesselOwner+Step" ||
