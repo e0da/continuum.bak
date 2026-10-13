@@ -215,6 +215,7 @@ namespace KspContinuum
         readonly OwnedRuntimeDefinition definition;
         readonly OwnedRuntimeActuatorSpec[] actuators;
         readonly OwnedRuntimeSurfaceSpec[] surfaces;
+        readonly OwnedRuntimeEnvironmentSample[] environments;
         readonly OwnedRuntimeThermalLink[] links;
         readonly bool[] enabled, flowEnabled;
         readonly int[][][] fuelPools;
@@ -224,6 +225,7 @@ namespace KspContinuum
         readonly double[] heat, wheelMomentum, stagedWheelMomentum;
         readonly bool observeClock;
         public readonly Rotation ControlOrientation;
+        internal bool IsBoundTo(OwnedRuntimeWorld candidate){return ReferenceEquals(world,candidate);}
         long configurationRevision;
         readonly object configurationGate=new object();
         bool executing;
@@ -239,7 +241,7 @@ namespace KspContinuum
                 throw new ArgumentException("System plan exceeds bounded row capacity.");
             this.world=world;definition=world.Definition;
             ControlOrientation=controlOrientation??Rotation.Identity;RigidAssemblyProperties.RequireRotation(ControlOrientation);
-            partBodies=new int[definition.PartCount];
+            partBodies=new int[definition.PartCount];environments=new OwnedRuntimeEnvironmentSample[definition.BodyCount];
             for(int p=0;p<partBodies.Length;p++)partBodies[p]=definition.BodySlot(definition.GetPart(p).BodyId);
             this.actuators=(OwnedRuntimeActuatorSpec[])actuators.Clone();this.surfaces=(OwnedRuntimeSurfaceSpec[])surfaces.Clone();
             links=thermalLinks==null?new OwnedRuntimeThermalLink[0]:(OwnedRuntimeThermalLink[])thermalLinks.Clone();
@@ -349,8 +351,12 @@ namespace KspContinuum
 
         public void Step(OwnedRuntimeStep step, OwnedRuntimeEnvironment environment, OwnedRuntimeControls controls,
             OwnedRuntimeExternalForce[] externalForces)
+        {StepCore(step,environment,null,controls,externalForces);}
+        public void Step(OwnedRuntimeStep step,IOwnedRuntimeEnvironmentField field,OwnedRuntimeControls controls)
+        {StepCore(step,null,field,controls,null);}
+        void StepCore(OwnedRuntimeStep step,OwnedRuntimeEnvironment environment,IOwnedRuntimeEnvironmentField field,OwnedRuntimeControls controls,OwnedRuntimeExternalForce[] externalForces)
         {
-            if(environment==null)throw new ArgumentNullException("environment");world.CheckStep(step);
+            if(environment==null&&field==null)throw new ArgumentNullException("environment/field");world.CheckStep(step);
             controls.Validate();var input=step.Bank.Input;
             if(controls.Throttle!=input.Throttle || controls.Attitude.X!=input.Pitch || controls.Attitude.Y!=input.Yaw
                 || controls.Attitude.Z!=input.Roll || controls.Translation.X!=input.X || controls.Translation.Y!=input.Y || controls.Translation.Z!=input.Z)
@@ -359,7 +365,7 @@ namespace KspContinuum
                 throw new InvalidOperationException("System plan belongs to a different definition/world.");
             if(externalForces!=null)for(int i=0;i<externalForces.Length;i++)
             {Part(externalForces[i].Part);OwnedRuntimeDynamics.Require(externalForces[i].WorldPoint);OwnedRuntimeDynamics.Require(externalForces[i].WorldForce);OwnedRuntimeDynamics.Require(externalForces[i].WorldTorque);}
-            if(environment.Epoch>step.ExpectedStamp.Time)throw new InvalidOperationException("Environment observation is from the future.");
+            if(environment!=null&&environment.Epoch>step.ExpectedStamp.Time)throw new InvalidOperationException("Environment observation is from the future.");
             double dt=step.DeltaTime;if(dt>.1)throw new ArgumentOutOfRangeException("dt", "Physical model step exceeds 0.1 seconds.");
             step.ClaimSystemsExecution();
             long begin=observeClock?Stopwatch.GetTimestamp():0;
@@ -382,15 +388,17 @@ namespace KspContinuum
                 {
                     Vec displacement=bank.RegionMotion[r].Orientation.Rotate(oldCenters[r]+bank.Properties[r].CenterOfMass*-1);
                     torques[r]=torques[r]+Vec.Cross(displacement,forces[r]);
-                    forces[r]=forces[r]+environment.Gravity*bank.Properties[r].Mass;
+                    var sample=field==null?new OwnedRuntimeEnvironmentSample(environment):field.Sample(step.ExpectedStamp,r,bank.RegionMotion[r],bank.Properties[r]);
+                    sample.Validate();if(sample.Epoch>step.ExpectedStamp.Time)throw new InvalidOperationException("Environment field observation is from the future.");
+                    environments[r]=sample;forces[r]=forces[r]+sample.Gravity*bank.Properties[r].Mass;
                 }
-                Aerothermal(step,environment);
+                Aerothermal(step);
                 if(externalForces!=null)for(int i=0;i<externalForces.Length;i++)
                 {
                     var command=externalForces[i];int region=bank.Topology.PartRegions[command.Part];
                     AddForce(bank,region,command.WorldPoint,command.WorldForce);torques[region]=torques[region]+command.WorldTorque;
                 }
-                Thermal(step,environment);
+                Thermal(step);
                 for(int r=0;r<regions;r++)
                 {
                     OwnedRuntimeDynamics.StepCoupled(ref bank.RegionMotion[r],bank.Properties[r],forces[r],torques[r],oldWheel[r],newWheel[r],dt);
@@ -483,16 +491,17 @@ namespace KspContinuum
             }
         }
 
-        void Aerothermal(OwnedRuntimeStep step,OwnedRuntimeEnvironment environment)
+        void Aerothermal(OwnedRuntimeStep step)
         {
             var bank=step.Bank;
             for(int i=0;i<surfaces.Length;i++)
             {
                 Counters.SurfaceRows++;var s=surfaces[i];int body=partBodies[s.Part],region=bank.Topology.BodyRegions[body];
+                var environment=environments[region];
                 var motion=bank.RegionMotion[region];Vec point=LocalPoint(bank,s.Part,s.LocalPoint,body);
                 Vec lever=motion.Orientation.Rotate(point+bank.Properties[region].CenterOfMass*-1);
                 Vec omega=OwnedRuntimeDynamics.AngularVelocity(bank.Properties[region],motion.Orientation,motion.AngularMomentum);
-                Vec relative=motion.Velocity+Vec.Cross(omega,lever)+environment.WindVelocity*-1;
+                Vec relative=motion.Velocity+Vec.Cross(omega+environment.FlowAngularVelocity*-1,lever)+environment.WindVelocity*-1;
                 double speed2=OwnedRuntimeDynamics.Dot(relative,relative);if(speed2==0 || environment.Density==0)continue;
                 double speed=Math.Sqrt(speed2),q=.5*environment.Density*speed2;
                 Vec direction=relative*(1/speed);
@@ -505,13 +514,13 @@ namespace KspContinuum
             }
         }
 
-        void Thermal(OwnedRuntimeStep step,OwnedRuntimeEnvironment environment)
+        void Thermal(OwnedRuntimeStep step)
         {
             var bank=step.Bank;double dt=step.DeltaTime;
             for(int p=0;p<heat.Length;p++)bank.Temperature[p]+=heat[p]/definition.GetPart(p).HeatCapacity;
             for(int i=0;i<surfaces.Length;i++)
             {
-                var s=surfaces[i];double t=bank.Temperature[s.Part],ambient=environment.RadiationTemperature;
+                var s=surfaces[i];var environment=environments[bank.Topology.PartRegions[s.Part]];double t=bank.Temperature[s.Part],ambient=environment.RadiationTemperature;
                 double radiative=StefanBoltzmann*s.Emissivity*s.ThermalArea*(t*t*t+t*t*ambient+t*ambient*ambient+ambient*ambient*ambient);
                 double convective=environment.ConvectiveCoefficient*s.ThermalArea,capacity=definition.GetPart(s.Part).HeatCapacity;
                 double denominator=capacity+dt*(radiative+convective);

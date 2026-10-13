@@ -21,6 +21,8 @@ class Program
         var world=new OwnedRuntimeWorld(definition,OwnedRuntimeTopology.Compile(definition,new OwnedRuntimeConnection[0]),new OwnedRuntimeMotion {Orientation=Rotation.Identity});
         var systems=new OwnedRuntimeSystems(world,new OwnedRuntimeActuatorSpec[0],new OwnedRuntimeSurfaceSpec[0]);
         var host=new OwnedRuntimeHost(world,systems);var input=new OwnedRuntimeInput(0);var controls=new OwnedRuntimeControls();
+        using(var file=System.IO.File.OpenRead(typeof(OwnedRuntimeBuiltinSchedule).Assembly.Location))using(var sha=System.Security.Cryptography.SHA256.Create())
+            Require(host.ScheduleSourceSha256==BitConverter.ToString(sha.ComputeHash(file)).Replace("-","").ToLowerInvariant(),"Builtin schedule is not pinned to its executable image.");
         var env=new OwnedRuntimeEnvironment("vacuum",0,0,0,300,new Vec(),new Vec());
         host.Advance(.02,input,env,controls);var before=world.Stamp;var reloaded=new Schedule();
         host.SwapSchedule(reloaded,new string('a',64),before);Require(world.Stamp.Matches(before)&&host.CodeGeneration==1,"Code swap changed committed state.");
@@ -43,6 +45,7 @@ class Program
     static void Main()
     {
         FoundationCases.Run();SystemsTests.Run();CheckpointTests.Run();BinaryCheckpointTests.Run();Host();
+        FlightWorldTests.Run();FlightControlTests.Run();FlightPresentationTests.Run();
         var captured=new OwnedRuntimeCapturedParts {parts=new[]{new OwnedRuntimeCapturedPart {partId=1,name="export",resources=new[]{new OwnedRuntimeCapturedResource {name="Fuel",amount=2,capacity=1,densityKilogramsPerUnit=3}},actuators=new[]{new OwnedRuntimeCapturedActuator {kind="rcs",thrusters=new[]{new OwnedRuntimeCapturedThruster {positionInRoot=new double[3],forceDirectionInRoot=new[]{1.0,0,0}}},propellants=new[]{new OwnedRuntimeCapturedPropellant {resource="Fuel",ratio=1}},resourceRates=new[]{new OwnedRuntimeCapturedResourceRate {resource="EC",unitsPerSecond=1,varyTime=true}}}}}}};
         using(var json=System.Text.Json.JsonDocument.Parse(ReportJson.Encode(captured)))
         {

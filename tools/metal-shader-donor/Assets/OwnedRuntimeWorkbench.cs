@@ -26,6 +26,10 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         public long epoch,stateRevision,topologyRevision,codeGeneration,steps,presentationRootWrites,lastRequest;
         public double time,delta=.02,density,ambient=300,maximumBodyPoseError,lastAdvanceMilliseconds,totalAdvanceMilliseconds;
         public string aeroSha,resourcePolicy,scheduleSha;
+        public string worldSha,flightMode,pilotMode,predictionStatus,maneuverId;
+        public double universalTime,altitude,predictionMilliseconds;
+        public int predictionPoints;
+        public OwnedFlightPresentation.StatusData visual;
         public bool paused=true,ortho,emptySceneReleased;
         public Region[] states;
         public string[] events;
@@ -40,6 +44,18 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
     OwnedRuntimeHost host;
     OwnedRuntimeControls controls;
     OwnedRuntimeEnvironment environment;
+    OwnedFlightSession flight;
+    OwnedFlightPresentation presentation;
+    OwnedFlightOverlay overlay;
+    bool scientificGrid=true;
+    string gridParent="root";
+    OwnedFlightPilotData pilot=new OwnedFlightPilotData();
+    OwnedFlightPredictionResult prediction;
+    OwnedFlightManeuverPlan maneuver;
+    Vec cameraBodyOrigin;
+    string visualSha="";
+    string cameraFrame="sun";
+    string cameraFocus="root";
     OwnedRuntimeStepPlan plan=new OwnedRuntimeStepPlan(.02);
     Transform[] anchors;
     int[] anchorSlots;
@@ -88,6 +104,14 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
             host=new OwnedRuntimeHost(imported.World,imported.Systems);
             controls=new OwnedRuntimeControls {EnginesEnabled=true,RcsEnabled=true,WheelsEnabled=true};
             environment=new OwnedRuntimeEnvironment("captured-craft/vacuum-research",0,host.World.Stamp.Time,0,300,new Vec(),new Vec());
+            string worldPath=Environment.GetEnvironmentVariable("CONTINUUM_OWNED_FLIGHT_WORLD");
+            if(!string.IsNullOrEmpty(worldPath))
+            {
+                Need(Path.IsPathRooted(worldPath)&&File.Exists(worldPath)&&new FileInfo(worldPath).Length<=1024*1024,"Owned flight context missing/excessive.");
+                var context=OwnedFlightWorld.Admit(JsonUtility.FromJson<OwnedFlightCapture>(File.ReadAllText(worldPath)),Hash(manifestPath),Hash(specsPath),Hash(worldPath));
+                flight=OwnedFlightSession.SeedCaptured(host.World,context,context.CapturedRootPosition);receipt.worldSha=context.SourceSha256;
+                receipt.scope="Owned captured central-body flight, control/resource/aero/thermal banks, guarded passive coast, disposable predictions and actual captured craft/planet visual assets. Terrain/contact, articulation, original modules and stock shader fidelity are unqualified.";
+            }
             scene=SceneManager.CreateScene("Owned runtime "+Guid.NewGuid().ToString("N"),new CreateSceneParameters(LocalPhysicsMode.Physics3D));
             visible=NativeAssemblySceneImport.Load(manifestPath,scene);visible.Owner.Body.isKinematic=true;visible.Owner.Body.detectCollisions=false;
             anchors=new Transform[visible.Owner.Members.Count];anchorSlots=new int[anchors.Length];
@@ -95,16 +119,25 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
             for(int i=0;i<anchors.Length;i++){anchors[i]=visible.Owner.Members[i].Anchor;anchorSlots[i]=slots[visible.Receipt.sourceBodyIds[i]];foreach(var collider in visible.Owner.Members[i].Colliders)collider.enabled=false;}
             camera=new GameObject("Owned runtime inspection camera").AddComponent<Camera>();SceneManager.MoveGameObjectToScene(camera.gameObject,scene);
             camera.clearFlags=CameraClearFlags.SolidColor;camera.backgroundColor=new Color(.035f,.055f,.085f);camera.fieldOfView=50;camera.nearClipPlane=.05f;camera.farClipPlane=10000;camera.allowMSAA=false;
+            if(flight!=null)
+            {
+                string path=Environment.GetEnvironmentVariable("CONTINUUM_OWNED_FLIGHT_VISUALS");Need(!string.IsNullOrEmpty(path),"Same-epoch visual assets required for world flight.");visualSha=Hash(path);
+                presentation=new OwnedFlightPresentation(imported,flight,path,visualSha,Shader.Find("Continuum/MultiscaleDiagnostic"));
+                overlay=new OwnedFlightOverlay();
+                foreach(var shape in anchors)foreach(var renderer in shape.GetComponentsInChildren<Renderer>(true))renderer.enabled=false;
+                camera.cullingMask=0;camera.gameObject.AddComponent<OwnedFlightImageEffect>().Owner=this;
+            }
             QualitySettings.vSyncCount=0;Application.targetFrameRate=60;Time.timeScale=1;
             listener=new TcpListener(IPAddress.Loopback,0);listener.Start(4);receipt.port=((IPEndPoint)listener.LocalEndpoint).Port;
             receipt.processId=System.Diagnostics.Process.GetCurrentProcess().Id;receipt.unity=Application.unityVersion;receipt.graphics=SystemInfo.graphicsDeviceType.ToString();
             receipt.sourceRevision=Environment.GetEnvironmentVariable("CONTINUUM_SOURCE_REVISION");receipt.nativeSha=Hash(manifestPath);receipt.partSpecsSha=Hash(specsPath);receipt.status="ready";
-            Present(true);UpdateReceipt();SaveReceipt();server=new Thread(Serve){IsBackground=true};server.Start();
+            Present(true);FollowCamera();UpdateReceipt();SaveReceipt();server=new Thread(Serve){IsBackground=true};server.Start();
         }
         catch(Exception error){receipt.status="failed";receipt.error=error.ToString();if(output!=null&&Directory.Exists(output))SaveReceipt();Debug.LogException(error);}
     }
     void Update()
     {
+        if(stopping)return;
         Request request;int handled=0;
         while(handled++<16&&requests.TryDequeue(out request))
         {
@@ -114,7 +147,7 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
             catch(Exception error){events.Add("rejected: "+request.Text+" :: "+error.Message);request.Reply="{\"status\":\"rejected\",\"request\":"+request.Id+",\"message\":\"Command failed; inspect status for committed progress.\"}";receipt.error=error.ToString();UpdateReceipt();SaveReceipt();}
             finally {Interlocked.Exchange(ref request.State,2);}
         }
-        if(host==null)return;
+        if(stopping||host==null)return;
         if(Input.GetKeyDown(KeyCode.Space))receipt.paused=!receipt.paused;
         if(Input.GetKeyDown(KeyCode.O)){receipt.ortho=!receipt.ortho;camera.orthographic=receipt.ortho;}
         if(!receipt.paused)
@@ -142,8 +175,9 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         Need(count>0&&count<=10000,"Step request outside its bound.");
         for(int i=0;i<count;i++)
         {
+            if(flight!=null)ApplyPilot();
             var input=new OwnedRuntimeInput(controls.Throttle,controls.Attitude.X,controls.Attitude.Y,controls.Attitude.Z,controls.Translation.X,controls.Translation.Y,controls.Translation.Z);
-            long started=System.Diagnostics.Stopwatch.GetTimestamp();host.Advance(plan.Delta,input,environment,controls);
+            long started=System.Diagnostics.Stopwatch.GetTimestamp();if(flight==null)host.Advance(plan.Delta,input,environment,controls);else flight.AdvanceLocal(host,plan.Delta,controls);
             receipt.lastAdvanceMilliseconds=(System.Diagnostics.Stopwatch.GetTimestamp()-started)*1000.0/System.Diagnostics.Stopwatch.Frequency;
             receipt.totalAdvanceMilliseconds+=receipt.lastAdvanceMilliseconds;receipt.steps++;
         }
@@ -151,6 +185,7 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
     }
     void Present(bool force)
     {
+        if(presentation!=null)return;
         using(var view=host.World.AcquireRead())
         {
             if(force||lastPresentationTopology!=view.Stamp.TopologyRevision)
@@ -174,12 +209,43 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
     }
     void FollowCamera()
     {
+        if(flight!=null)
+        {
+            Vec target=cameraFocus=="body"?new Vec():cameraFocus=="com"?flight.CenterPosition(0):flight.BodyPosition(0),direction=flight.Context.SunDirection;
+            if(cameraFrame=="orbit")direction=Unit(flight.CenterPosition(0));
+            else if(cameraFrame=="ship")using(var view=host.World.AcquireRead())direction=view.GetRegion(0).Motion.Orientation.Rotate(new Vec(0,0,-1));
+            else if(cameraFrame=="plane")using(var view=host.World.AcquireRead())direction=Unit(Vec.Cross(flight.CenterPosition(0),view.GetRegion(0).Motion.Velocity));
+            else if(cameraFrame=="quarter")direction=Unit(direction+Unit(Vec.Cross(direction,new Vec(0,1,0)))*.6);
+            cameraBodyOrigin=target+direction*cameraDistance;
+            Vector3 forward=V(direction*-1);Vector3 up=Math.Abs(Vector3.Dot(forward,Vector3.up))>.95f?Vector3.forward:Vector3.up;
+            camera.transform.SetPositionAndRotation(Vector3.zero,Quaternion.LookRotation(forward,up));camera.orthographicSize=cameraDistance*.35f;return;
+        }
         using(var view=host.World.AcquireRead())
         {
             Vec center=view.GetRegion(0).Motion.RootPosition;Vector3 target=V(center);
             Vector3 lightView=new Vector3(.3f,.7f,-.5f).normalized;
             camera.transform.SetPositionAndRotation(target+lightView*cameraDistance,Quaternion.LookRotation(-lightView,Vector3.up));
             camera.orthographicSize=cameraDistance*.35f;
+        }
+    }
+    static Vec Unit(Vec value){double length=Math.Sqrt(value.X*value.X+value.Y*value.Y+value.Z*value.Z);Need(length>0,"Camera direction is degenerate.");return value*(1/length);}
+    public void RenderFlight(RenderTexture source,RenderTexture destination)
+    {
+        if(stopping||presentation==null){Graphics.Blit(source,destination);return;}
+        try{presentation.Render(camera,cameraBodyOrigin,destination);}
+        catch(Exception error){receipt.paused=true;receipt.status="render-failed";receipt.error=error.ToString();SaveReceipt();Graphics.Blit(source,destination);}
+    }
+    void ApplyPilot()
+    {
+        if(pilot.mode=="manual")return;
+        int slot=flight.FindRegion(pilot.regionId);using(var read=host.World.AcquireRead())
+        {
+            var state=read.GetRegion(slot);Rotation frame=state.Motion.Orientation*host.Systems.ControlOrientation;
+            var authority=OwnedFlightControl.ObserveAuthority(host.World,host.Systems,state.Id,frame);
+            OwnedFlightGuidance guidance=pilot.mode=="attitude"?OwnedFlightControl.AttitudeHold(state.Motion.Orientation,
+                OwnedRuntimeDynamics.AngularVelocity(state.Properties,state.Motion.Orientation,state.Motion.AngularMomentum),new Rotation(pilot.targetOrientation[0],pilot.targetOrientation[1],pilot.targetOrientation[2],pilot.targetOrientation[3]),frame,authority.PositiveAngularAcceleration,authority.NegativeAngularAcceleration,pilot.maximumRate,pilot.responseSeconds):
+                OwnedFlightControl.VelocityHold(state.Motion.Velocity,new Vec(pilot.targetVelocity[0],pilot.targetVelocity[1],pilot.targetVelocity[2]),frame,authority.LinearAcceleration,pilot.responseSeconds);
+            controls=OwnedFlightControl.Controls(guidance.Input,false,true,true);
         }
     }
     void UpdateReceipt()
@@ -195,6 +261,8 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
             for(int r=0;r<view.RegionCount;r++){var state=view.GetRegion(r);receipt.states[r]=new Region {id=state.Id,mass=state.Properties.Mass,position=A(state.Motion.RootPosition),rotation=A(state.Motion.Orientation),velocity=A(state.Motion.Velocity),momentum=A(state.Motion.AngularMomentum)};}
         }
         receipt.events=events.ToArray();
+        if(flight!=null){var sampled=flight.EvaluateRegion(0);receipt.density=sampled.Density;receipt.ambient=sampled.Temperature;receipt.universalTime=flight.UniversalTime;receipt.altitude=flight.Context.Altitude(flight.CenterPosition(0));receipt.flightMode=flight.Mode;receipt.pilotMode=pilot.mode;receipt.visual=presentation==null?null:presentation.Status;
+            if(prediction!=null){receipt.predictionStatus=prediction.Status;receipt.predictionPoints=prediction.Count;receipt.predictionMilliseconds=prediction.ElapsedTicks*1000.0/prediction.ClockFrequency;}receipt.maneuverId=maneuver==null?null:maneuver.Id;}
     }
     void SaveReceipt(){File.WriteAllText(Path.Combine(output,"status.json"),JsonUtility.ToJson(receipt,true));}
     string Execute(string text)
@@ -203,10 +271,48 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         if(args[0]=="status"){UpdateReceipt();return JsonUtility.ToJson(receipt);}
         if(args[0]=="quit"){stopping=true;Invoke("Quit",.15f);return "{\"status\":\"quitting\"}";}
         Need(host!=null&&receipt.status=="ready","Runtime is not ready.");
+        if(flight!=null&&(args[0]=="atmosphere"||args[0]=="vacuum"||args[0]=="wind"))throw new InvalidOperationException("World flight obtains the field from captured body/altitude; use atmo-flight/orbit placement.");
         if(args[0]=="step"&&args.Length==2)Advance(int.Parse(args[1],CultureInfo.InvariantCulture));
         else if(args[0]=="pause"&&args.Length==2)receipt.paused=args[1]!="off";
         else if(args[0]=="input"&&args.Length==8)
-        {var next=new OwnedRuntimeControls {Throttle=Number(args[1]),Attitude=new Vec(Number(args[2]),Number(args[3]),Number(args[4])),Translation=new Vec(Number(args[5]),Number(args[6]),Number(args[7])),EnginesEnabled=true,RcsEnabled=true,WheelsEnabled=true};next.Validate();controls=next;keyboardControlActive=false;}
+        {var next=new OwnedRuntimeControls {Throttle=Number(args[1]),Attitude=new Vec(Number(args[2]),Number(args[3]),Number(args[4])),Translation=new Vec(Number(args[5]),Number(args[6]),Number(args[7])),EnginesEnabled=true,RcsEnabled=true,WheelsEnabled=true};next.Validate();controls=next;pilot.mode="manual";keyboardControlActive=false;}
+        else if(args[0]=="orbit"&&args.Length==2)
+        {
+            Need(flight!=null,"World flight required.");using(var read=host.World.AcquireRead()){Need(read.RegionCount==1,"Orbital placement requires one region.");for(int p=0;p<read.Definition.ProviderStateCount;p++)Need(read.GetProviderState(p)==0,"Orbital zero-spin fixture requires empty provider state.");}
+            flight.PlaceCircular(host.World.Stamp,Number(args[1]),flight.Context.SunDirection,OrbitNormal());
+            var motions=OwnedFlightManeuverPlanCopy();motions[0].AngularMomentum=new Vec();host.World.SetRegionMotions(host.World.Stamp,motions,host.World.Stamp.Time,flight.FrameId);
+            controls=new OwnedRuntimeControls();pilot.mode="manual";events.Add("Engineering treatment: Sunward circular placement, captured craft/mu/radius; chassis spin zeroed, provider state required zero.");
+        }
+        else if(args[0]=="atmo-flight"&&args.Length==4)
+        {
+            Need(flight!=null,"World flight required.");Vec radial=flight.Context.SunDirection,tangent=Unit(Vec.Cross(OrbitNormal(),radial));
+            flight.Place(host.World.Stamp,radial*(flight.Context.Radius+Number(args[1])),radial*Number(args[2])+tangent*Number(args[3]));
+            controls=new OwnedRuntimeControls();pilot.mode="manual";events.Add("Engineering treatment: declared altitude/radial/tangential atmospheric state; retained craft/resources/spin.");
+        }
+        else if(args[0]=="coast"&&args.Length==3&&args[2]=="freeze-passive")
+        {Need(flight!=null&&pilot.mode=="manual"&&host.SupportsPassiveKeplerCoast,"Manual world flight with admitted passive Kepler schedule required.");string reason;Need(flight.TryCoast(host.World.Stamp,flight.UniversalTime+Number(args[1]),controls,true,double.PositiveInfinity,0,out reason),reason);}
+        else if(args[0]=="forecast"&&args.Length==3)
+        {
+            Need(flight!=null&&pilot.mode=="manual"&&(args[2]=="local"||args[2]=="coast"),"Manual world prediction mode required.");long id;using(var read=host.World.AcquireRead())id=read.GetRegion(0).Id;
+            prediction=OwnedFlightPrediction.Predict(flight,host,imported,controls,plan,id,Number(args[1]),args[2]=="coast"?OwnedFlightPredictionMode.VacuumCoast:OwnedFlightPredictionMode.LocalPhysical,args[2]=="coast",maneuver);
+            Need(prediction.Status=="completed"&&prediction.SourceUnchanged,prediction.Failure??prediction.Status);
+        }
+        else if(args[0]=="node"&&args.Length==5)
+        {Need(flight!=null,"World flight required.");long id;using(var read=host.World.AcquireRead())id=read.GetRegion(0).Id;maneuver=new OwnedFlightManeuverPlan("live-node/"+receipt.lastRequest,flight,host,id,flight.UniversalTime+Number(args[1]),new Vec(Number(args[2]),Number(args[3]),Number(args[4])));}
+        else if(args[0]=="execute-node"&&args.Length==2&&args[1]=="freeze-passive")
+        {Need(flight!=null&&maneuver!=null&&pilot.mode=="manual","Manual world maneuver required.");maneuver.ExecuteCoastManeuver(flight,host,controls,true);maneuver=null;}
+        else if(args[0]=="clear-node"&&args.Length==1)maneuver=null;
+        else if(args[0]=="rebase"&&args.Length==4){Need(flight!=null,"World flight required.");flight.Rebase(host.World.Stamp,new Vec(Number(args[1]),Number(args[2]),Number(args[3])));}
+        else if(args[0]=="pilot"&&args.Length==2)
+        {
+            Need(flight!=null&&(args[1]=="manual"||args[1]=="attitude"||args[1]=="velocity"),"Unknown world pilot mode.");using(var read=host.World.AcquireRead())
+            {var state=read.GetRegion(0);pilot=new OwnedFlightPilotData {mode=args[1],regionId=state.Id,targetOrientation=A(state.Motion.Orientation),targetVelocity=A(state.Motion.Velocity)};}
+        }
+        else if(args[0]=="debug"&&args.Length==2){Need(presentation!=null,"Owned visual source required.");presentation.SetDebugView(args[1]);}
+        else if(args[0]=="scale"&&args.Length==2){Need(presentation!=null,"Owned visual source required.");presentation.SetWorldScale((float)Number(args[1]));}
+        else if(args[0]=="view"&&args.Length==2){Need(args[1]=="sun"||args[1]=="quarter"||args[1]=="ship"||args[1]=="orbit"||args[1]=="plane","Unknown camera frame.");cameraFrame=args[1];}
+        else if(args[0]=="focus"&&args.Length==2){Need(args[1]=="root"||args[1]=="com"||args[1]=="body","Unknown camera focus.");cameraFocus=args[1];}
+        else if(args[0]=="grid"&&args.Length==2){Need(args[1]=="off"||args[1]=="root"||args[1]=="com","Grid parent required.");scientificGrid=args[1]!="off";if(scientificGrid)gridParent=args[1];}
         else if(args[0]=="atmosphere"&&args.Length==3)
         {environment=new OwnedRuntimeEnvironment("explicit-atmosphere-research",environment.Revision+1,host.World.Stamp.Time,Number(args[1]),Number(args[2]),new Vec(),new Vec(),5);}
         else if(args[0]=="vacuum"&&args.Length==1)environment=new OwnedRuntimeEnvironment("explicit-vacuum-research",environment.Revision+1,host.World.Stamp.Time,0,300,new Vec(),new Vec());
@@ -215,13 +321,18 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         else if(args[0]=="split"&&args.Length==2){host.World.Split(host.World.Stamp,long.Parse(args[1],CultureInfo.InvariantCulture));Present(true);}
         else if(args[0]=="join"&&args.Length==4){host.World.Dock(host.World.Stamp,long.Parse(args[1],CultureInfo.InvariantCulture),long.Parse(args[2],CultureInfo.InvariantCulture),long.Parse(args[3],CultureInfo.InvariantCulture));Present(true);}
         else if(args[0]=="save"&&args.Length==2)
-        {Need(!File.Exists(args[1])&&Path.IsPathRooted(args[1]),"Fresh absolute checkpoint required.");byte[] bytes=OwnedRuntimeCheckpointBinary.Encode(host.CaptureCheckpoint(imported,controls,environment,plan));using(var file=new FileStream(args[1],FileMode.CreateNew,FileAccess.Write,FileShare.None))file.Write(bytes,0,bytes.Length);}
+        {Need(!File.Exists(args[1])&&Path.IsPathRooted(args[1]),"Fresh absolute checkpoint required.");byte[] bytes=flight==null?OwnedRuntimeCheckpointBinary.Encode(host.CaptureCheckpoint(imported,controls,environment,plan)):OwnedRuntimeCheckpointBinary.EncodeFlight(OwnedFlightCheckpoint.Capture(host,imported,flight,controls,plan,pilot,visualSha,maneuver));using(var file=new FileStream(args[1],FileMode.CreateNew,FileAccess.Write,FileShare.None))file.Write(bytes,0,bytes.Length);}
         else if(args[0]=="restore"&&args.Length==2)
         {
-            Need(new FileInfo(args[1]).Length<=64L*1024*1024+256,"Checkpoint size bound exceeded.");var data=OwnedRuntimeCheckpointBinary.Decode(File.ReadAllBytes(args[1]));
-            OwnedRuntimeRestoredState restored;var nextHost=host.RestoreCheckpoint(data,receipt.nativeSha,receipt.partSpecsSha,out restored);
-            imported.World=restored.World;imported.Systems=restored.Systems;imported.Source=restored.Source;
-            host=nextHost;controls=restored.Controls;environment=restored.Environment;plan=restored.Plan;Present(true);
+            Need(new FileInfo(args[1]).Length<=64L*1024*1024+256,"Checkpoint size bound exceeded.");byte[] bytes=File.ReadAllBytes(args[1]);
+            if(flight!=null)
+            {
+                var data=OwnedRuntimeCheckpointBinary.DecodeFlight(bytes);var next=OwnedFlightCheckpoint.Restore(host,imported,data,receipt.nativeSha,receipt.partSpecsSha,receipt.worldSha,visualSha);
+                presentation.BindSession(next.Session);host=next.Host;imported=next.Imported;flight=next.Session;controls=next.Controls;plan=next.Plan;pilot=next.Pilot;prediction=null;maneuver=next.Maneuver;
+            }
+            else{var data=OwnedRuntimeCheckpointBinary.Decode(bytes);OwnedRuntimeRestoredState restored;var nextHost=host.RestoreCheckpoint(data,receipt.nativeSha,receipt.partSpecsSha,out restored);
+                imported.World=restored.World;imported.Systems=restored.Systems;imported.Source=restored.Source;host=nextHost;controls=restored.Controls;environment=restored.Environment;plan=restored.Plan;}
+            Present(true);
         }
         else if(args[0]=="reload"&&args.Length==3)
         {
@@ -231,7 +342,7 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
             Need(typeof(IOwnedRuntimeSchedule).IsAssignableFrom(type),"Reload type does not implement the current ABI.");
             var next=(IOwnedRuntimeSchedule)Activator.CreateInstance(type);host.SwapSchedule(next,Hash(bytes),host.World.Stamp);reloadCount++;
         }
-        else if(args[0]=="camera"&&args.Length==2){double distance=Number(args[1]);Need(distance>=2&&distance<=5000,"Camera range outside2..5000m.");cameraDistance=(float)distance;}
+        else if(args[0]=="camera"&&args.Length==2){double distance=Number(args[1]);Need(!double.IsNaN(distance)&&distance>=2&&distance<=100000000,"Camera range outside2..100000000m.");cameraDistance=(float)distance;}
         else if(args[0]=="ortho"&&args.Length==2){receipt.ortho=args[1]=="on";camera.orthographic=receipt.ortho;}
         else if(args[0]=="capture"&&args.Length==2)
         {Need(Path.IsPathRooted(args[1])&&!File.Exists(args[1]),"Fresh absolute screenshot required.");FollowCamera();ScreenCapture.CaptureScreenshot(args[1]);}
@@ -244,13 +355,18 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         else throw new ArgumentException("Unknown owned runtime command.");
         events.Add(text);if(events.Count>256)events.RemoveAt(0);UpdateReceipt();return JsonUtility.ToJson(receipt);
     }
+    Vec OrbitNormal(){Vec spin=flight.Context.AngularVelocity;return Math.Sqrt(spin.X*spin.X+spin.Y*spin.Y+spin.Z*spin.Z)>0?Unit(spin):Unit(Vec.Cross(flight.Context.SunDirection,new Vec(0,1,0)));}
+    OwnedRuntimeMotion[] OwnedFlightManeuverPlanCopy(){using(var read=host.World.AcquireRead()){var rows=new OwnedRuntimeMotion[read.RegionCount];for(int i=0;i<rows.Length;i++)rows[i]=read.GetRegion(i).Motion;return rows;}}
     void OnGUI()
     {
-        GUI.Box(new Rect(10,10,425,145),"Continuum owned runtime");
+        if(stopping)return;
+        if(overlay!=null&&flight!=null)overlay.Draw(camera,cameraBodyOrigin,flight,prediction,scientificGrid,gridParent);
+        GUI.Box(new Rect(10,10,425,170),flight==null?"Continuum owned runtime":"Continuum owned world flight");
         GUI.Label(new Rect(22,35,400,28),host==null?receipt.status:host.World.PartCount+" parts / "+host.World.BodyCount+" bodies / "+host.World.RegionCount+" rigid regions");
         GUI.Label(new Rect(22,60,400,25),"Space: pause   W/S A/D Q/E: attitude   I/J/K/L H/N: RCS");
         GUI.Label(new Rect(22,85,400,25),"O: orthographic   debug socket: "+receipt.port+"   "+(receipt.paused?"paused":"running"));
         if(host!=null)GUI.Label(new Rect(22,110,400,25),"t="+host.World.Stamp.Time.ToString("F2")+"  step="+plan.Delta.ToString("F3")+"  "+host.ScheduleImplementation);
+        if(flight!=null)GUI.Label(new Rect(22,135,400,25),"altitude="+(flight.Context.Altitude(flight.CenterPosition(0))/1000).ToString("F2")+"km  "+flight.Mode+"  "+pilot.mode);
     }
     void Serve()
     {
@@ -286,10 +402,17 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
     IEnumerator Retire()
     {
         stopping=true;if(listener!=null)listener.Stop();
+        if(presentation!=null)presentation.Dispose();
+        if(overlay!=null)overlay.Dispose();
         if(visible!=null)visible.ReleaseResources();
         if(scene.IsValid()&&scene.isLoaded){var operation=SceneManager.UnloadSceneAsync(scene);if(operation!=null)yield return operation;}
         if(server!=null)server.Join(1000);
         receipt.emptySceneReleased=!scene.IsValid()||!scene.isLoaded;UpdateReceipt();SaveReceipt();Application.Quit(receipt.emptySceneReleased?0:1);
     }
-    void OnDestroy(){stopping=true;if(listener!=null)listener.Stop();}
+    void OnDestroy(){stopping=true;if(listener!=null)listener.Stop();if(presentation!=null)presentation.Dispose();if(overlay!=null)overlay.Dispose();}
+}
+public sealed class OwnedFlightImageEffect : MonoBehaviour
+{
+    public OwnedRuntimeWorkbench Owner;
+    void OnRenderImage(RenderTexture source,RenderTexture destination){if(Owner!=null)Owner.RenderFlight(source,destination);else Graphics.Blit(source,destination);}
 }

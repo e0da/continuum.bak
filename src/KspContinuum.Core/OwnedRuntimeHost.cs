@@ -1,4 +1,6 @@
 using System;
+using System.IO;
+using System.Security.Cryptography;
 
 namespace KspContinuum
 {
@@ -16,17 +18,26 @@ namespace KspContinuum
         void Step(OwnedRuntimeSystems systems,OwnedRuntimeStep step,OwnedRuntimeEnvironment environment,OwnedRuntimeControls controls);
     }
 
-    public sealed class OwnedRuntimeBuiltinSchedule : IOwnedRuntimeSchedule
+    public sealed class OwnedRuntimeBuiltinSchedule : IOwnedRuntimePassiveKeplerSchedule
     {
         public string Schema { get { return "continuum-owned-runtime-schedule/v1"; } }
         public string StateSchema { get { return "world-bank-state-only/v1"; } }
         public string ImplementationId { get { return "retained-bulk-systems/v1"; } }
         public void Step(OwnedRuntimeSystems systems,OwnedRuntimeStep step,OwnedRuntimeEnvironment environment,OwnedRuntimeControls controls)
         { systems.Step(step,environment,controls); }
+        public void Step(OwnedRuntimeSystems systems,OwnedRuntimeStep step,IOwnedRuntimeEnvironmentField field,OwnedRuntimeControls controls)
+        {systems.Step(step,field,controls);}
     }
 
     public sealed class OwnedRuntimeHost
     {
+        static readonly string BuiltinSourceSha256=HashBuiltin();
+        static string HashBuiltin()
+        {
+            string path=typeof(OwnedRuntimeBuiltinSchedule).Assembly.Location;
+            if(string.IsNullOrEmpty(path)||!File.Exists(path))throw new InvalidOperationException("Builtin schedule requires its actual executable assembly image.");
+            using(var file=File.OpenRead(path))using(var sha=SHA256.Create())return BitConverter.ToString(sha.ComputeHash(file)).Replace("-","").ToLowerInvariant();
+        }
         readonly object gate=new object();
         IOwnedRuntimeSchedule schedule;
         string implementation;
@@ -36,10 +47,11 @@ namespace KspContinuum
         public string ScheduleSourceSha256 { get; private set; }
         public string ScheduleImplementation { get { return implementation; } }
         public long CodeGeneration { get; private set; }
+        public bool SupportsPassiveKeplerCoast {get {lock(gate)return schedule is IOwnedRuntimePassiveKeplerSchedule;}}
         public OwnedRuntimeHost(OwnedRuntimeWorld world,OwnedRuntimeSystems systems)
         {
             if(world==null||systems==null)throw new ArgumentNullException("world/systems");
-            World=world;Systems=systems;schedule=new OwnedRuntimeBuiltinSchedule();implementation=schedule.ImplementationId;ScheduleSourceSha256="";
+            World=world;Systems=systems;schedule=new OwnedRuntimeBuiltinSchedule();implementation=schedule.ImplementationId;ScheduleSourceSha256=BuiltinSourceSha256;
         }
         public OwnedRuntimeHostCheckpoint CaptureCheckpoint(OwnedRuntimeImportResult imported,OwnedRuntimeControls controls,OwnedRuntimeEnvironment environment,OwnedRuntimeStepPlan plan)
         {
@@ -62,16 +74,29 @@ namespace KspContinuum
             }
         }
         public OwnedRuntimeStamp Advance(double delta,OwnedRuntimeInput input,OwnedRuntimeEnvironment environment,OwnedRuntimeControls controls)
+        {return AdvanceCore(delta,input,environment,null,controls);}
+        public OwnedRuntimeStamp Advance(double delta,OwnedRuntimeInput input,IOwnedRuntimeEnvironmentField field,OwnedRuntimeControls controls)
+        {if(field==null)throw new ArgumentNullException("field");return AdvanceCore(delta,input,null,field,controls);}
+        OwnedRuntimeStamp AdvanceCore(double delta,OwnedRuntimeInput input,OwnedRuntimeEnvironment environment,IOwnedRuntimeEnvironmentField field,OwnedRuntimeControls controls)
         {
             lock(gate)
             {
                 if(advancing)throw new InvalidOperationException("Runtime schedule cannot reenter.");
+                var fieldSchedule=schedule as IOwnedRuntimeFieldSchedule;
+                if(field!=null&&fieldSchedule==null)throw new InvalidOperationException("Loaded schedule has no environment-field execution contract.");
                 advancing=true;
                 try
                 {
                     var step=World.BeginHostedStep(World.Stamp,delta,input);
                     bool entered=false;
-                    try {Systems.EnterExecution();entered=true;schedule.Step(Systems,step,environment,controls);return World.CommitHostedStep(step); }
+                    try
+                    {
+                        Systems.EnterExecution();entered=true;
+                        if(field==null)schedule.Step(Systems,step,environment,controls);else fieldSchedule.Step(Systems,step,field,controls);
+                        step.RefreshMassProperties();
+                        var guard=field as IOwnedRuntimeStepGuard;if(guard!=null)guard.ValidateStep(step);
+                        return World.CommitHostedStep(step);
+                    }
                     finally {try {if(entered)Systems.ExitExecution();}finally {World.EndHostedStep(step);}}
                 }
                 finally {advancing=false;}

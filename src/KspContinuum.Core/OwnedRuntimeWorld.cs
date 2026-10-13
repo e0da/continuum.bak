@@ -339,6 +339,22 @@ namespace KspContinuum
         { lock (gate) { RequireMutation(expected); return ChangeTopology(current.Topology.WithDock(connectionId, partA, partB)); } }
         public OwnedRuntimeStamp SetConnectionLocked(OwnedRuntimeStamp expected, long connectionId, bool locked)
         { lock (gate) { RequireMutation(expected); return ChangeTopology(current.Topology.WithLocked(connectionId, locked)); } }
+        public OwnedRuntimeStamp SetRegionMotions(OwnedRuntimeStamp expected,OwnedRuntimeMotion[] motions,double time,string frameId)
+        {
+            if(motions==null)throw new ArgumentNullException("motions");AssemblyModel.Finite(time);
+            if(string.IsNullOrWhiteSpace(frameId)||frameId.Length>2048)throw new ArgumentException("Motion frame identity is required.");
+            lock(gate)
+            {
+                RequireMutation(expected);
+                if(motions.Length!=current.RegionMotion.Length||time<expected.Time)throw new ArgumentException("Cold motion shape/time is incompatible.");
+                var candidate=new OwnedRuntimeBank(current.Definition,current.Topology);candidate.CopyFrom(current);
+                for(int r=0;r<motions.Length;r++){ValidateMotion(motions[r]);candidate.RegionMotion[r]=motions[r];}
+                ValidateBank(candidate);
+                candidate.Stamp=new OwnedRuntimeStamp(checked(expected.Epoch+1),checked(expected.StateRevision+1),expected.TopologyRevision,expected.DefinitionRevision,
+                    frameId==expected.FrameId?expected.FrameRevision:checked(expected.FrameRevision+1),time,frameId);
+                PublishCold(candidate);return current.Stamp;
+            }
+        }
 
         OwnedRuntimeStamp ChangeTopology(OwnedRuntimeTopology topology)
         {

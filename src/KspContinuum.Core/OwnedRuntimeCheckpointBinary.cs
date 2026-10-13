@@ -20,15 +20,20 @@ namespace KspContinuum
             typeof(OwnedRuntimeCheckpointInput),typeof(OwnedRuntimeCheckpointActuator),typeof(OwnedRuntimeCheckpointSurface),
             typeof(OwnedRuntimeCheckpointThermalLink),typeof(OwnedRuntimeCheckpointEnvironment),typeof(OwnedRuntimeSourceBinding),
             typeof(OwnedRuntimeBodyBinding),typeof(OwnedRuntimeRendererBinding)};
+        static readonly Type[] FlightTypes=Types.Concat(new[]{typeof(OwnedFlightCheckpointData),typeof(OwnedFlightPilotData),
+            typeof(OwnedFlightSessionData),typeof(OwnedFlightCapture),typeof(OwnedFlightManeuverData)}).ToArray();
         static readonly Dictionary<Type,FieldInfo[]> Fields=BuildFields();
         static readonly byte[] SchemaDigest=Digest(Utf8.GetBytes(string.Join("\n",Types.OrderBy(t=>t.FullName,StringComparer.Ordinal)
             .Select(t=>t.FullName+":"+string.Join(",",Fields[t].Select(f=>f.Name+"="+f.FieldType.FullName))))));
+        static readonly byte[] FlightSchemaDigest=Digest(Utf8.GetBytes(string.Join("\n",FlightTypes.OrderBy(t=>t.FullName,StringComparer.Ordinal)
+            .Select(t=>t.FullName+":"+string.Join(",",Fields[t].Select(f=>f.Name+"="+f.FieldType.FullName))))));
+        static readonly byte[] FlightMagic={79,70,67,66};
         sealed class Budget {public long Elements;}
         static void Need(bool ok,string message){if(!ok)throw new InvalidDataException(message);}
         static Dictionary<Type,FieldInfo[]> BuildFields()
         {
             var result=new Dictionary<Type,FieldInfo[]>();
-            foreach(Type type in Types)
+            foreach(Type type in FlightTypes)
             {
                 var fields=type.GetFields(BindingFlags.Public|BindingFlags.Instance).OrderBy(f=>f.Name,StringComparer.Ordinal).ToArray();
                 foreach(var field in fields)Need(!field.IsInitOnly&&Allowed(field.FieldType),"Checkpoint binary schema contains an unsupported field.");
@@ -38,7 +43,7 @@ namespace KspContinuum
         }
         static bool Allowed(Type type)
         {return type==typeof(string)||type==typeof(double)||type==typeof(long)||type==typeof(int)||type==typeof(bool)
-            ||Types.Contains(type)||(type.IsArray&&type.GetArrayRank()==1&&Allowed(type.GetElementType()));}
+            ||FlightTypes.Contains(type)||(type.IsArray&&type.GetArrayRank()==1&&Allowed(type.GetElementType()));}
         static byte[] Digest(byte[] bytes){using(var sha=SHA256.Create())return sha.ComputeHash(bytes);}
         static bool Same(byte[] a,byte[] b)
         {if(a.Length!=b.Length)return false;int different=0;for(int i=0;i<a.Length;i++)different|=a[i]^b[i];return different==0;}
@@ -47,33 +52,41 @@ namespace KspContinuum
         static void Elements(Budget budget,int count)
         {Need(count>=0&&count<=MaximumArrayLength,"Checkpoint binary array length exceeds its bound.");budget.Elements+=count;Need(budget.Elements<=MaximumArrayElements,"Checkpoint binary aggregate element bound exceeded.");}
         public static byte[] Encode(OwnedRuntimeHostCheckpoint checkpoint)
+        {return Encode(typeof(OwnedRuntimeHostCheckpoint),checkpoint,Magic,SchemaDigest);}
+        public static byte[] EncodeFlight(OwnedFlightCheckpointData checkpoint)
+        {return Encode(typeof(OwnedFlightCheckpointData),checkpoint,FlightMagic,FlightSchemaDigest);}
+        static byte[] Encode(Type type,object checkpoint,byte[] magic,byte[] schemaDigest)
         {
             byte[] payload;
             using(var stream=new MemoryStream())
             {
-                using(var writer=new BinaryWriter(stream,Utf8,true))Write(writer,typeof(OwnedRuntimeHostCheckpoint),checkpoint,new Budget(),0);
+                using(var writer=new BinaryWriter(stream,Utf8,true))Write(writer,type,checkpoint,new Budget(),0);
                 payload=stream.ToArray();
             }
             using(var stream=new MemoryStream(HeaderBytes+payload.Length))
             {
                 using(var writer=new BinaryWriter(stream,Utf8,true))
-                {writer.Write(Magic);writer.Write(Version);writer.Write(SchemaDigest);writer.Write(payload.Length);writer.Write(Digest(payload));writer.Write(payload);}
+                {writer.Write(magic);writer.Write(Version);writer.Write(schemaDigest);writer.Write(payload.Length);writer.Write(Digest(payload));writer.Write(payload);}
                 return stream.ToArray();
             }
         }
         public static OwnedRuntimeHostCheckpoint Decode(byte[] bytes)
+        {return (OwnedRuntimeHostCheckpoint)Decode(typeof(OwnedRuntimeHostCheckpoint),bytes,Magic,SchemaDigest);}
+        public static OwnedFlightCheckpointData DecodeFlight(byte[] bytes)
+        {return (OwnedFlightCheckpointData)Decode(typeof(OwnedFlightCheckpointData),bytes,FlightMagic,FlightSchemaDigest);}
+        static object Decode(Type type,byte[] bytes,byte[] magic,byte[] schemaDigest)
         {
             Need(bytes!=null&&bytes.Length>=HeaderBytes+1&&bytes.Length<=HeaderBytes+MaximumPayloadBytes,"Checkpoint binary size invalid.");
             try
             {
                 using(var stream=new MemoryStream(bytes,false))using(var reader=new BinaryReader(stream,Utf8,true))
                 {
-                    Need(Same(reader.ReadBytes(4),Magic)&&reader.ReadInt32()==Version,"Checkpoint binary magic/version differs.");
-                    Need(Same(reader.ReadBytes(32),SchemaDigest),"Checkpoint binary typed schema differs.");
+                    Need(Same(reader.ReadBytes(4),magic)&&reader.ReadInt32()==Version,"Checkpoint binary magic/version differs.");
+                    Need(Same(reader.ReadBytes(32),schemaDigest),"Checkpoint binary typed schema differs.");
                     int length=reader.ReadInt32();Need(length>0&&length<=MaximumPayloadBytes&&bytes.Length==HeaderBytes+length,"Checkpoint binary payload length/trailing bytes differ.");
                     byte[] expected=reader.ReadBytes(32),actual;using(var sha=SHA256.Create())actual=sha.ComputeHash(bytes,HeaderBytes,length);
                     Need(Same(expected,actual),"Checkpoint binary digest differs.");
-                    var value=(OwnedRuntimeHostCheckpoint)Read(reader,typeof(OwnedRuntimeHostCheckpoint),new Budget(),0);
+                    var value=Read(reader,type,new Budget(),0);
                     Need(stream.Position==stream.Length,"Checkpoint binary payload has trailing fields.");return value;
                 }
             }

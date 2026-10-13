@@ -36,6 +36,12 @@ internal static class BinaryCheckpointTests
         var checkpoint=(OwnedRuntimeHostCheckpoint)Fill(typeof(OwnedRuntimeHostCheckpoint),0);
         checkpoint.sourceSha256=null;checkpoint.state.source.omissions=new[]{null,"", "nonempty"};checkpoint.state.thermalLinks=new OwnedRuntimeCheckpointThermalLink[0];
         byte[] wire=OwnedRuntimeCheckpointBinary.Encode(checkpoint);var copy=OwnedRuntimeCheckpointBinary.Decode(wire);Same(typeof(OwnedRuntimeHostCheckpoint),checkpoint,copy);
+        var flight=(OwnedFlightCheckpointData)Fill(typeof(OwnedFlightCheckpointData),0);
+        byte[] flightWire=OwnedRuntimeCheckpointBinary.EncodeFlight(flight);var flightCopy=OwnedRuntimeCheckpointBinary.DecodeFlight(flightWire);
+        Same(typeof(OwnedFlightCheckpointData),flight,flightCopy);Need(flightWire.SequenceEqual(OwnedRuntimeCheckpointBinary.EncodeFlight(flightCopy)),"Flight binary encoding is not deterministic.");
+        Reject(()=>OwnedRuntimeCheckpointBinary.Decode(flightWire),"Flight envelope accepted as legacy runtime.");
+        Reject(()=>OwnedRuntimeCheckpointBinary.DecodeFlight(wire),"Legacy envelope accepted as flight.");
+        var flightCorrupt=(byte[])flightWire.Clone();flightCorrupt[flightCorrupt.Length-1]^=1;Reject(()=>OwnedRuntimeCheckpointBinary.DecodeFlight(flightCorrupt),"Flight payload corruption accepted.");
         Need(wire.SequenceEqual(OwnedRuntimeCheckpointBinary.Encode(copy)),"Binary encoding is not deterministic.");
         Need(OwnedRuntimeCheckpointBinary.Decode(OwnedRuntimeCheckpointBinary.Encode(null))==null,"Root null changed.");
         foreach(int length in new[]{0,4,75,wire.Length-1})Reject(()=>OwnedRuntimeCheckpointBinary.Decode(wire.Take(length).ToArray()),"Truncated binary accepted.");

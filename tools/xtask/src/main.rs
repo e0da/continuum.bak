@@ -178,7 +178,7 @@ fn portable(root: &Path) -> Result {
         "dotnet",
         &["build", "tools/KspContinuum.FlightFixture", "-c", "Release"],
     )?;
-    for project in ["tools/KspContinuum.RuntimeMap", "tools/KspContinuum.SourceAtlas"] {
+    for project in ["tools/KspContinuum.RuntimeMap", "tools/KspContinuum.SourceAtlas", "tools/KspContinuum.OwnedFlightLab"] {
         checked(root, "dotnet", &["build", project, "-c", "Release"])?;
     }
     checked(root, "dotnet", &["run", "--project", "tools/KspContinuum.SourceAtlas", "-c", "Release", "--", "self-test"])?;

@@ -15,6 +15,9 @@ public sealed class WholeCraftRuntime : IDisposable
     bool[] visibility; Color[] retainedPixels;
     public long ReplayFrameCount { get; private set; }
     public long ReplayApplyTicks { get; private set; }
+    public long PresentationApplyCount { get; private set; }
+    public long PresentationApplyTicks { get; private set; }
+    Color[] presentationPixels;
     public long DynamicUploadBytes { get; private set; }
     public int DynamicUploadCount { get; private set; }
     public bool ReplayGpuFaulted { get; private set; }
@@ -156,6 +159,38 @@ public sealed class WholeCraftRuntime : IDisposable
             ReplayFrameCount++; ReplayApplyTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-start;
         }
         finally { if(nextCommands!=null) nextCommands.Release(); }
+    }
+    public void ApplyPresentationMatrices(Matrix4x4[] poses)
+    {
+        long started=System.Diagnostics.Stopwatch.GetTimestamp();
+        if(disposed||ReplayGpuFaulted||poses==null||poses.Length!=bases.Length) throw new InvalidDataException("Owned presentation matrix shape/lifetime differs.");
+        bool first=true,changed=false;var bounds=new Bounds(Vector3.zero,Vector3.zero);
+        for(int i=0;i<poses.Length;i++)
+        {
+            var m=poses[i];Check(m);if(m.m30!=0||m.m31!=0||m.m32!=0||m.m33!=1||!Finite(m.determinant)||m.determinant==0) throw new InvalidDataException("Owned presentation pose is not invertible affine.");
+            var inverse=m.inverse.transpose;Check(inverse);var displayed=m;displayed.m03+=lastAnchor.x;displayed.m13+=lastAnchor.y;displayed.m23+=lastAnchor.z;Check(displayed);changed|=!Same(m,bases[i]);
+            if(!visibility[i])continue;var mesh=meshes[Manifest.draws[i].meshIndex].bounds;
+            for(int c=0;c<8;c++){var point=m.MultiplyPoint3x4(mesh.center+Vector3.Scale(mesh.extents,new Vector3((c&1)==0?-1:1,(c&2)==0?-1:1,(c&4)==0?-1:1)));Check(point);if(first){bounds=new Bounds(point,Vector3.zero);first=false;}else bounds.Encapsulate(point);}
+        }
+        if(first)throw new InvalidDataException("Owned presentation has no captured visible geometry.");Check(bounds.center);Check(bounds.extents);var published=bounds;published.center+=lastAnchor;Check(published.center);
+        if(!changed){PresentationApplyCount++;PresentationApplyTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-started;return;}
+        if(retainedState!=null)
+        {
+            if(presentationPixels==null)presentationPixels=new Color[retainedPixels.Length];Array.Clear(presentationPixels,0,presentationPixels.Length);int row=0;
+            foreach(var packet in packets)foreach(int source in packet.Sources)
+            {
+                var m=poses[source];var n=m.inverse.transpose;
+                for(int r=0;r<4;r++){var v=m.GetRow(r);presentationPixels[row*8+r]=new Color(v.x,v.y,v.z,v.w);}
+                for(int r=0;r<3;r++){var v=n.GetRow(r);presentationPixels[row*8+4+r]=new Color(v.x,v.y,v.z,0);}
+                presentationPixels[row*8+7]=retainedPixels[row*8+7];row++;
+            }
+            try{retainedState.SetPixels(presentationPixels);retainedState.Apply(false,false);}
+            catch{try{retainedState.SetPixels(retainedPixels);retainedState.Apply(false,false);}catch(Exception rollback){ReplayGpuFaulted=true;throw new InvalidOperationException("Owned presentation GPU rollback failed; no further draw permitted.",rollback);}throw;}
+            Array.Copy(presentationPixels,retainedPixels,presentationPixels.Length);DynamicUploadCount++;DynamicUploadBytes+=(long)presentationPixels.Length*16;
+        }
+        for(int i=0;i<poses.Length;i++){bases[i]=poses[i];var m=poses[i];m.m03+=lastAnchor.x;m.m13+=lastAnchor.y;m.m23+=lastAnchor.z;matrices[i]=m;}
+        foreach(var packet in packets)for(int k=0;k<packet.Sources.Length;k++)packet.Matrices[k]=matrices[packet.Sources[k]];
+        baseBounds=bounds;Bounds=published;PresentationApplyCount++;PresentationApplyTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-started;
     }
     static bool Retained(string mode) { return mode=="retained-scalar"||mode=="retained-grouped"; }
     public void SetRenderMode(string mode)
