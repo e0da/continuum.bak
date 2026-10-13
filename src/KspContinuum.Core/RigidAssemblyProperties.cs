@@ -38,7 +38,7 @@ namespace KspContinuum
     public sealed class RigidAssemblyProperties
     {
         const double EigenTolerance = 1e-15, ReconstructionTolerance = 1e-11;
-        RigidAssemblyProperties(double mass, Vec center, InertiaTensor6Dof inertia,
+        internal RigidAssemblyProperties(double mass, Vec center, InertiaTensor6Dof inertia,
             Vec principal, Rotation orientation)
         { Mass = mass; CenterOfMass = center; Inertia = inertia; PrincipalInertia = principal; PrincipalRotation = orientation; }
         public double Mass { get; private set; }
@@ -94,7 +94,7 @@ namespace KspContinuum
             return new RigidAssemblyProperties(mass, com, tensor, principal, axes);
         }
 
-        static void Diagonalize(InertiaTensor6Dof tensor, out Vec principal, out Rotation axes)
+        internal static void Diagonalize(InertiaTensor6Dof tensor, out Vec principal, out Rotation axes)
         {
             double[,] original = {{tensor.XX,tensor.XY,tensor.XZ},{tensor.XY,tensor.YY,tensor.YZ},{tensor.XZ,tensor.YZ,tensor.ZZ}};
             double scale = 0; foreach (double value in original) { AssemblyModel.Finite(value); scale = Math.Max(scale, Math.Abs(value)); }
@@ -169,7 +169,7 @@ namespace KspContinuum
             if (double.IsInfinity(square)||Math.Abs(square-1)>1e-12)
                 throw new ArgumentException("Rotation must be normalized; default or numerically invalid rotations are not accepted.");
         }
-        struct Sum
+        internal struct Sum
         {
             double value,correction;
             public double Value { get { return value; } }

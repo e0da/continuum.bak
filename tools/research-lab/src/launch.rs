@@ -448,10 +448,10 @@ impl ResolvedLaunch {
             }
         }
         if let Some(mode) = &self.diagnostics.flight_lighting {
-            if !["frontlit", "side-lit", "backlit"].contains(&mode.as_str())
+            if !["frontlit", "three-quarter-lit", "three-quarter-overview", "side-lit", "backlit"].contains(&mode.as_str())
                 || self.flight.as_ref().is_none_or(|flight| flight.entry_target_altitude.is_none())
             {
-                return Err("physical flight lighting requires frontlit, side-lit or backlit and an explicit entry target; sunward placement is a declared workload treatment".into());
+                return Err("physical flight lighting requires frontlit, three-quarter-lit, three-quarter-overview, side-lit or backlit and an explicit entry target; sunward placement is a declared workload treatment".into());
             }
         }
         if let Some(path) = &self.diagnostics.convection_capture {

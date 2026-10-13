@@ -35,11 +35,13 @@ namespace KspContinuum
             public bool hooksRemoved, restorationComplete, globalsUnchanged;
             public int[] originalLocalCameraPosBits, originalLocalCameraDirBits, endLocalCameraPosBits, endLocalCameraDirBits;
             public CameraRow camera00, camera01;
+            public StockCameraDepthRequests.ReportData stockDepthRequests;
         }
         static Report report; static Camera near, far; static UnderwaterFog nearFog, farFog;
         static FlightCamera flight; static Vessel vessel; static CelestialBody body; static string output;
         static bool attached, sceneAttached, window, finished, changed;
         static bool controlledClock;
+        static StockCameraDepthRequests depthWitness;
         sealed class SceneListener { public void Changed(GameScenes next) { Fault("Scene change before local-camera completion."); } }
         static readonly SceneListener sceneListener = new SceneListener();
         [StructLayout(LayoutKind.Explicit)] struct FloatBits { [FieldOffset(0)] public float value; [FieldOffset(0)] public int bits; }
@@ -104,6 +106,7 @@ namespace KspContinuum
             if(mode==null) return;
             Require(mode=="stock" || mode=="merged","Invalid local-camera mode.");
             Require(!attached && (report==null || finished),"Local-camera lifecycle already owned.");
+            Require(depthWitness==null,"Previous stock-depth witness was not released.");
             FailureReason=null; finished=false; changed=false; window=false; lastFrame=-1; near=null; far=null; nearFog=null; farFog=null; flight=null; vessel=active; body=active==null?null:active.mainBody;
             Require(Path.IsPathRooted(directory) && !string.IsNullOrEmpty(runId),"Bound output and run required.");
             output=Path.Combine(directory,"local-camera.json"); Require(!File.Exists(output),"Local-camera output already exists.");
@@ -149,6 +152,11 @@ namespace KspContinuum
                 attached=true; GameEvents.onGameSceneLoadRequested.Add(sceneListener.Changed); sceneAttached=true;
                 if(mode=="merged") { changed=true; near.farClipPlane=750000f; nearFog.isPQS=true; farFog.isPQS=false; far.gameObject.SetActive(false); }
                 report.camera00.effective=Read(near,nearFog); report.camera01.effective=Read(far,farFog); report.camera00.effectiveProjection=Projection(near); report.camera01.effectiveProjection=Projection(far); report.status="observing-experimental";
+                if(controlledClock)
+                {
+                    depthWitness=new StockCameraDepthRequests(near,far,runId,report.processId,AcceptDepth);
+                    report.stockDepthRequests=depthWitness.Report;depthWitness.Install();
+                }
                 Audit();
             }
             catch(Exception error) { Fault(error.Message); throw; }
@@ -179,13 +187,29 @@ namespace KspContinuum
             long start=Stopwatch.GetTimestamp();
             try
             {
-                Context(); Require(FlightCamera.fetch==flight && flight.cameras.Length==2 && flight.cameras[0]==near && flight.cameras[1]==far && flight.mainCamera==near && near!=null && far!=null && nearFog!=null && farFog!=null,"Local camera owner drift.");
+                Context(); if(controlledClock) { Require(depthWitness!=null,"Stock-depth witness absent.");depthWitness.Audit(); }
+                Require(FlightCamera.fetch==flight && flight.cameras.Length==2 && flight.cameras[0]==near && flight.cameras[1]==far && flight.mainCamera==near && near!=null && far!=null && nearFog!=null && farFog!=null,"Local camera owner drift.");
                 SharedView(); Require(Matches(near,nearFog,report.camera00.effective) && Matches(far,farFog,report.camera01.effective),"Local camera state drift.");
                 Require(far.commandBufferCount==0,"Far-camera command buffers appeared.");
                 Require(GlobalSame("_LocalCameraPos",report.originalLocalCameraPosBits) && GlobalSame("_LocalCameraDir",report.originalLocalCameraDirBits),"Frozen inactive fog globals changed.");
                 if(window) { report.coverageChecks++; if(lastFrame!=Time.frameCount) { lastFrame=Time.frameCount; report.observedFrames++; } }
             }
             finally { report.observerTicks+=Stopwatch.GetTimestamp()-start; }
+        }
+        static void AcceptDepth(Camera camera,int before,int after)
+        {
+            Require(controlledClock && report.mode=="stock","Depth demand outside declared stock observer.");
+            State effective=ReferenceEquals(camera,near)?report.camera00.effective:ReferenceEquals(camera,far)?report.camera01.effective:null;
+            Require(effective!=null && effective.depthTextureMode==before && after==(before|(int)DepthTextureMode.Depth),"Unwitnessed depth state preceded original request.");
+            effective.depthTextureMode=after;
+        }
+        static bool Preserved(State original,State effective,State restored)
+        {
+            if(!controlledClock)return Same(original,restored);
+            return original.enabled==restored.enabled && original.activeSelf==restored.activeSelf && original.activeInHierarchy==restored.activeInHierarchy && original.isPQS==restored.isPQS &&
+                original.nearClip==restored.nearClip && original.farClip==restored.farClip && original.fieldOfView==restored.fieldOfView && original.depth==restored.depth && original.cullingMask==restored.cullingMask &&
+                original.clearFlags==restored.clearFlags && original.renderingPath==restored.renderingPath && original.targetId==restored.targetId &&
+                restored.depthTextureMode==effective.depthTextureMode && (effective.depthTextureMode==original.depthTextureMode || effective.depthTextureMode==(original.depthTextureMode|(int)DepthTextureMode.Depth));
         }
         static CameraRow Row(Camera c) { return c==near?report.camera00:c==far?report.camera01:null; }
         static void PreCull(Camera c)
@@ -217,14 +241,19 @@ namespace KspContinuum
             if(attached) { Camera.onPreCull-=PreCull; Camera.onPreRender-=PreRender; Camera.onPostRender-=PostRender; attached=false; }
             if(sceneAttached) { GameEvents.onGameSceneLoadRequested.Remove(sceneListener.Changed); sceneAttached=false; }
             report.hooksRemoved=true;
+            if(depthWitness!=null)
+            {
+                try {depthWitness.Dispose();bool valid=depthWitness.Report.hooksRemoved&&depthWitness.Report.exactGraphAtRelease&&depthWitness.Report.faults==0;if(depthWitness.Report.hooksRemoved)depthWitness=null;if(!valid)throw new InvalidOperationException("Stock-depth witness cleanup/ownership failed.");}
+                catch(Exception error){report.faults++;report.status="invalid";FailureReason=report.reason=error.Message;report.hooksRemoved &= report.stockDepthRequests.hooksRemoved;}
+            }
             try
             {
                 Require(near!=null && far!=null && nearFog!=null && farFog!=null && report.camera00!=null && report.camera01!=null,"Camera owner missing during restoration.");
                 if(changed) { near.farClipPlane=report.camera00.original.farClip; nearFog.isPQS=report.camera00.original.isPQS; farFog.isPQS=report.camera01.original.isPQS; far.gameObject.SetActive(report.camera01.original.activeSelf); changed=false; }
                 report.camera00.restored=Read(near,nearFog); report.camera01.restored=Read(far,farFog); report.camera00.restoredProjection=Projection(near); report.camera01.restoredProjection=Projection(far);
-                report.restorationComplete=Same(report.camera00.original,report.camera00.restored) && Same(report.camera01.original,report.camera01.restored);
+                report.restorationComplete=Preserved(report.camera00.original,report.camera00.effective,report.camera00.restored) && Preserved(report.camera01.original,report.camera01.effective,report.camera01.restored);
                 if(!report.restorationComplete) throw new InvalidOperationException("Original local-camera state not restored.");
-                report.cleanupStatus="removed-owned-hooks-restored-original-camera-state";
+                report.cleanupStatus=controlledClock?"removed-owned-hooks-preserved-original-depth-requests":"removed-owned-hooks-restored-original-camera-state";
             }
             catch(Exception error) { report.faults++; report.cleanupStatus="restoration-error"; report.status="invalid"; FailureReason=error.Message; report.reason=error.Message; }
         }

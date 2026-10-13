@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -45,6 +46,8 @@ namespace KspContinuum
         int scriptFrame = -1;
         float scriptTime = -1, enteredTime;
         RigidAssemblyProperties properties;
+        RetainedRigidAssemblyProperties retainedProperties;
+        bool autoSyncTransforms;
         Step pending;
         LiveRigidFlightDriver driver;
         public readonly Receipt Report;
@@ -63,6 +66,12 @@ namespace KspContinuum
             public int sourceParts, sourceBodies, retractedWheelParts, aggregateId, physicsSteps, postRestorationNativeSteps, routedCommands, omittedZeroCommands, accelerationCalls, duplicateAccelerationReceivers;
             public int velocityReads, angularReads, centerReads, pointReads, statsReads, frameVelocityChanges, frameTranslations;
             public int propertyRebuilds;
+            public long costClockFrequency = Stopwatch.Frequency;
+            public long auditTicks, driverAuditTicks, refreshTicks, combineTicks, publishTicks, publishPlanTicks, publishWriteTicks, publishReadbackTicks, publishSyncTicks, bridgeCheckTicks;
+            public int auditCalls, driverAuditCalls, refreshCalls, combineCalls, publishCalls, publishedMembers, publishSyncCalls, bridgeCheckCalls;
+            public string publicationMode = "explicit-transform-and-native", propertyReductionMode = "reference";
+            public bool originalAutoSyncTransforms, autoSyncTransformsUnchanged;
+            public string costScope = "Synchronous owner method wall costs over its lifetime. Driver audit is nested in audit; combine and property-triggered publication are nested in refresh; planning/write/readback are nested in publication. Periodic bridge checks exclude admission/cleanup. Nested costs are not additive and include timer overhead.";
             public double maxPropertyPositionShift, maxPropertyRotationShift;
             public double ownerStartUt, ownerEndUt, postRestorationSimulatedSeconds;
             public bool pulseQueued, originalBodiesRestored, aggregateRetired, bridgeReleased, passed;
@@ -122,6 +131,8 @@ namespace KspContinuum
             public float NativeMass;
             public Vector3 NativeCenter, NativeInertia;
             public Quaternion NativeInertiaRotation;
+            public Vector3 PublishedPosition;
+            public Quaternion PublishedRotation;
         }
 
         public LiveRigidVesselOwner(string output, string runId, Func<bool> capturing)
@@ -258,7 +269,7 @@ namespace KspContinuum
                 Need(pending != null && pending.frame == frame && pending.fixedTime == (float)time, "Missing matched native boundary.");
                 pending.after = State(body, false); Publish(pending);
                 steps.Add(pending); pending = null; Report.physicsSteps = steps.Count;
-                if (steps.Count % 16 == 0) Need(bridge.ExactInstalled(), "Live bridge graph changed during native ownership.");
+                if (steps.Count % 16 == 0) Need(CheckBridge(), "Live bridge graph changed during native ownership.");
                 Report.status = "running";
                 if (driver != null) driver.AfterPhysics();
                 if (Time.fixedTime - enteredTime >= (controlled ? 12f : 1.5f)) { Restore(); Report.status = "restored-awaiting-stock-steps"; }
@@ -315,6 +326,14 @@ namespace KspContinuum
                 members.Add(candidate, member); ordered.Add(member);
             }
             ordered.Sort((a, b) => a.Depth == b.Depth ? a.Body.GetInstanceID().CompareTo(b.Body.GetInstanceID()) : a.Depth.CompareTo(b.Depth));
+            autoSyncTransforms = Physics.autoSyncTransforms; Report.originalAutoSyncTransforms = autoSyncTransforms;
+            if (controlled)
+            {
+                retainedProperties = new RetainedRigidAssemblyProperties(ordered.Select(member => member.Properties));
+                Need(retainedProperties.Count == ordered.Count, "Retained property topology differs.");
+                foreach (Member member in ordered) Need(retainedProperties.GetId(member.LocalId) == member.LocalId, "Retained property slot differs.");
+                Report.propertyReductionMode = "retained-canonical-two-pass"; Report.publicationMode = "parent-first-transform-batch-one-global-sync";
+            }
             RigidAssemblyProjection projection = RigidAssemblyProjection.Project(motions); properties = projection.Properties;
             root = new GameObject("Continuum live rigid authority"); root.transform.SetPositionAndRotation(position, rotation);
             body = root.AddComponent<Rigidbody>(); body.isKinematic = true; body.useGravity = false; body.detectCollisions = false;
@@ -348,21 +367,39 @@ namespace KspContinuum
         }
         void Audit()
         {
+            long start = Stopwatch.GetTimestamp();
+            try { AuditCore(); }
+            finally { Report.auditTicks += Stopwatch.GetTimestamp() - start; Report.auditCalls++; }
+        }
+        bool CheckBridge()
+        {
+            long start = Stopwatch.GetTimestamp();
+            try { return bridge.ExactInstalled(); }
+            finally { Report.bridgeCheckTicks += Stopwatch.GetTimestamp() - start; Report.bridgeCheckCalls++; }
+        }
+        void AuditCore()
+        {
             Eligible(); Need(vessel.parts.Count == parts.Length, "Part count changed.");
-            if (driver != null) driver.Audit();
+            if (controlled) Need(Physics.autoSyncTransforms == autoSyncTransforms, "Global physics synchronization setting changed.");
+            if (driver != null)
+            {
+                long start = Stopwatch.GetTimestamp();
+                try { driver.Audit(); }
+                finally { Report.driverAuditTicks += Stopwatch.GetTimestamp() - start; Report.driverAuditCalls++; }
+            }
             foreach (ModuleWheelBase wheel in retractedWheels) RetractedWheel(wheel);
             for (int i = 0; i < parts.Length; i++) Need(vessel.parts[i] == parts[i] && parts[i] != null &&
                 (parts[i].parent == null ? 0 : parts[i].parent.GetInstanceID()) == parents[i] &&
                 (parts[i].rb == null ? 0 : parts[i].rb.GetInstanceID()) == aliases[i] && parts[i].servoRb == null, "Topology or alias changed.");
             Need(body != null && !body.isKinematic && !body.detectCollisions, "Aggregate ownership changed.");
             foreach (Member member in ordered) Need(member.Body != null && member.Body.isKinematic && !member.Body.detectCollisions, "Proxy ownership changed.");
-            Quaternion aggregateRotation = Normalized(body.rotation);
+            Vector3 aggregatePosition = body.position; Quaternion aggregateRotation = Normalized(body.rotation);
             foreach (Member member in ordered)
             {
-                Vector3 position = body.position + aggregateRotation * member.Position; Quaternion rotation = Normalized(aggregateRotation * member.Rotation);
+                Vector3 position = aggregatePosition + aggregateRotation * member.Position; Quaternion rotation = Normalized(aggregateRotation * member.Rotation);
                 double positionError = Math.Max((member.Body.transform.position - position).magnitude, (member.Body.position - position).magnitude);
                 double rotationError = Math.Max(RotationError(member.Body.transform.rotation, rotation), RotationError(member.Body.rotation, rotation));
-                Need(positionError <= 1e-4 && rotationError <= .002, "Unrouted constituent pose writer: id=" + member.Body.GetInstanceID() +
+                if (!(positionError <= 1e-4 && rotationError <= .002)) Need(false, "Unrouted constituent pose writer: id=" + member.Body.GetInstanceID() +
                     " transformPositionError=" + positionError + " transformRotationError=" + rotationError +
                     " nativePositionError=" + (member.Body.position - position).magnitude);
             }
@@ -397,20 +434,34 @@ namespace KspContinuum
         }
         void RefreshProperties()
         {
+            long start = Stopwatch.GetTimestamp();
+            try { RefreshPropertiesCore(); }
+            finally { Report.refreshTicks += Stopwatch.GetTimestamp() - start; Report.refreshCalls++; }
+        }
+        void RefreshPropertiesCore()
+        {
             bool changed = false; propertyScratch.Clear();
             foreach (Member member in ordered)
             {
                 Rigidbody source = member.Body;
-                if (member.NativeMass != source.mass || !Same(member.NativeCenter, source.centerOfMass) ||
-                    !Same(member.NativeInertia, source.inertiaTensor) || !Same(member.NativeInertiaRotation, source.inertiaTensorRotation))
-                { member.Properties = Properties(member); changed = true; }
-                propertyScratch.Add(member.Properties);
+                float mass = source.mass; Vector3 center = source.centerOfMass, inertia = source.inertiaTensor; Quaternion inertiaRotation = source.inertiaTensorRotation;
+                if (member.NativeMass != mass || !Same(member.NativeCenter, center) || !Same(member.NativeInertia, inertia) || !Same(member.NativeInertiaRotation, inertiaRotation))
+                {
+                    member.Properties = new RigidAssemblyMember(member.LocalId, mass, Vector(member.Position), Rotate(member.Rotation), Vector(center), Vector(inertia), Rotate(inertiaRotation));
+                    member.NativeMass = mass; member.NativeCenter = center; member.NativeInertia = inertia; member.NativeInertiaRotation = inertiaRotation;
+                    if (retainedProperties != null) retainedProperties.Update(member.LocalId, member.Properties);
+                    changed = true;
+                }
+                if (retainedProperties == null) propertyScratch.Add(member.Properties);
             }
             if (!changed) return;
             Report.propertyRebuilds++;
             Vector3 oldCenter = body.worldCenterOfMass, velocity = body.velocity, omega = body.angularVelocity;
             Vector3 oldPosition = body.position; Quaternion oldRotation = body.rotation;
-            properties = RigidAssemblyProperties.Combine(propertyScratch); PublishProperties();
+            long start = Stopwatch.GetTimestamp();
+            try { properties = retainedProperties == null ? RigidAssemblyProperties.Combine(propertyScratch) : retainedProperties.Combine(); }
+            finally { Report.combineTicks += Stopwatch.GetTimestamp() - start; Report.combineCalls++; }
+            PublishProperties();
             body.velocity = velocity + Vector3.Cross(omega, body.worldCenterOfMass - oldCenter);
             Report.maxPropertyPositionShift = Math.Max(Report.maxPropertyPositionShift, (body.position - oldPosition).magnitude);
             Report.maxPropertyRotationShift = Math.Max(Report.maxPropertyRotationShift, RotationError(body.rotation, oldRotation));
@@ -424,17 +475,46 @@ namespace KspContinuum
         }
         void Publish(Step step)
         {
-            Quaternion aggregateRotation = Normalized(body.rotation);
+            long start = Stopwatch.GetTimestamp();
+            try { PublishCore(step); }
+            finally { Report.publishTicks += Stopwatch.GetTimestamp() - start; Report.publishCalls++; }
+        }
+        void PublishCore(Step step)
+        {
+            Vector3 aggregatePosition = body.position; Quaternion aggregateRotation = Normalized(body.rotation);
             foreach (Member member in ordered)
             {
-                Vector3 position = body.position + aggregateRotation * member.Position; Quaternion rotation = Normalized(aggregateRotation * member.Rotation);
+                long start = Stopwatch.GetTimestamp();
+                Vector3 position = aggregatePosition + aggregateRotation * member.Position; Quaternion rotation = Normalized(aggregateRotation * member.Rotation);
+                member.PublishedPosition = position; member.PublishedRotation = rotation;
+                Report.publishPlanTicks += Stopwatch.GetTimestamp() - start;
+                start = Stopwatch.GetTimestamp();
                 member.Body.transform.SetPositionAndRotation(position, rotation);
-                member.Body.position = position; member.Body.rotation = rotation;
+                if (!controlled) { member.Body.position = position; member.Body.rotation = rotation; }
+                Report.publishWriteTicks += Stopwatch.GetTimestamp() - start;
+                if (!controlled) ValidatePublished(member, step);
+            }
+            if (controlled)
+            {
+                long start = Stopwatch.GetTimestamp();
+                try { Need(Physics.autoSyncTransforms == autoSyncTransforms, "Global physics synchronization setting changed during publication."); Physics.SyncTransforms(); }
+                finally { Report.publishSyncTicks += Stopwatch.GetTimestamp() - start; Report.publishSyncCalls++; }
+                foreach (Member member in ordered) ValidatePublished(member, step);
+            }
+        }
+        void ValidatePublished(Member member, Step step)
+        {
+            long start = Stopwatch.GetTimestamp();
+            try
+            {
+                Vector3 position = member.PublishedPosition; Quaternion rotation = member.PublishedRotation;
                 double pe = Math.Max((member.Body.position - position).magnitude, (member.Body.transform.position - position).magnitude);
                 double re = Math.Max(RotationError(member.Body.rotation, rotation), RotationError(member.Body.transform.rotation, rotation));
                 Report.maxProxyPositionError = Math.Max(Report.maxProxyPositionError, pe); Report.maxProxyRotationError = Math.Max(Report.maxProxyRotationError, re);
                 if (step != null) { step.proxyPositionError = Math.Max(step.proxyPositionError, pe); step.proxyRotationError = Math.Max(step.proxyRotationError, re); if (!member.Body.isKinematic) step.dynamicProxies++; }
+                Need(pe <= 1e-4 && re <= .002, "Published native/Transform pose does not match its retained target.");
             }
+            finally { Report.publishReadbackTicks += Stopwatch.GetTimestamp() - start; Report.publishedMembers++; }
         }
         RigidAssemblyMember Properties(Member member)
         {
@@ -632,12 +712,13 @@ namespace KspContinuum
             }
             catch (Exception error) { Report.status = "invalid"; Report.detail = "Hook cleanup failed: " + error; }
             Report.steps = steps.ToArray(); Report.bridgeSites = bridge.SourceCallsites;
+            Report.autoSyncTransformsUnchanged = !controlled || Physics.autoSyncTransforms == autoSyncTransforms;
             Report.screenshots = screenshots.ToArray();
             Report.aggregateRetired = retiredRoot == null && Report.originalBodiesRestored;
             Report.cleanupStatus = Report.originalBodiesRestored && Report.aggregateRetired && Report.bridgeReleased && !frameInstalled ? "restored-original-ownership" : "incomplete";
             bool treatmentComplete = controlled ? driver != null && driver.Report.passed && steps.Sum(step => (double)step.dt) >= 11.99 &&
                 Report.postRestorationSimulatedSeconds >= 1.9999 && screenshots.Count == captureTimes.Length : Report.pulseQueued;
-            Report.passed = Report.status != "invalid" && steps.Count >= 10 && Report.postRestorationNativeSteps >= 2 && Report.stockContinuationVerified && treatmentComplete && screenshotCaptured && Report.cleanupStatus == "restored-original-ownership" &&
+            Report.passed = Report.status != "invalid" && Report.autoSyncTransformsUnchanged && steps.Count >= 10 && Report.postRestorationNativeSteps >= 2 && Report.stockContinuationVerified && treatmentComplete && screenshotCaptured && Report.cleanupStatus == "restored-original-ownership" &&
                 Report.velocityReads > 0 && Report.accelerationCalls > 0 && Report.maxProxyPositionError <= 1e-4 && Report.maxProxyRotationError <= .002;
             if (Report.status != "invalid") Report.status = Report.passed ? "passed" : "incomplete";
             File.WriteAllText(output, ReportJson.Encode(Report));

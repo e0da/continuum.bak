@@ -24,6 +24,7 @@ namespace KspContinuum
         readonly Quaternion oldRotation, oldPivotRotation;
         readonly float oldDistance, oldFov, oldPitch, oldHeading;
         readonly Vector3 offsetDirection, viewUp;
+        readonly double cameraDistance;
         readonly MethodInfo update = AccessTools.DeclaredMethod(typeof(FlightCamera), "LateUpdate");
         readonly MethodInfo effectUpdate = AccessTools.DeclaredMethod(typeof(FXCamera), "LateUpdate");
         readonly MethodInfo depthUpdate = AccessTools.DeclaredMethod(typeof(FXDepthCamera), "LateUpdate");
@@ -40,6 +41,10 @@ namespace KspContinuum
             public double maxCapturePhaseDegrees, maxCapturePhaseErrorDegrees, maxCaptureBodyCenterViewAngleDegrees, maxCaptureLightAgreementDegrees, minCaptureHorizonClearanceMeters;
             public double requestedPhaseDegrees, actualPhaseDegrees, solarIncidenceDegrees, horizonClearanceMeters, bodyCenterViewAngleDegrees;
             public double altitudeMeters, density, surfaceSpeed, universalTime, maxPositionErrorMeters, maxAngleErrorDegrees;
+            public double cameraDistanceMeters, framingRadiusMeters;
+            public double bodyAngularRadiusDegrees, bodyLimbViewAngleDegrees, maxCaptureBodyLimbViewAngleDegrees;
+            public int framingRenderers;
+            public string framingPolicy;
             public double[] toSun, bodyRadial, cameraOffset, lightRayDirection;
             public long captureStartTicks, captureEndTicks, clockFrequency = Stopwatch.Frequency;
         }
@@ -51,7 +56,7 @@ namespace KspContinuum
             if (modes.Length == 0) return null;
             if (modes.Length != 1) throw new InvalidOperationException("Exactly one flight lighting preset is required.");
             string mode = modes[0].Substring(prefix.Length);
-            if (mode != "frontlit" && mode != "side-lit" && mode != "backlit") throw new InvalidOperationException("Unknown physical lighting preset.");
+            if (mode != "frontlit" && mode != "three-quarter-lit" && mode != "three-quarter-overview" && mode != "side-lit" && mode != "backlit") throw new InvalidOperationException("Unknown physical lighting preset.");
             return new FlightLighting(args, vessel, mode);
         }
         FlightLighting(string[] args, Vessel vessel, string mode)
@@ -75,7 +80,8 @@ namespace KspContinuum
             if (perpendicular.sqrMagnitude < 1e-10f) perpendicular = Vector3.ProjectOnPlane(body.transform.up, sun);
             if (perpendicular.sqrMagnitude < 1e-10f) perpendicular = Vector3.ProjectOnPlane(Vector3.right, sun);
             perpendicular.Normalize();
-            double phase = mode == "frontlit" ? 0 : mode == "side-lit" ? 75 : 150;
+            if(mode=="three-quarter-lit")perpendicular=-perpendicular;
+            double phase = mode == "frontlit" ? 0 : (mode == "three-quarter-lit" || mode=="three-quarter-overview") ? 45 : mode == "side-lit" ? 75 : 150;
             double radians = phase * Math.PI / 180;
             offsetDirection = (sun * (float)Math.Cos(radians) + perpendicular * (float)Math.Sin(radians)).normalized;
             viewUp = Vector3.ProjectOnPlane(outward, -offsetDirection);
@@ -88,14 +94,52 @@ namespace KspContinuum
                 requestedPhaseDegrees = phase, solarIncidenceDegrees = Angle(outward, sun), horizonClearanceMeters = clearance, shadowed = clearance <= 0,
                 toSun = V(sun), bodyRadial = V(outward), cameraOffset = V(offsetDirection), lightRayDirection = V(Sun.Instance.sunLight.transform.forward),
                 altitudeMeters = vessel.altitude, density = vessel.atmDensity, surfaceSpeed = vessel.srfSpeed, universalTime = Planetarium.GetUniversalTime() };
+            cameraDistance=Distance;
+            Report.framingPolicy="Original fixed 150m distance, vessel-root tracking.";
+            if(mode=="three-quarter-lit")
+            {
+                cameraDistance=50;
+                Report.framingPolicy="Root detail: fixed50m, vessel-root tracking; long booms may extend outside frame. Real45-degree solar phase; opposing radial-projected solar-plane offset frames the planetary limb, not the full craft envelope.";
+            }
+            if(mode=="three-quarter-overview")
+            {
+                double radius=0;int count=0;
+                var seen=new System.Collections.Generic.HashSet<int>();
+                foreach(Part part in vessel.parts)foreach(Renderer renderer in part.FindModelComponents<Renderer>())
+                {
+                    if(renderer==null || !(renderer is MeshRenderer || renderer is SkinnedMeshRenderer) || !renderer.enabled || !renderer.gameObject.activeInHierarchy || renderer.forceRenderingOff || renderer.GetComponent<VolumetricObjectBase>()!=null || !seen.Add(renderer.GetInstanceID()))continue;
+                    Bounds bounds=renderer.bounds;
+                    double extent=(bounds.center-root.position).magnitude+bounds.extents.magnitude;
+                    if(!Finite(extent)||extent<=0)throw new InvalidOperationException("Craft framing bounds invalid.");
+                    radius=Math.Max(radius,extent);count++;
+                }
+                if(count==0 || count>50000 || !Finite(radius))throw new InvalidOperationException("Craft framing mesh inventory absent/excessive.");
+                double aspect=cameras.Min(c=>(double)c.aspect);
+                if(!Finite(aspect)||aspect<=0)throw new InvalidOperationException("Craft framing aspect invalid.");
+                double half=FieldOfView*Math.PI/360;
+                double limitingHalf=Math.Min(half,Math.Atan(Math.Tan(half)*aspect));
+                cameraDistance=Math.Max(Distance,1.25*radius/Math.Sin(limitingHalf)+5);
+                if(!Finite(cameraDistance)||cameraDistance>750000)throw new InvalidOperationException("Craft framing distance outside local view range.");
+                cameraDistance=(double)(float)cameraDistance;
+                Report.framingRadiusMeters=radius;Report.framingRenderers=count;
+                Report.framingPolicy="One-time active visible Part model MeshRenderer/SkinnedMeshRenderer bounds; particles and volumetric effect components excluded. Root-centered enclosing sphere, limiting vertical/horizontal 60-degree FOV, 25 percent sphere margin plus 5m, minimum150m. Frozen distance; no future deformation fit guarantee.";
+            }
+            Report.cameraDistanceMeters=cameraDistance;
             foreach (string arg in args) if (arg.StartsWith("--continuum-research-run=", StringComparison.Ordinal)) Report.runId = arg.Substring("--continuum-research-run=".Length);
-            Vector3 cameraPosition = root.position + offsetDirection * (float)Distance;
-            Report.bodyCenterViewAngleDegrees = Angle(-offsetDirection, (Vector3)(body.position - (Vector3d)cameraPosition));
+            Vector3 cameraPosition = root.position + offsetDirection * (float)cameraDistance;
+            Vector3d cameraToBody=body.position-(Vector3d)cameraPosition;
+            Report.bodyCenterViewAngleDegrees = Angle(-offsetDirection, (Vector3)cameraToBody);
+            if(mode=="three-quarter-lit" || mode=="three-quarter-overview")
+            {
+                Report.bodyAngularRadiusDegrees=BodyAngularRadius(cameraToBody);
+                Report.bodyLimbViewAngleDegrees=Math.Abs(Report.bodyCenterViewAngleDegrees-Report.bodyAngularRadiusDegrees);
+            }
             Report.illuminatedCriterionRequired = mode != "backlit";
             if ((Report.illuminatedCriterionRequired && Report.shadowed) ||
-                (mode == "frontlit" && Report.bodyCenterViewAngleDegrees > FieldOfView / 2 - 2) ||
+                ((mode == "frontlit" || mode=="three-quarter-overview") && Report.bodyCenterViewAngleDegrees > FieldOfView / 2 - 2) ||
+                (mode=="three-quarter-lit" && Report.bodyLimbViewAngleDegrees > FieldOfView / 2 - 2) ||
                 Angle(sun, -Sun.Instance.sunLight.transform.forward) > 1)
-                throw new InvalidOperationException("Checkpoint cannot supply requested physical preset: frontlit requires Kerbin center in view; illuminated presets require unoccluded sunlight; explicit orbital preparation is required.");
+                throw new InvalidOperationException("Checkpoint cannot supply requested physical preset: frontlit/overview require Kerbin center in view; root detail requires its limb in view; illuminated presets require unoccluded sunlight; explicit orbital preparation is required.");
             oldPosition = flight.transform.localPosition; oldRotation = flight.transform.localRotation;
             oldPivotPosition = pivot.localPosition; oldPivotRotation = pivot.localRotation;
             oldDistance = flight.Distance; oldFov = flight.FieldOfView; oldPitch = FlightCamera.CamPitch; oldHeading = FlightCamera.CamHdg;
@@ -139,8 +183,11 @@ namespace KspContinuum
             double phase = Angle(sun, offsetDirection), phaseError = Math.Abs(phase - Report.requestedPhaseDegrees);
             double along = -Vector3d.Dot(radial, solar.normalized);
             double clearance = (along > 0 ? (radial + along * solar.normalized).magnitude : radial.magnitude) - body.Radius;
-            Vector3 cameraPosition = root.position + offsetDirection * (float)Distance;
-            double bodyAngle = Angle(-offsetDirection, (Vector3)(body.position - (Vector3d)cameraPosition));
+            Vector3 cameraPosition = root.position + offsetDirection * (float)cameraDistance;
+            Vector3d cameraToBody=body.position-(Vector3d)cameraPosition;
+            double bodyAngle = Angle(-offsetDirection, (Vector3)cameraToBody);
+            double limbAngle=0;
+            if(Report.mode=="three-quarter-lit" || Report.mode=="three-quarter-overview")limbAngle=Math.Abs(bodyAngle-BodyAngularRadius(cameraToBody));
             double lightAgreement = Angle(sun, -Sun.Instance.sunLight.transform.forward);
             if (window)
             {
@@ -149,18 +196,20 @@ namespace KspContinuum
                 Report.maxCapturePhaseDegrees = Math.Max(Report.maxCapturePhaseDegrees, phase);
                 Report.maxCapturePhaseErrorDegrees = Math.Max(Report.maxCapturePhaseErrorDegrees, phaseError);
                 Report.maxCaptureBodyCenterViewAngleDegrees = Math.Max(Report.maxCaptureBodyCenterViewAngleDegrees, bodyAngle);
+                Report.maxCaptureBodyLimbViewAngleDegrees=Math.Max(Report.maxCaptureBodyLimbViewAngleDegrees,limbAngle);
                 Report.maxCaptureLightAgreementDegrees = Math.Max(Report.maxCaptureLightAgreementDegrees, lightAgreement);
                 Report.captureShadowed |= clearance <= 0;
             }
             if (phaseError > 1 || lightAgreement > 1 || (Report.illuminatedCriterionRequired && clearance <= 0) ||
-                (Report.mode == "frontlit" && bodyAngle > FieldOfView / 2 - 2))
+                ((Report.mode == "frontlit" || Report.mode=="three-quarter-overview") && bodyAngle > FieldOfView / 2 - 2) ||
+                (Report.mode=="three-quarter-lit" && limbAngle > FieldOfView / 2 - 2))
                 throw new InvalidOperationException("Physical lighting illumination/view criterion changed.");
         }
         void Apply()
         {
             pivot.position = root.position; pivot.rotation = Quaternion.LookRotation(-offsetDirection, viewUp);
-            flight.transform.localPosition = Vector3.back * (float)Distance; flight.transform.localRotation = Quaternion.identity;
-            flight.SetDistanceImmediate((float)Distance); flight.FieldOfView = (float)FieldOfView;
+            flight.transform.localPosition = Vector3.back * (float)cameraDistance; flight.transform.localRotation = Quaternion.identity;
+            flight.SetDistanceImmediate((float)cameraDistance); flight.FieldOfView = (float)FieldOfView;
             foreach (Camera camera in cameras) if (camera != null) camera.fieldOfView = (float)FieldOfView;
         }
         void Observe(Camera camera)
@@ -169,7 +218,7 @@ namespace KspContinuum
             try
             {
                 Check(); Report.observedCallbacks++; if (window) Report.captureCallbacks++;
-                double positionError = (camera.transform.position - (root.position + offsetDirection * (float)Distance)).magnitude;
+                double positionError = (camera.transform.position - (root.position + offsetDirection * (float)cameraDistance)).magnitude;
                 double angleError = Angle(camera.transform.forward, -offsetDirection);
                 Report.maxPositionErrorMeters = Math.Max(Report.maxPositionErrorMeters, positionError);
                 Report.maxAngleErrorDegrees = Math.Max(Report.maxAngleErrorDegrees, angleError);
@@ -210,6 +259,12 @@ namespace KspContinuum
             Report.status = Report.faults == 0 && Report.captureCallbacks > 0 && Report.captureEndTicks > Report.captureStartTicks ? "complete-experimental" : "invalid";
         }
         static bool Finite(double value) { return !double.IsNaN(value) && !double.IsInfinity(value); }
+        double BodyAngularRadius(Vector3d cameraToBody)
+        {
+            double distance=cameraToBody.magnitude;
+            if(!Finite(distance)||distance<=body.Radius)throw new InvalidOperationException("Camera must remain outside the planet for limb framing.");
+            return Math.Asin(body.Radius/distance)*180/Math.PI;
+        }
         static double Angle(Vector3 a, Vector3 b) { return Math.Atan2(Vector3.Cross(a.normalized, b.normalized).magnitude, Vector3.Dot(a.normalized, b.normalized)) * 180 / Math.PI; }
         static double[] V(Vector3 value) { return new[] { (double)value.x, value.y, value.z }; }
     }

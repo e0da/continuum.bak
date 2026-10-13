@@ -48,7 +48,7 @@ fn row(
         behavior_proof: vec!["Actual capture completion, unchanged topology/resources where required, owned cleanup and source restoration; observation is not deterministic replay".into()],
         cost_measurements: vec!["Frame distribution, achieved simulation rate, non-overlapping PlayerLoop scopes; intrusive diagnostics separately declared".into()],
         checkpoint_requirements: vec!["Explicit private save/checkpoint/SHA256, expected vessel.parts.Count (including physicsless parts), parent attempt and receipt SHA256".into()],
-        lighting_recommendation: "Physically frontlit or side-lit for inspection; preserve backlit stress as a separate pinned recipe".into(), next_action: next.into() }
+        lighting_recommendation: "Frame the craft's central structure with the planet behind it and sunlight behind the camera or at45degrees; use the three-quarter-lit detail recipe where admitted. Whole-craft overview and backlit stress are separate pinned recipes".into(), next_action: next.into() }
 }
 pub fn catalog() -> Vec<Recipe> {
     use Capability::*;
@@ -65,6 +65,8 @@ pub fn catalog() -> Vec<Recipe> {
         row("CSP-ENTRY",Some("CSP"),"mission","Intact atmospheric entry",Catalog,"Transfer from orbit through atmosphere; preserve failures","Freeze craft and approach recipe; breakup is invalid for intact measurement"),
         row("entry-normal",Some("CSP-ENTRY"),"situation","Already atmospheric normal-time flight",RequiresPrivatePins,"Kerbin atmospheric checkpoint; normal-time timed capture","Supply physically atmospheric checkpoint; no approach implied"),
         row("entry-frontlit",Some("CSP-ENTRY"),"micro-situation","Frontlit60km physical inspection",RequiresPrivatePins,"Declared Sunward orbital rotation before loading; intact60km capture,3simseconds","Supply intact entry checkpoint; require physical sun/view/body geometry and cleanup"),
+        row("entry-three-quarter-lit",Some("CSP-ENTRY"),"micro-situation","Detail45degree60km physical inspection",RequiresPrivatePins,"Same Sunward placement;45degree camera phase,50m root-detail framing, planetary limb and hidden research panel","Supply intact checkpoint/profile; require daylight, planetary limb in view, actual camera distance, decoded pixels and cleanup"),
+        row("entry-three-quarter-overview",Some("CSP-ENTRY"),"micro-situation","Whole-craft45degree60km overview",RequiresPrivatePins,"Same Sunward placement;45degree camera phase, root-centered visible mesh bounds fit and hidden research panel","Supply intact checkpoint/profile; require daylight, planet center in view, actual camera distance, decoded pixels and cleanup"),
         row("entry-side-lit",Some("CSP-ENTRY"),"micro-situation","Side-lit60km physical inspection",RequiresPrivatePins,"Same Sunward placement;75degree camera phase and limb composition","Supply same intact checkpoint/profile; inspect pixels, do not claim performance improvement"),
         row("entry-45km",Some("CSP-ENTRY"),"micro-situation","Cross45km before capture",RequiresPrivatePins,"Existing in-memory entry preparation;180s approach and60s capture deadlines","Supply supported checkpoint; intact topology required at admission"),
         row("CSP-0001",Some("CSP"),"mission","Minmus Pathfinder",ExistingMissionMode,"Existing launch-to-landing mission; sideways touchdown is not upright qualification","Use existing mission documentation; add owned-lab adapter before catalog command execution"),
@@ -140,6 +142,8 @@ pub fn catalog() -> Vec<Recipe> {
             "station-loading" => ("Packed ranges, loaded vessels, floating origin and physics construction", "Actual pack/unpack events, preserved orbit/resource state and no duplicate live ownership", "Range/relative speed; fixed vessels, topology and loading thresholds"),
             "entry-normal"|"entry-45km" => ("FI convection/occlusion, aero forces, heating, effects and structural physics", "Intact admission/capture; actual altitude/density/speed/heating; stock aero/thermal authority", "Entry altitude/vehicle or replacement; freeze atmosphere/velocity and do not conflate warp"),
             "entry-frontlit"|"entry-side-lit" => ("Physical lighting, material visibility, aero-effect composition and camera publication", "Actual phase/daylight/body geometry, decoded pixels, intact parts and exact camera cleanup", "Camera phase only across same declared Sunward orbit;3simseconds at60km, stock rendering"),
+            "entry-three-quarter-lit" => ("Physical lighting, detail framing and camera publication", "Actual45degree phase/daylight, planetary limb in view,50m root distance, decoded pixels, intact parts and exact camera cleanup", "45degree camera, root-detail framing and hidden research panel;3simseconds at60km, stock rendering. Separate visual workload"),
+            "entry-three-quarter-overview" => ("Physical lighting, whole-craft framing and camera publication", "Actual45degree phase/daylight, body center in view, admitted mesh envelope, decoded pixels, intact parts and exact camera cleanup", "45degree camera, bounds-fitted distance and hidden research panel;3simseconds at60km, stock rendering. Separate visual workload"),
             "launch-burn-stage" => ("Thrust/resource flow, aero/plume rendering, staging and joint topology", "Executed burn and stage events; impulse/fuel accounting; intended surviving assembly", "Throttle/stage recipe and altitude; fixed vehicle, fuel, engine and atmosphere"),
             "lunar-sortie"|"lunar-return" => ("Orbital/SOI transitions, landing/ascent, science persistence and recovery", "Actual encounters/contact/recovery; retained crew/science; checkpoints linked to full mission", "Target/body/vehicle; fixed maneuver and mission acceptance criteria"),
             "lunar-science-eva" => ("Science data, crew inventory and EVA/reboarding ownership", "Actual experiment results and EVA/reboard; conserved crew/items and reload persistence", "Experiment/EVA sequence; fixed surface site, sunlight and craft"),
@@ -365,13 +369,16 @@ fn compose(id: &str, i: &Inputs, mut selection: ResolvedLaunch) -> Result<Plan> 
         "entry-normal" => {
             options.insert("--flight-atmosphere".into(), "true".into());
         }
-        "entry-frontlit" | "entry-side-lit" => {
+        "entry-frontlit" | "entry-three-quarter-lit" | "entry-three-quarter-overview" | "entry-side-lit" => {
             options.insert("--flight-entry-target-altitude".into(), "60000".into());
             options.insert("--flight-seconds".into(), "3".into());
             options.insert("--flight-settle-seconds".into(), "0.5".into());
             selection.diagnostics.flight_lighting = Some(
                 if id == "entry-frontlit" {
                     "frontlit"
+                } else if id == "entry-three-quarter-lit" || id == "entry-three-quarter-overview" {
+                    options.insert("--flight-research-panel".into(), "hidden".into());
+                    if id == "entry-three-quarter-lit" { "three-quarter-lit" } else { "three-quarter-overview" }
                 } else {
                     "side-lit"
                 }
@@ -483,6 +490,10 @@ mod tests {
         assert!(lit
             .player_arguments
             .contains(&"--continuum-scale-parts=256".into()));
+        let framed = compose("entry-three-quarter-lit", &pins(), base()).unwrap();
+        assert_eq!(framed.selection.diagnostics.flight_lighting.as_deref(), Some("three-quarter-lit"));
+        assert_eq!(framed.selection.flight.as_ref().unwrap().research_panel, crate::flight::ResearchPanelMode::Hidden);
+        assert!(framed.player_arguments.contains(&"--continuum-flight-lighting=three-quarter-lit".into()));
         let warp = compose("station-vacuum-4x", &pins(), base()).unwrap();
         let mut paired = pins();
         paired.docking = Some(crate::docking::Selection::parse(

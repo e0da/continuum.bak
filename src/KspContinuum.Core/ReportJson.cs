@@ -93,6 +93,9 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.CheckpointReloadQualification+OrbitRow" ||
                  type.FullName == "KspContinuum.VesselRuntimeCapture+ResultRow" ||
                  type.FullName == "KspContinuum.FlightLocalCamera+Report" ||
+                 type.FullName == "KspContinuum.StockCameraDepthRequests+ReportData" ||
+                 type.FullName == "KspContinuum.StockCameraDepthRequests+Source" ||
+                 type.FullName == "KspContinuum.StockCameraDepthRequests+Event" ||
                  type.FullName == "KspContinuum.FlightLocalCamera+CameraRow" ||
                  type.FullName == "KspContinuum.FlightLocalCamera+State" ||
                  type.FullName == "KspContinuum.FlightCameraChain+Report" ||

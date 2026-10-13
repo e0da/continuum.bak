@@ -1320,7 +1320,7 @@ fn smoke(
             }
             summary["entryEvidence"] = json!(flight_entry);
             summary["cameraReadbacks"] = json!({
-                "requestedCapture":if let Some(mode) = selection.diagnostics.flight_lighting.as_deref() { json!({"contract":"continuum-solar-relative-camera/v1","preset":mode,"distanceMeters":150.0,"fieldOfViewDegrees":60.0,"inputLocked":true}) } else { json!({"contract":"continuum-root-relative-camera/v1","pitch":0.2,"heading":0.3,"distanceMeters":50.0,"fieldOfViewDegrees":60.0,"inputLocked":true}) },
+                "requestedCapture":if let Some(mode) = selection.diagnostics.flight_lighting.as_deref() { json!({"contract":"continuum-solar-relative-camera/v1","preset":mode,"distanceMeters":summary["lighting"]["receipt"]["cameraDistanceMeters"].as_f64().unwrap_or(150.0),"fieldOfViewDegrees":60.0,"inputLocked":true}) } else { json!({"contract":"continuum-root-relative-camera/v1","pitch":0.2,"heading":0.3,"distanceMeters":50.0,"fieldOfViewDegrees":60.0,"inputLocked":true}) },
                 "captureStart":summary["diagnosticControls"]["report"],
                 "captureEnd":summary["diagnosticControlsEnd"]["report"],
                 "scope":"Root-relative camera pose is checked at camera pre-cull throughout capture; renderer suppression is witnessed separately by each replacement lifecycle."});

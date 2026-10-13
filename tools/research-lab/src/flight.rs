@@ -1340,6 +1340,21 @@ mod tests {
         let mut drift=camera.clone(); drift["camera00"]["effective"]["fieldOfView"]=json!(70); assert!(local_camera_summary(&request,&drift,&report,"run",123).is_err());
         let mut missing=camera.clone(); missing["camera01"].as_object_mut().unwrap().remove("restored"); assert!(local_camera_summary(&request,&missing,&report,"run",123).is_err());
         let mut unpaired=camera.clone(); unpaired["camera01"]["preCullCount"]=json!(1); assert!(local_camera_summary(&request,&unpaired,&report,"run",123).is_err());
+        let mut stock=camera.clone(); stock["mode"]=json!("stock");
+        for name in ["camera00","camera01"] { stock[name]["effective"]=stock[name]["original"].clone(); for key in ["preCullCount","preRenderCount","postRenderCount"] { stock[name][key]=json!(2); } }
+        stock["camera00"]["original"]["depthTextureMode"]=json!(0);
+        stock["camera00"]["effective"]["depthTextureMode"]=json!(1);stock["camera00"]["restored"]["depthTextureMode"]=json!(1);
+        stock["cleanupStatus"]=json!("removed-owned-hooks-preserved-original-depth-requests");
+        stock["stockDepthRequests"]=json!({"schema":"continuum-stock-camera-depth-requests/v1","assemblySha256":"8a20892953fc14c02f352b393eb6712c665156d94a7d846d16c20a7de3e22f27","assemblyMvid":"10657063-2fc3-43a7-84fa-d39e75e877bf","status":"complete","cleanupStatus":"removed-owned-depth-callsite-hooks","runId":"run","processId":123,"clockFrequency":1000,"faults":0,"hooksRemoved":true,"exactGraphAtRelease":true,
+            "sources":[{"declaringType":"VolumetricObjectBase","method":"OnEnable","metadataToken":100664670,"ilSha256":"17664c39448bbac0854d968bc8bfcfa6a1387b4a3d43a8072fb95ff40edd22a9","expectedSites":2,"observedReplacements":2,"shapeAdmissions":1},{"declaringType":"DrawDepth","method":"CheckSupport","metadataToken":100664652,"ilSha256":"c369c439e83c106edcdc3c7011d79df089284c8f96f838d5a17baf8919c26c73","expectedSites":1,"observedReplacements":1,"shapeAdmissions":1}],
+            "events":[{"cameraId":10,"before":0,"requested":1,"after":1,"frame":2,"ticks":150,"sourceIndex":0,"slot":1}]});
+        request.local_camera=LocalCameraMode::Stock;
+        assert!(local_camera_summary(&request,&stock,&report,"run",123).is_ok());
+        for (path,value) in [("events",json!([])),("sources",json!([])),("hooksRemoved",json!(false))] {
+            let mut missing=stock.clone(); missing["stockDepthRequests"][path]=value; assert!(local_camera_summary(&request,&missing,&report,"run",123).is_err());
+        }
+        let mut unknown=stock.clone();unknown["stockDepthRequests"]["events"][0]["before"]=json!(1);assert!(local_camera_summary(&request,&unknown,&report,"run",123).is_err());
+        let mut widened=stock.clone();widened["camera00"]["restored"]["fieldOfView"]=json!(70);assert!(local_camera_summary(&request,&widened,&report,"run",123).is_err());
         request.local_camera=LocalCameraMode::Stock; request.warp=4;
         let skipped=json!({"schema":"continuum-flight-local-camera/v1","mode":"stock","runId":"run","processId":123,"vesselId":"v","parts":16,"status":"not-applicable","reason":"declared-unsupported-stock-workload","cleanupStatus":"not-applicable-no-owned-hooks-or-mutations","hooksRemoved":true,"restorationComplete":true,"camera00":null,"camera01":null,"faults":0,"observedFrames":0,"coverageChecks":0,"observerTicks":0,"windowStartFrame":0,"windowEndFrame":0,"windowStartClockTimestamp":0,"windowEndClockTimestamp":0});
         assert!(local_camera_summary(&request,&skipped,&report,"run",123).is_ok());
@@ -1388,11 +1403,16 @@ mod tests {
         let valid = json!({"cameraFrozen":true,"cameraContract":"continuum-root-relative-camera/v1: fixture",
             "cameraFailure":null,"cameraDistance":50.0,"cameraFieldOfView":60.0,
             "cameraObservedInvocations":10,"cameraMaxPositionErrorMeters":0.001,"cameraMaxAngleErrorDegrees":0.001});
-        assert!(validate_frozen_camera(&valid, true, None).is_ok());
+        assert!(validate_frozen_camera(&valid, true, None, 50.0).is_ok());
         let mut missing = valid.clone(); missing["cameraObservedInvocations"] = json!(0);
-        assert!(validate_frozen_camera(&missing, true, None).is_err());
+        assert!(validate_frozen_camera(&missing, true, None, 50.0).is_err());
         let mut drift = valid.clone(); drift["cameraMaxPositionErrorMeters"] = json!(0.1);
-        assert!(validate_frozen_camera(&drift, true, None).is_err());
+        assert!(validate_frozen_camera(&drift, true, None, 50.0).is_err());
+        let mut framed = valid.clone(); framed["cameraContract"] = json!("continuum-solar-relative-camera/v1:three-quarter-overview"); framed["cameraDistance"] = json!(262.98053);
+        assert!(validate_frozen_camera(&framed, true, Some("three-quarter-overview"), 262.98052978515625).is_ok());
+        assert!(validate_frozen_camera(&framed, true, Some("three-quarter-overview"), 150.0).is_err());
+        framed["cameraDistance"] = json!(262.9805);
+        assert!(validate_frozen_camera(&framed, true, Some("three-quarter-overview"), 262.98052978515625).is_err());
     }
     #[test]
     fn interpolation_uses_whole_distribution_and_rejects_missing_values() {
@@ -2024,6 +2044,46 @@ fn owned_ps(pid: u32) -> Value {
     }
 }
 
+fn stock_depth_states(camera: &Value, run_id: &str, pid: u32) -> Result<Option<[i64; 2]>> {
+    let witness = &camera["stockDepthRequests"];
+    if witness.is_null() { return Ok(None); }
+    if camera["mode"] != "stock" || witness["schema"] != "continuum-stock-camera-depth-requests/v1" || witness["runId"] != run_id ||
+        witness["processId"].as_u64() != Some(pid as u64) || witness["clockFrequency"] != camera["clockFrequency"] ||
+        witness["assemblySha256"] != "8a20892953fc14c02f352b393eb6712c665156d94a7d846d16c20a7de3e22f27" ||
+        witness["assemblyMvid"] != "10657063-2fc3-43a7-84fa-d39e75e877bf" || witness["status"] != "complete" ||
+        witness["cleanupStatus"] != "removed-owned-depth-callsite-hooks" || witness["hooksRemoved"] != true || witness["exactGraphAtRelease"] != true || witness["faults"] != 0 {
+        return Err("stock camera depth-request identity or cleanup differs".into());
+    }
+    let sources = witness["sources"].as_array().filter(|rows| rows.len() == 2).ok_or("stock depth source inventory differs")?;
+    for (index, (name, method, token, il, sites)) in [
+        ("VolumetricObjectBase", "OnEnable", 100664670, "17664c39448bbac0854d968bc8bfcfa6a1387b4a3d43a8072fb95ff40edd22a9", 2),
+        ("DrawDepth", "CheckSupport", 100664652, "c369c439e83c106edcdc3c7011d79df089284c8f96f838d5a17baf8919c26c73", 1),
+    ].iter().enumerate() {
+        let source = &sources[index];
+        if source["declaringType"] != *name || source["method"] != *method || source["metadataToken"] != *token || source["ilSha256"] != *il ||
+            source["expectedSites"] != *sites || source["observedReplacements"] != *sites || source["shapeAdmissions"] != 1 {
+            return Err("stock depth source pin or replacement shape differs".into());
+        }
+    }
+    let ids = [camera["camera00"]["instanceId"].as_i64().ok_or("near camera identity absent")?, camera["camera01"]["instanceId"].as_i64().ok_or("far camera identity absent")?];
+    let mut depth = [camera["camera00"]["original"]["depthTextureMode"].as_i64().ok_or("near original depth absent")?, camera["camera01"]["original"]["depthTextureMode"].as_i64().ok_or("far original depth absent")?];
+    if ids[0] == 0 || ids[1] == 0 || ids[0] == ids[1] || depth.iter().any(|mode| !(0..=7).contains(mode)) { return Err("stock depth camera identity/mode differs".into()); }
+    let events = witness["events"].as_array().filter(|rows| rows.len() <= 4096).ok_or("bounded stock depth event tape absent")?;
+    let (mut frame, mut ticks) = (0, 0);
+    for event in events {
+        let index = ids.iter().position(|id| event["cameraId"].as_i64() == Some(*id)).ok_or("stock depth event camera unknown")?;
+        let source = event["sourceIndex"].as_u64().filter(|index| *index < 2).ok_or("stock depth event source unknown")? as usize;
+        if event["slot"].as_u64().filter(|slot| *slot < if source == 0 { 2 } else { 1 }).is_none() { return Err("stock depth event slot differs".into()); }
+        let next_frame = event["frame"].as_u64().filter(|value| *value > 0 && *value >= frame).ok_or("stock depth event frame regressed")?;
+        let next_ticks = event["ticks"].as_u64().filter(|value| *value > 0 && *value >= ticks).ok_or("stock depth event clock regressed")?;
+        if event["before"].as_i64() != Some(depth[index]) || event["requested"].as_i64() != Some(depth[index] | 1) || event["after"] != event["requested"] {
+            return Err("unwitnessed or nonadditive original depth request".into());
+        }
+        depth[index] |= 1; frame = next_frame; ticks = next_ticks;
+    }
+    Ok(Some(depth))
+}
+
 pub fn local_camera_summary(request: &Request, camera: &Value, report: &Value, run_id: &str, pid: u32) -> Result<Value> {
     let frames = report["frames"].as_array().filter(|frames| !frames.is_empty()).ok_or("local camera capture frames absent")?;
     let first = frames[0]["contextFrame"].as_u64().ok_or("local camera first frame absent")?;
@@ -2043,13 +2103,15 @@ pub fn local_camera_summary(request: &Request, camera: &Value, report: &Value, r
         }
         return Ok(json!({"report":camera,"proof":"not-observed-declared-unsupported-stock-workload","scope":"Stock rendering unchanged; local-camera diagnostic not applicable to declared workload."}));
     }
+    let stock_depth = stock_depth_states(camera, run_id, pid)?;
+    let cleanup = if stock_depth.is_some() { "removed-owned-hooks-preserved-original-depth-requests" } else { "removed-owned-hooks-restored-original-camera-state" };
     if camera["schema"] != "continuum-flight-local-camera/v1" || camera["mode"] != request.local_camera.as_str()
         || camera["runId"] != run_id || camera["processId"].as_u64() != Some(pid as u64) || camera["vesselId"] != frames[0]["vesselId"]
         || camera["parts"].as_u64() != Some(parts)
         || camera["status"] != "completed-experimental" || camera["faults"].as_u64() != Some(0)
         || camera["globalsUnchanged"].as_bool() != Some(true)
         || camera["hooksRemoved"].as_bool() != Some(true) || camera["restorationComplete"].as_bool() != Some(true)
-        || camera["cleanupStatus"] != "removed-owned-hooks-restored-original-camera-state"
+        || camera["cleanupStatus"] != cleanup
         || camera["windowStartClockTimestamp"] != report["captureStartClockTimestamp"] || camera["windowEndClockTimestamp"] != report["captureEndClockTimestamp"]
         || camera["clockFrequency"] != report["clockFrequency"] || camera["windowStartFrame"].as_u64() != Some(first) || camera["windowEndFrame"].as_u64() != Some(after_last)
         || camera["observedFrames"].as_u64().unwrap_or(0) == 0 || camera["coverageChecks"].as_u64().unwrap_or(0) == 0 {
@@ -2087,8 +2149,11 @@ pub fn local_camera_summary(request: &Request, camera: &Value, report: &Value, r
         }
         for field in ["enabled","activeSelf","activeInHierarchy"] { if row["original"][field] != true { return Err("stock local camera was not active at admission".into()); } }
         if row["original"]["isPQS"].as_bool() != Some(index == 1) || row["original"]["targetId"].as_i64() != Some(0) { return Err("stock local camera fog/screen ownership differs".into()); }
-        if row["original"] != row["restored"] { return Err("local camera original state not restored exactly".into()); }
+        let mut expected_restored = row["original"].clone();
+        if let Some(depth) = stock_depth { expected_restored["depthTextureMode"] = json!(depth[index as usize]); }
+        if expected_restored != row["restored"] { return Err("local camera original state or witnessed depth not preserved exactly".into()); }
         let mut expected = row["original"].clone();
+        if let Some(depth) = stock_depth { expected["depthTextureMode"] = json!(depth[index as usize]); }
         if zero {
             if index == 0 {
                 if finite(&row["effective"],"farClip")? != 750000.0 { return Err("merged camera far clip differs".into()); }
@@ -2120,12 +2185,12 @@ fn validate_panel_controls(request: &Request, controls: &Value) -> Result<()> {
     }
     Ok(())
 }
-fn validate_frozen_camera(controls: &Value, end: bool, lighting: Option<&str>) -> Result<()> {
+fn validate_frozen_camera(controls: &Value, end: bool, lighting: Option<&str>, distance: f64) -> Result<()> {
     let contract = lighting.map(|mode| format!("continuum-solar-relative-camera/v1:{mode}")).unwrap_or_else(|| "continuum-root-relative-camera/v1:".into());
     if controls["cameraFrozen"] != true
         || !controls["cameraContract"].as_str().unwrap_or("").starts_with(&contract)
         || !controls["cameraFailure"].is_null()
-        || controls["cameraDistance"].as_f64() != Some(if lighting.is_some() { 150.0 } else { 50.0 })
+        || controls["cameraDistance"].as_f64().filter(|x| x.is_finite()).map(|x| x as f32 as f64) != Some(distance)
         || controls["cameraFieldOfView"].as_f64() != Some(60.0)
         || (end && controls["cameraObservedInvocations"].as_u64().unwrap_or(0) == 0)
     {
@@ -2148,6 +2213,10 @@ pub fn validate_controls(
     output: &Path,
     report: &Value,
 ) -> Result<()> {
+    let distance = if matches!(lighting, Some("three-quarter-lit" | "three-quarter-overview")) {
+        let receipt: Value = read(&output.join("flight-lighting.json"))?;
+        receipt["cameraDistanceMeters"].as_f64().filter(|x| x.is_finite() && (50.0..=750000.0).contains(x)).ok_or("framed camera distance witness absent")?
+    } else if lighting.is_some() { 150.0 } else { 50.0 };
     let aero_treatment = request.no_aero_fx || request.aero_quality.is_some();
     if let Some(parts) = request.expected_parts {
         if report["frames"].as_array().is_none_or(|frames| frames.is_empty() || frames.iter().any(|frame| frame["parts"].as_u64() != Some(parts as u64))) {
@@ -2164,7 +2233,7 @@ pub fn validate_controls(
         {
             return Err("diagnostic control evidence identity or effective controls differ".into());
         }
-        validate_frozen_camera(&controls, false, lighting)?;
+        validate_frozen_camera(&controls, false, lighting, distance)?;
         validate_panel_controls(request, &controls)?;
         if aero_treatment {
             if controls["phase"] != "capture-start" {
@@ -2184,7 +2253,7 @@ pub fn validate_controls(
         {
             return Err("end diagnostic control evidence identity differs".into());
         }
-        validate_frozen_camera(&end, true, lighting)?;
+        validate_frozen_camera(&end, true, lighting, distance)?;
         validate_panel_controls(request, &end)?;
         if aero_treatment {
             validate_aero_boundary(request, &end)?;
