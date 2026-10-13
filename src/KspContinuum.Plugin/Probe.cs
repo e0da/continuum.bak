@@ -33,6 +33,7 @@ namespace KspContinuum
         FixedStepOwnerAttribution fixedStepOwnerAttribution;
         FixedDispatchAttribution fixedDispatchAttribution;
         RetainedOrderedBodyAeroCapture orderedBodyAeroCapture;
+        NativeAssemblyCaptureObserver nativeAssemblyCapture;
         ZeroNativeForcePruning zeroNativeForcePruning;
         TrailEmitterCapture trailEmitter;
         ConvectionCapture convectionCapture;
@@ -245,7 +246,9 @@ namespace KspContinuum
                     if (zeroNativeForcePruning.Report.status != "installed")
                         throw new InvalidOperationException("Zero-force pruning admission failed: " + zeroNativeForcePruning.Report.detail);
                 }
-                if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || updateCallbackAttribution != null || integratorUpdateAttribution != null || cylinderOcclusionReplacement != null || fixedStepOwnerAttribution != null || dryBuoyancy != null)
+                string nativeAssemblyOutput=Environment.GetEnvironmentVariable("CONTINUUM_NATIVE_ASSEMBLY_SCENE");
+                if(!string.IsNullOrEmpty(nativeAssemblyOutput))nativeAssemblyCapture=new NativeAssemblyCaptureObserver(nativeAssemblyOutput,report.runId,()=>captureActive);
+                if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || updateCallbackAttribution != null || integratorUpdateAttribution != null || cylinderOcclusionReplacement != null || fixedStepOwnerAttribution != null || dryBuoyancy != null || nativeAssemblyCapture != null)
                 {
                     IPlayerLoopBracketObserver observer = writerCensus == null ? null : writerCensus.Census;
                     if (substitutionCanary != null) observer = new CompositePlayerLoopObserver(observer, substitutionCanary);
@@ -255,6 +258,7 @@ namespace KspContinuum
                     if (fixedStepOwnerAttribution != null) observer = new CompositePlayerLoopObserver(observer, fixedStepOwnerAttribution);
                     if (fixedDispatchAttribution != null) observer = new CompositePlayerLoopObserver(observer, fixedDispatchAttribution);
                     if (dryBuoyancy != null) observer = new CompositePlayerLoopObserver(observer, dryBuoyancy);
+                    if (nativeAssemblyCapture != null) observer = new CompositePlayerLoopObserver(observer, nativeAssemblyCapture);
                     playerLoop = new PlayerLoopTiming(observer); playerLoop.Start(); report.playerLoop = playerLoop.Report;
                     if (updateCallbackAttribution != null && playerLoop.Report.integrityStatus != "verified-at-boundaries")
                         throw new InvalidOperationException("Update attribution requires intact PlayerLoop brackets.");
@@ -484,6 +488,11 @@ namespace KspContinuum
             if (finished) return;
             finished = true;
             var errors = new List<string>();
+            if(nativeAssemblyCapture!=null)
+            {
+                if(nativeAssemblyCapture.Error!=null||nativeAssemblyCapture.ManifestPath==null)errors.Add("NativeAssemblyScene: "+(nativeAssemblyCapture.Error??"No completed native boundary capture."));
+                nativeAssemblyCapture=null;
+            }
             if (zeroNativeForcePruning != null)
             {
                 try

@@ -237,6 +237,7 @@ namespace KspContinuum
                 type != typeof(NativeBoundaryMonoReport) && type != typeof(NativeBoundaryMonoRow) &&
                 type != typeof(MultiscaleSceneManifest) && type != typeof(ScientificAnchorSet) && type != typeof(ScientificAnchorData) && type != typeof(ResidentMaterialManifest) && type != typeof(ResidentTextureAsset) &&
                 type != typeof(WholeCraftSceneManifest) && type != typeof(WholeCraftMaterialAsset) && type != typeof(WholeCraftDraw) && type != typeof(WholeCraftOmission) &&
+                type != typeof(NativeAssemblySceneManifest) && type != typeof(NativeAssemblyBody) && type != typeof(NativeAssemblyPartAlias) && type != typeof(NativeAssemblyCollider) && type != typeof(NativeAssemblyOmission) &&
                 type != typeof(ResidentMaterialAsset) && type != typeof(ResidentMaterialProperty) &&
                 type != typeof(ResidentInstanceAsset) && type != typeof(ResidentLighting) &&
                 type != typeof(NativeBoundaryMonoTiming) && type != typeof(ManagedReconstructionObservation) && !pluginDiagnostic)

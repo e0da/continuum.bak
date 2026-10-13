@@ -10,9 +10,12 @@ public sealed class RigidAssemblyOwner
     {
         public RigidAssemblyMember Properties;
         public readonly Transform Anchor;
-        public readonly Collider Collider;
+        public readonly Collider[] Colliders;
+        public Collider Collider { get { return Colliders.Length==0?null:Colliders[0]; } }
         public Member(RigidAssemblyMember properties, Transform anchor, Collider collider)
-        { Properties=properties; Anchor=anchor; Collider=collider; }
+            :this(properties,anchor,new[] {collider}) {}
+        public Member(RigidAssemblyMember properties, Transform anchor, IEnumerable<Collider> colliders)
+        { Properties=properties; Anchor=anchor; Colliders=new List<Collider>(colliders).ToArray(); }
     }
     readonly List<Member> members;
     public IList<Member> Members { get { return members.AsReadOnly(); } }
@@ -30,7 +33,13 @@ public sealed class RigidAssemblyOwner
         var properties=new List<RigidAssemblyMember>(); foreach(var member in members) properties.Add(member.Properties);
         Properties=RigidAssemblyProperties.Combine(properties);
         RequireNativeProperties(Properties);
-        foreach(var member in members) if(member.Anchor==null||member.Collider==null||!member.Collider.transform.IsChildOf(member.Anchor)) throw new ArgumentException("Retained member anchor/collider required.");
+        var shapes=new HashSet<int>();var anchors=new HashSet<int>();
+        foreach(var member in members)
+        {
+            if(member.Anchor==null||!anchors.Add(member.Anchor.GetInstanceID()))throw new ArgumentException("Distinct retained member anchors required.");
+            foreach(var collider in member.Colliders)
+                if(collider==null||!collider.transform.IsChildOf(member.Anchor)||!shapes.Add(collider.GetInstanceID()))throw new ArgumentException("Distinct retained shapes below member anchor required.");
+        }
         var root=new GameObject("Rigid region generation "+generation); SceneManager.MoveGameObjectToScene(root,scene);
         try
         {

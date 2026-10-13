@@ -98,6 +98,8 @@ pub struct Diagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ordered_body_aero_capture: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_assembly_scene: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zero_native_force_pruning: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scientific_attachment_nodes: Option<String>,
@@ -262,6 +264,7 @@ impl ResolvedLaunch {
                 fixed_step_owner_attribution: boolean("--flight-fixed-step-owner-attribution")?,
                 fixed_dispatch_attribution: boolean("--flight-fixed-dispatch-attribution")?,
                 ordered_body_aero_capture: path("--flight-ordered-body-aero-capture"),
+                native_assembly_scene: path("--flight-native-assembly-scene"),
                 zero_native_force_pruning: options.get("--flight-zero-native-force-pruning").cloned(),
                 scientific_attachment_nodes: options.get("--flight-scientific-attachment-nodes").cloned(),
                 trail_emitter: options.get("--flight-trail-emitter").map(|output| Ok::<TrailEmitterSelection,String>(TrailEmitterSelection {
@@ -301,7 +304,10 @@ impl ResolvedLaunch {
 
     pub fn validate(&self) -> Result<()> {
         let d=&self.diagnostics;
-        if d.aero_step_context.is_some() || d.fixed_step_owner_attribution || d.trail_emitter.is_some() || d.ordered_body_aero_capture.is_some() || d.zero_native_force_pruning.is_some() {
+        if d.native_assembly_scene.is_some() && self.flight.as_ref().is_some_and(|f| !f.seconds.is_finite() || f.seconds<=1.25) {
+            return Err("native assembly capture must extend beyond the harness default pulse window (1.25 simulated seconds), including quiet captures".into());
+        }
+        if d.aero_step_context.is_some() || d.fixed_step_owner_attribution || d.trail_emitter.is_some() || d.ordered_body_aero_capture.is_some() || d.zero_native_force_pruning.is_some() || d.native_assembly_scene.is_some() {
             let f=self.flight.as_ref().ok_or("fixed-owner/aero/emitter requires pinned flight")?;
             if self.live_play || f.expected_parts.is_none() || f.warp!=1 || f.callback_attribution
                 || d.checkpoint_reload || d.docking.is_some() || d.convection_capture.is_some() {
@@ -499,6 +505,7 @@ impl ResolvedLaunch {
         }
         for path in [
             &self.diagnostics.multiscale_scene,
+            &self.diagnostics.native_assembly_scene,
             &self.diagnostics.menu_material_facts,
         ]
         .into_iter()
@@ -670,6 +677,21 @@ const FLIGHT_KEYS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_assembly_capture_rejects_short_windows_before_boot_and_freezes_selection() {
+        let directory=tempfile::tempdir().unwrap();
+        let output=directory.path().canonicalize().unwrap().join("physics");
+        let mut input=options(&[("--flight-save","lab"),("--flight-checkpoint","checkpoint"),("--flight-expected-parts","512")]);
+        input.insert("--flight-native-assembly-scene".into(),output.to_str().unwrap().into());
+        input.insert("--flight-seconds".into(),"1".into());
+        assert!(ResolvedLaunch::parse(&input).err().unwrap().contains("pulse window"));
+        input.insert("--flight-seconds".into(),"3".into());
+        let launch=ResolvedLaunch::parse(&input).unwrap();
+        let replay=ResolvedLaunch::parse_from_json(&launch.identity_json().unwrap()).unwrap();
+        assert_eq!(replay.diagnostics.native_assembly_scene,Some(output.clone()));
+        std::fs::create_dir(&output).unwrap();
+        assert!(ResolvedLaunch::parse(&input).is_err());
+    }
     #[test]
     fn ordered_capture_replays_explicit_ownership_and_rejects_provider_replacement() {
         let directory = tempfile::tempdir().unwrap();

@@ -24,7 +24,9 @@ class Program
     }
     static void Main(string[] args)
     {
+        if(args.Length==2){NativeImportReceipt.Verify(args[0],args[1]);return;}
         if(args.Length==1){NativeReceipt.Verify(args[0]);return;}
+        ProjectionCases.Run();
         // Two separated 2x4x6 boxes: each mass 3, diagonal (13,10,5).
         var boxes=RigidAssemblyProperties.Combine(new[] {Member(1,3,new Vec(-2,0,0),new Vec(13,10,5)),Member(2,3,new Vec(2,0,0),new Vec(13,10,5))});
         Near(boxes.Mass,6);Vector(boxes.CenterOfMass,new Vec());

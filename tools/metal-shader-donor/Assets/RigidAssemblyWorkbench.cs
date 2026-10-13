@@ -19,9 +19,11 @@ public sealed class RigidAssemblyWorkbench : MonoBehaviour
         public int[] members,colliders;
     }
     [Serializable] public sealed class MemberState
-    { public int id,collider,body; public double mass; public double[] position,rotation,localPosition,localRotation,localCenterOfMass,principalInertia,principalRotation; }
+    { public int id,collider,body; public int[] colliders; public double mass; public double[] position,rotation,localPosition,localRotation,localCenterOfMass,principalInertia,principalRotation; }
     [Serializable] public sealed class State
-    { public string operation; public int step,dynamicBodies; public double[] momentum,angularMomentum; public BodyState[] bodies; public MemberState[] members; }
+    { public string operation; public int step,dynamicBodies; public double[] momentum,angularMomentum; public BodyState[] bodies; public MemberState[] members; public ShapeState[] shapes; }
+    [Serializable] public sealed class ShapeState
+    {public int id,memberId,body,direction,cookingOptions;public string kind;public bool enabled,active,trigger;public double[] localPosition,localRotation,localScale,position,rotation,center,size;public double radius,height,contactOffset;}
     [Serializable] public sealed class Proof
     {
         public string schema="continuum-rigid-owner/v1",status="ready",qualification="Private native synthetic compound-body laboratory; live KSP graph takeover remains open.";
@@ -32,6 +34,8 @@ public sealed class RigidAssemblyWorkbench : MonoBehaviour
         public double updatedOwnerLinearError,updatedOwnerAngularError,updatedOwnerAngularVelocityError;
         public double[] impulse,impulsePoint;
         public double[] updatedImpulse,updatedImpulsePoint;
+        public NativeAssemblySceneImport.Evidence import;
+        public double gridSpacing=1;
         public List<State> states=new List<State>(); public string error;
     }
     sealed class Request { public int Id,State;public string Text,Reply; public volatile bool Done; }
@@ -39,6 +43,7 @@ public sealed class RigidAssemblyWorkbench : MonoBehaviour
     readonly List<RigidAssemblyOwner> owners=new List<RigidAssemblyOwner>();
     readonly List<Material> materials=new List<Material>();
     readonly Proof proof=new Proof(); Scene physicsScene; PhysicsScene physics; Camera camera;
+    NativeAssemblySceneImport imported;
     TcpListener listener; Thread server; volatile bool stopping;bool sceneReleased; string output; int step,pending,phase,requestId;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)] static void Bootstrap()
@@ -57,7 +62,15 @@ public sealed class RigidAssemblyWorkbench : MonoBehaviour
             proof.architecture="Unity2019 x86_64 player; host translation is external receipt evidence";
             proof.sourceRevision=Environment.GetEnvironmentVariable("CONTINUUM_SOURCE_REVISION"); proof.processId=System.Diagnostics.Process.GetCurrentProcess().Id;
             physicsScene=SceneManager.CreateScene("Rigid assembly isolated "+Guid.NewGuid(),new CreateSceneParameters(LocalPhysicsMode.Physics3D)); physics=physicsScene.GetPhysicsScene();
-            BuildFixture(); ConfigureCamera();
+            string packet=Environment.GetEnvironmentVariable("CONTINUUM_RIGID_WORKBENCH_IMPORT");
+            if(string.IsNullOrEmpty(packet))BuildFixture();
+            else
+            {
+                imported=NativeAssemblySceneImport.Load(packet,physicsScene);owners.Add(imported.Owner);proof.import=imported.Receipt;
+                proof.qualification="Captured real KSP rigid motion laboratory; admitted collision shapes retained, contact simulation disabled. Live KSP motion publication and control feel remain open.";
+                Physics.SyncTransforms();Record("imported rigid projection");
+            }
+            ConfigureCamera();
             listener=new TcpListener(IPAddress.Loopback,0); listener.Start(4); proof.port=((IPEndPoint)listener.LocalEndpoint).Port;
             Save(); server=new Thread(Serve) {IsBackground=true};server.Start();
         }
@@ -91,11 +104,20 @@ public sealed class RigidAssemblyWorkbench : MonoBehaviour
         camera.transform.position=new Vector3(1,4,-10);camera.transform.LookAt(new Vector3(0,.2f,0));camera.orthographic=true;camera.orthographicSize=3;
         camera.backgroundColor=new Color(.035f,.055f,.09f);camera.clearFlags=CameraClearFlags.SolidColor;camera.nearClipPlane=.1f;camera.farClipPlane=100;
         camera.allowHDR=false;camera.allowMSAA=false;camera.enabled=true;
+        Vector3 gridCenter=Vector3.zero;float spacing=1;
+        if(imported!=null)
+        {
+            Bounds bounds=imported.Bounds;float radius=Mathf.Max(1,bounds.extents.magnitude);
+            camera.orthographicSize=radius;camera.transform.position=bounds.center+new Vector3(1,.7f,-1).normalized*radius*3;camera.transform.LookAt(bounds.center);
+            camera.farClipPlane=radius*10;spacing=Mathf.Pow(10,Mathf.Floor(Mathf.Log10(radius/4)));proof.gridSpacing=spacing;
+            gridCenter=bounds.center-new Vector3(0,bounds.extents.y+spacing,0);
+        }
         var grid=new GameObject("Reference grid");SceneManager.MoveGameObjectToScene(grid,physicsScene);
         var line=grid.AddComponent<LineRenderer>();line.useWorldSpace=true;line.widthMultiplier=.02f;line.loop=false;line.generateLightingData=true;
         var mat=new Material(Shader.Find("Continuum/FixtureOpaque"));mat.color=new Color(.6f,.7f,.8f);materials.Add(mat);line.sharedMaterial=mat;
-        var points=new List<Vector3>();for(int x=-5;x<=5;x++){points.Add(new Vector3(x,-1.25f,-2));points.Add(new Vector3(x,-1.25f,2));points.Add(new Vector3(x,-1.25f,-2));}
-        for(int z=-2;z<=2;z++){points.Add(new Vector3(-5,-1.25f,z));points.Add(new Vector3(5,-1.25f,z));points.Add(new Vector3(-5,-1.25f,z));}line.positionCount=points.Count;line.SetPositions(points.ToArray());
+        line.widthMultiplier=.02f*spacing;
+        var points=new List<Vector3>();for(int x=-5;x<=5;x++){points.Add(gridCenter+new Vector3(x*spacing,-1.25f*spacing,-5*spacing));points.Add(gridCenter+new Vector3(x*spacing,-1.25f*spacing,5*spacing));points.Add(gridCenter+new Vector3(x*spacing,-1.25f*spacing,-5*spacing));}
+        for(int z=-5;z<=5;z++){points.Add(gridCenter+new Vector3(-5*spacing,-1.25f*spacing,z*spacing));points.Add(gridCenter+new Vector3(5*spacing,-1.25f*spacing,z*spacing));points.Add(gridCenter+new Vector3(-5*spacing,-1.25f*spacing,z*spacing));}line.positionCount=points.Count;line.SetPositions(points.ToArray());
     }
     void Serve()
     {
@@ -138,7 +160,10 @@ public sealed class RigidAssemblyWorkbench : MonoBehaviour
         if(proof.status=="failed")throw new InvalidOperationException("Failed scenario is immutable; use a fresh process/output.");
         if(command=="assembly impulse")
         {
-            RequirePhase(0); State before=Last;Vector3 impulse=new Vector3(.5f,1.2f,-.3f),point=owners[0].Body.transform.TransformPoint(new Vector3(-2.3f,.4f,.1f));
+            RequirePhase(0); State before=Last;var owner=owners[0];
+            Vector3 impulse=imported==null?new Vector3(.5f,1.2f,-.3f):new Vector3(0,owner.Body.mass*.03f,0);
+            Vector3 localPoint=imported==null?new Vector3(-2.3f,.4f,.1f):RigidAssemblyOwner.Vector(owner.Members[owner.Members.Count-1].Properties.LocalPosition)+new Vector3(.3f,.4f,.2f);
+            Vector3 point=owner.Body.transform.TransformPoint(localPoint);
             proof.impulse=A(impulse);proof.impulsePoint=A(point);owners[0].Body.AddForceAtPosition(impulse,point,ForceMode.Impulse);Step(1);State after=Record("off-center impulse");
             proof.impulseLinearError=Error(after.momentum,Add(before.momentum,A(impulse)));
             proof.impulseAngularError=Error(after.angularMomentum,Add(before.angularMomentum,A(Vector3.Cross(point,impulse))));
@@ -146,10 +171,12 @@ public sealed class RigidAssemblyWorkbench : MonoBehaviour
         }
         else if(command=="assembly transfermass")
         {
-            RequirePhase(1);State before=Last;owners[0].TransferMass(0,2,.75);Physics.SyncTransforms();State after=Record("closed mass transfer");
+            RequirePhase(1);State before=Last;var owner=owners[0];owner.TransferMass(0,imported==null?2:owner.Members.Count-1,imported==null?.75:owner.Members[0].Properties.Mass*.1);Physics.SyncTransforms();State after=Record("closed mass transfer");
             proof.transferLinearError=Error(after.momentum,before.momentum);proof.transferAngularError=Error(after.angularMomentum,before.angularMomentum);
             SameGeometry(before,after);Check(proof.transferLinearError<=proof.immediateMomentumBudget&&proof.transferAngularError<=proof.immediateMomentumBudget,"Mass transfer momentum");phase=2;
-            Rigidbody updated=owners[0].Body;Vector3 impulse=new Vector3(-.4f,.3f,.2f),point=updated.transform.TransformPoint(new Vector3(2.4f,-.2f,.3f));
+            Rigidbody updated=owners[0].Body;Vector3 impulse=imported==null?new Vector3(-.4f,.3f,.2f):new Vector3(updated.mass*.02f,0,updated.mass*.01f);
+            Vector3 localPoint=imported==null?new Vector3(2.4f,-.2f,.3f):RigidAssemblyOwner.Vector(owner.Members[0].Properties.LocalPosition)+new Vector3(-.2f,.3f,.1f);
+            Vector3 point=updated.transform.TransformPoint(localPoint);
             proof.updatedImpulse=A(impulse);proof.updatedImpulsePoint=A(point);
             Vector3 expectedOmega=updated.angularVelocity+RigidAssemblyOwner.InverseWorldInertia(updated,Vector3.Cross(point-updated.worldCenterOfMass,impulse));
             updated.AddForceAtPosition(impulse,point,ForceMode.Impulse);Step(1);State advanced=Record("updated original owner impulse");
@@ -160,7 +187,9 @@ public sealed class RigidAssemblyWorkbench : MonoBehaviour
         }
         else if(command=="assembly split")
         {
-            RequirePhase(2);State before=Last;var next=owners[0].Split(physicsScene,id=>id<2);owners.Clear();owners.AddRange(next);Physics.SyncTransforms();State after=Record("separated owners");
+            RequirePhase(2);State before=Last;int cut=imported==null?2:(owners[0].Members.Count+1)/2;var next=owners[0].Split(physicsScene,id=>id<cut);
+            if(imported!=null)foreach(var owner in next)owner.Body.detectCollisions=false;
+            owners.Clear();owners.AddRange(next);Physics.SyncTransforms();State after=Record("separated owners");
             proof.splitLinearError=Error(after.momentum,before.momentum);proof.splitAngularError=Error(after.angularMomentum,before.angularMomentum);
             SameGeometry(before,after);Check(after.dynamicBodies==2,"Exactly two native motion owners");Check(proof.splitLinearError<=proof.immediateMomentumBudget&&proof.splitAngularError<=proof.immediateMomentumBudget,"Split momentum");phase=3;
         }
@@ -179,7 +208,7 @@ public sealed class RigidAssemblyWorkbench : MonoBehaviour
     void Step(int count){for(int i=0;i<count;i++){physics.Simulate((float)proof.timestep);step++;}}
     State Record(string operation)
     {
-        var bodies=new List<BodyState>();var members=new List<MemberState>();Vector3 p=Vector3.zero,l=Vector3.zero;int dynamic=0;
+        var bodies=new List<BodyState>();var members=new List<MemberState>();var shapes=new List<ShapeState>();Vector3 p=Vector3.zero,l=Vector3.zero;int dynamic=0;
         foreach(var root in physicsScene.GetRootGameObjects())foreach(var b in root.GetComponentsInChildren<Rigidbody>())if(!b.isKinematic)dynamic++;
         foreach(var owner in owners)
         {
@@ -195,22 +224,39 @@ public sealed class RigidAssemblyWorkbench : MonoBehaviour
             }
             foreach(var member in owner.Members)
             {
-                Check(member.Collider.attachedRigidbody==b,"Unique collider owner");ids.Add(member.Properties.Id);colliders.Add(member.Collider.GetInstanceID());
+                ids.Add(member.Properties.Id);var shapeIds=new List<int>();
+                foreach(var collider in member.Colliders){Check(collider.attachedRigidbody==b,"Unique collider owner");colliders.Add(collider.GetInstanceID());shapeIds.Add(collider.GetInstanceID());shapes.Add(Shape(collider,member.Properties.Id));}
                 Check((member.Anchor.localPosition-RigidAssemblyOwner.Vector(member.Properties.LocalPosition)).magnitude<=1e-4,"Rigid retained local position");
                 Check(1-Math.Abs(UnityEngine.Quaternion.Dot(member.Anchor.localRotation,RigidAssemblyOwner.Quaternion(member.Properties.LocalRotation)))<=1e-5,"Rigid retained local rotation");
-                members.Add(new MemberState {id=member.Properties.Id,collider=member.Collider.GetInstanceID(),body=b.GetInstanceID(),mass=member.Properties.Mass,position=A(member.Anchor.position),rotation=A(member.Anchor.rotation),localPosition=A(member.Anchor.localPosition),localRotation=A(member.Anchor.localRotation),localCenterOfMass=A(RigidAssemblyOwner.Vector(member.Properties.LocalCenterOfMass)),principalInertia=A(RigidAssemblyOwner.Vector(member.Properties.PrincipalInertia)),principalRotation=A(RigidAssemblyOwner.Quaternion(member.Properties.PrincipalRotation))});
+                members.Add(new MemberState {id=member.Properties.Id,collider=member.Collider==null?0:member.Collider.GetInstanceID(),colliders=shapeIds.ToArray(),body=b.GetInstanceID(),mass=member.Properties.Mass,position=A(member.Anchor.position),rotation=A(member.Anchor.rotation),localPosition=A(member.Anchor.localPosition),localRotation=A(member.Anchor.localRotation),localCenterOfMass=A(RigidAssemblyOwner.Vector(member.Properties.LocalCenterOfMass)),principalInertia=A(RigidAssemblyOwner.Vector(member.Properties.PrincipalInertia)),principalRotation=A(RigidAssemblyOwner.Quaternion(member.Properties.PrincipalRotation))});
             }
             bodies.Add(new BodyState {id=b.GetInstanceID(),generation=owner.Generation,mass=b.mass,position=A(b.position),rotation=A(b.rotation),com=A(b.worldCenterOfMass),localCom=A(b.centerOfMass),inertia=A(b.inertiaTensor),inertiaRotation=A(b.inertiaTensorRotation),velocity=A(b.velocity),angularVelocity=A(b.angularVelocity),members=ids.ToArray(),colliders=colliders.ToArray()});
         }
-        var state=new State {operation=operation,step=step,dynamicBodies=dynamic,momentum=A(p),angularMomentum=A(l),bodies=bodies.ToArray(),members=members.ToArray()};proof.states.Add(state);return state;
+        var state=new State {operation=operation,step=step,dynamicBodies=dynamic,momentum=A(p),angularMomentum=A(l),bodies=bodies.ToArray(),members=members.ToArray(),shapes=shapes.ToArray()};proof.states.Add(state);return state;
+    }
+    static ShapeState Shape(Collider collider,int member)
+    {
+        Transform t=collider.transform;var s=new ShapeState {id=collider.GetInstanceID(),memberId=member,body=collider.attachedRigidbody.GetInstanceID(),enabled=collider.enabled,active=collider.gameObject.activeInHierarchy,trigger=collider.isTrigger,
+            localPosition=A(t.localPosition),localRotation=A(t.localRotation),localScale=A(t.localScale),position=A(t.position),rotation=A(t.rotation),center=new double[3],size=new double[3],contactOffset=collider.contactOffset};
+        var box=collider as BoxCollider;var sphere=collider as SphereCollider;var capsule=collider as CapsuleCollider;var mesh=collider as MeshCollider;
+        if(box!=null){s.kind="box";s.center=A(box.center);s.size=A(box.size);}else if(sphere!=null){s.kind="sphere";s.center=A(sphere.center);s.radius=sphere.radius;}
+        else if(capsule!=null){s.kind="capsule";s.center=A(capsule.center);s.radius=capsule.radius;s.height=capsule.height;s.direction=capsule.direction;}
+        else if(mesh!=null){s.kind="convex-mesh";s.cookingOptions=(int)mesh.cookingOptions;}else throw new InvalidOperationException("Unknown retained shape.");return s;
     }
     static void SameGeometry(State before,State after)
     {
         Check(before.members.Length==after.members.Length,"Retained member count");
         foreach(var a in before.members)
         {
-            MemberState b=Array.Find(after.members,m=>m.id==a.id);Check(b!=null&&a.collider==b.collider,"Retained collider identity");
-            Check(Error(a.position,b.position)<=1e-4,"Retained world position");double dot=0;for(int i=0;i<4;i++)dot+=a.rotation[i]*b.rotation[i];Check(1-Math.Abs(dot)<=1e-5,"Retained world rotation");
+            MemberState b=Array.Find(after.members,m=>m.id==a.id);Check(b!=null&&a.collider==b.collider&&a.colliders.Length==b.colliders.Length,"Retained collider identity");
+            for(int i=0;i<a.colliders.Length;i++)Check(a.colliders[i]==b.colliders[i],"Retained shape membership");
+            Check(Distance(a.position,b.position)<=1e-4,"Retained world position");double dot=0;for(int i=0;i<4;i++)dot+=a.rotation[i]*b.rotation[i];Check(1-Math.Abs(dot)<=1e-5,"Retained world rotation");
+        }
+        foreach(var a in before.shapes)
+        {
+            ShapeState b=Array.Find(after.shapes,s=>s.id==a.id);Check(b!=null&&a.memberId==b.memberId,"Retained native shape identity");
+            Check(Distance(a.position,b.position)<=1e-4,"Retained shape world position");double dot=0;for(int i=0;i<4;i++)dot+=a.rotation[i]*b.rotation[i];Check(1-Math.Abs(dot)<=1e-5,"Retained shape world rotation");
+            Check(Distance(a.localPosition,b.localPosition)<=1e-4&&Distance(a.localScale,b.localScale)<=1e-5,"Retained shape local transform");
         }
     }
     void CaptureFrame()
@@ -223,8 +269,8 @@ public sealed class RigidAssemblyWorkbench : MonoBehaviour
     void OnGUI()
     {
         GUI.color=Color.white;GUI.Label(new Rect(18,12,850,30),"CONTINUUM — RIGID ASSEMBLY OWNER   |   "+proof.status+"   |   "+proof.graphics);
-        GUI.Label(new Rect(18,38,850,30),"Three authored members → one body → mass transfer → two bodies   ·   native steps: "+step);
-        GUI.Label(new Rect(18,Screen.height-35,850,25),"Orthographic view · 1 m grid · no internal springs · isolated native physics scene");
+        GUI.Label(new Rect(18,38,850,30),(imported==null?"Three authored members":proof.import.importedBodies+" captured native members / "+proof.import.importedColliders+" collision shapes")+" → one body → mass transfer → two bodies   ·   native steps: "+step);
+        GUI.Label(new Rect(18,Screen.height-35,850,25),"Orthographic view · "+proof.gridSpacing+" m grid · no internal springs · isolated native physics scene");
     }
     void Save(){File.WriteAllText(Path.Combine(output,"status.json"),JsonUtility.ToJson(proof,true));}
     void Quit(){StartCoroutine(QuitCleanly());}
@@ -233,9 +279,10 @@ public sealed class RigidAssemblyWorkbench : MonoBehaviour
         StopServer();if(physicsScene.IsValid()){yield return SceneManager.UnloadSceneAsync(physicsScene);sceneReleased=true;}Application.Quit();
     }
     void StopServer(){stopping=true;if(listener!=null)listener.Stop();if(server!=null)server.Join(250);}
-    void OnDestroy(){StopServer();if(!sceneReleased&&physicsScene.IsValid())SceneManager.UnloadSceneAsync(physicsScene);foreach(var material in materials)Destroy(material);}
+    void OnDestroy(){StopServer();if(!sceneReleased&&physicsScene.IsValid())SceneManager.UnloadSceneAsync(physicsScene);foreach(var material in materials)Destroy(material);if(imported!=null)imported.ReleaseResources();}
     static void Check(bool condition,string message){if(!condition)throw new InvalidOperationException(message);}
     static double Error(double[] actual,double[] expected){double d=0,n=0;for(int i=0;i<3;i++){d+=(actual[i]-expected[i])*(actual[i]-expected[i]);n+=expected[i]*expected[i];}return Math.Sqrt(d)/Math.Max(1,Math.Sqrt(n));}
+    static double Distance(double[] a,double[] b){double d=0;for(int i=0;i<3;i++)d+=(a[i]-b[i])*(a[i]-b[i]);return Math.Sqrt(d);}
     static double[] Add(double[] a,double[] b){return new[] {a[0]+b[0],a[1]+b[1],a[2]+b[2]};}
     static double[] A(Vector3 v){return new[] {(double)v.x,(double)v.y,(double)v.z};}
     static double[] A(UnityEngine.Quaternion q){return new[] {(double)q.x,(double)q.y,(double)q.z,(double)q.w};}

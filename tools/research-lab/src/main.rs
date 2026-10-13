@@ -65,6 +65,7 @@ fn run() -> Result<()> {
             "--flight-fixed-step-owner-attribution",
             "--flight-fixed-dispatch-attribution",
             "--flight-ordered-body-aero-capture",
+            "--flight-native-assembly-scene",
             "--flight-zero-native-force-pruning",
             "--flight-scientific-attachment-nodes",
             "--flight-trail-emitter",
@@ -848,6 +849,7 @@ fn smoke(
         .env("CONTINUUM_FIXED_STEP_OWNER_ATTRIBUTION",if selection.diagnostics.fixed_step_owner_attribution {"1"} else {""})
         .env("CONTINUUM_FIXED_DISPATCH_ATTRIBUTION",if selection.diagnostics.fixed_dispatch_attribution {"1"} else {""})
         .env("CONTINUUM_ORDERED_BODY_AERO_CAPTURE",selection.diagnostics.ordered_body_aero_capture.as_deref().unwrap_or(Path::new("")))
+        .env("CONTINUUM_NATIVE_ASSEMBLY_SCENE",selection.diagnostics.native_assembly_scene.as_deref().unwrap_or(Path::new("")))
         .env("CONTINUUM_ZERO_NATIVE_FORCE_PRUNING",selection.diagnostics.zero_native_force_pruning.as_deref().unwrap_or(""))
         .env("CONTINUUM_SCIENTIFIC_ATTACHMENT_NODES",selection.diagnostics.scientific_attachment_nodes.as_deref().unwrap_or(""))
         .env("CONTINUUM_TRAIL_EMITTER_RECORDING",selection.diagnostics.trail_emitter.as_ref().map(|s|s.recording.as_path()).unwrap_or(Path::new("")))
