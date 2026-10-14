@@ -30,7 +30,9 @@ internal static class Program
             using var output=new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.None);
             try
             {
-                using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                string operation=command.Split(' ',StringSplitOptions.RemoveEmptyEntries)[0];
+                bool clockAdministration=operation is "clock-enable" or "clock-disable" or "clock-save" or "clock-restore";
+                using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(clockAdministration?65:15));
                 using var client=new TcpClient(AddressFamily.InterNetwork){NoDelay=true};
                 await client.ConnectAsync(IPAddress.Loopback,port,deadline.Token);
                 using NetworkStream stream=client.GetStream();
@@ -58,7 +60,13 @@ internal static class Program
                 await output.WriteAsync(new byte[]{10});
                 await output.FlushAsync();
                 string result=status.GetString()!;Console.WriteLine(result+": "+path);
-                return result is "rejected" or "timeout" or "started" or "cancelled-before-execution" or "failed" or "error"?2:0;
+                if(operation=="clock-lighting"&&result=="ok")
+                {
+                    if(!json.RootElement.TryGetProperty("clock",out var clock)||!clock.TryGetProperty("lightingPath",out var lighting)||lighting.ValueKind!=JsonValueKind.String||
+                        !Path.IsPathFullyQualified(lighting.GetString()!))throw new InvalidDataException("Successful clock-lighting reply omitted its absolute saved path.");
+                    Console.WriteLine("lighting-path: "+lighting.GetString());
+                }
+                return result is "rejected" or "timeout" or "started" or "in-progress" or "cancelled-before-execution" or "failed" or "error"?2:0;
             }
             catch(Exception error)
             {

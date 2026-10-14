@@ -5,7 +5,7 @@ namespace KspContinuum
 {
     // Every future-relevant schedule value must be in the bank. Trials may repeat this schedule.
     public interface IOwnedRuntimeTrialSafeSchedule : IOwnedRuntimeFieldSchedule { }
-    public enum OwnedRuntimeMechanicalMethod { StepDoubling=0, EmbeddedMidpoint=1 }
+    public enum OwnedRuntimeMechanicalMethod { StepDoubling=0, EmbeddedMidpoint=1, HigherOrderRK23=2 }
     public sealed class OwnedRuntimeMechanicalPolicy
     {
         public readonly bool Adaptive;
@@ -17,7 +17,7 @@ namespace KspContinuum
             AssemblyModel.Positive(minimumInterval);AssemblyModel.Positive(maximumInterval);AssemblyModel.Positive(positionTolerance);AssemblyModel.Positive(velocityTolerance);AssemblyModel.Positive(angleTolerance);AssemblyModel.Positive(scaledStateTolerance);AssemblyModel.Positive(initialInterval);
             if(maximumInterval>.1||minimumInterval>maximumInterval||initialInterval<minimumInterval||initialInterval>maximumInterval)
                 throw new ArgumentException("Mechanical interval bounds differ.");
-            if(method!=OwnedRuntimeMechanicalMethod.StepDoubling&&method!=OwnedRuntimeMechanicalMethod.EmbeddedMidpoint)throw new ArgumentOutOfRangeException("method");
+            if(method!=OwnedRuntimeMechanicalMethod.StepDoubling&&method!=OwnedRuntimeMechanicalMethod.EmbeddedMidpoint&&method!=OwnedRuntimeMechanicalMethod.HigherOrderRK23)throw new ArgumentOutOfRangeException("method");
             Method=method;Adaptive=adaptive;MinimumInterval=minimumInterval;MaximumInterval=maximumInterval;PositionTolerance=positionTolerance;VelocityTolerance=velocityTolerance;AngleTolerance=angleTolerance;ScaledStateTolerance=scaledStateTolerance;InitialInterval=initialInterval;
         }
     }
@@ -36,14 +36,17 @@ namespace KspContinuum
         public OwnedRuntimeMechanicalState Clone(){Validate();var s=new OwnedRuntimeMechanicalState();s.CopyFrom(this);return s;}
         internal void Validate()
         {
-            if(schema!="continuum-owned-runtime-mechanical-state/v1"||method<0||method>1||accepted<0||rejected<0||trialExecutions<0||policyRevision<0||roundoffCoalescedIntervals<0||roundoffCoalescedIntervals>accepted)throw new ArgumentException("Mechanical continuation metadata differs.");
+            if(schema!="continuum-owned-runtime-mechanical-state/v1"||method<0||method>2||accepted<0||rejected<0||trialExecutions<0||policyRevision<0||roundoffCoalescedIntervals<0||roundoffCoalescedIntervals>accepted)throw new ArgumentException("Mechanical continuation metadata differs.");
             AssemblyModel.Positive(minimumInterval);AssemblyModel.Positive(maximumInterval);AssemblyModel.Positive(positionTolerance);AssemblyModel.Positive(velocityTolerance);AssemblyModel.Positive(angleTolerance);AssemblyModel.Positive(scaledStateTolerance);AssemblyModel.Positive(initialInterval);
             AssemblyModel.Finite(nextInterval);AssemblyModel.Finite(lastAcceptedInterval);AssemblyModel.Finite(lastError);
             if(maximumInterval>.1||minimumInterval>maximumInterval||initialInterval<minimumInterval||initialInterval>maximumInterval||nextInterval<minimumInterval||nextInterval>maximumInterval||lastAcceptedInterval<0||lastAcceptedInterval>maximumInterval||lastError<0)throw new ArgumentException("Mechanical controller state differs.");
         }
     }
     [Serializable] public struct OwnedRuntimeAdaptiveObservation
-    {public long Trials,Rejected,Accepted,WorkTicks,ClockFrequency,RoundoffCoalescedIntervals,ActuatorBoundaryClockCeilings,EmbeddedAttempts,EmbeddedForceSamples;public double LastError,LastInterval,LastBoundaryClockCeilingSeconds;public string LastFailure;}
+    {public long Trials,Rejected,Accepted,WorkTicks,ClockFrequency,RoundoffCoalescedIntervals,ActuatorBoundaryClockCeilings,EmbeddedAttempts,EmbeddedForceSamples;public double LastError,LastInterval,LastBoundaryClockCeilingSeconds;public string LastFailure,DominantError,LastHigherOrderFallback;public double PositionError,VelocityError,AngleError,MomentumError,ScalarError;public long HigherOrderAttempts,HigherOrderForceSamples,HigherOrderFallbacks;
+        internal void Components(double position,double velocity,double angle,double momentum,double scalar=0)
+        {PositionError=position;VelocityError=velocity;AngleError=angle;MomentumError=momentum;ScalarError=scalar;double maximum=position;DominantError="position";if(velocity>maximum){maximum=velocity;DominantError="velocity";}if(angle>maximum){maximum=angle;DominantError="angle";}if(momentum>maximum){maximum=momentum;DominantError="momentum";}if(scalar>maximum)DominantError="scalar";}
+    }
     public sealed class OwnedRuntimeMechanicalAccuracyException : InvalidOperationException
     {
         public readonly double Interval,NormalizedError;

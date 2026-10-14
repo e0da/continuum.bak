@@ -102,6 +102,14 @@ namespace KspContinuum
         }
         public static string Capture(Vessel vessel,string output,string runId)
         {
+            NativeAssemblySceneManifest native;OwnedRuntimeCapturedParts parts;OwnedFlightCapture context;
+            return CaptureCore(vessel,output,runId,Environment.GetEnvironmentVariable("CONTINUUM_OWNED_RUNTIME_CAPTURE")=="1",Environment.GetEnvironmentVariable("CONTINUUM_OWNED_FLIGHT_CAPTURE")=="1",true,out native,out parts,out context);
+        }
+        public static string CaptureOwned(Vessel vessel,string output,string runId,out NativeAssemblySceneManifest native,out OwnedRuntimeCapturedParts parts,out OwnedFlightCapture context)
+        {return CaptureCore(vessel,output,runId,true,true,false,out native,out parts,out context);}
+        static string CaptureCore(Vessel vessel,string output,string runId,bool captureParts,bool captureFlight,bool includeVisuals,out NativeAssemblySceneManifest capturedNative,out OwnedRuntimeCapturedParts capturedParts,out OwnedFlightCapture capturedContext)
+        {
+            capturedNative=null;capturedParts=null;capturedContext=null;
             Need(SynchronizationContext.Current!=null && SynchronizationContext.Current.GetType().Name=="UnitySynchronizationContext","Native assembly capture requires Unity main-thread context.");
             Need(vessel!=null && !vessel.packed && vessel.rootPart!=null && vessel.transform!=null && vessel.parts!=null,"Native assembly requires an unpacked live vessel.");
             Need(!string.IsNullOrEmpty(output) && Path.IsPathRooted(output),"Native assembly output must be absolute/new.");
@@ -152,9 +160,10 @@ namespace KspContinuum
                 if(geometry!=null) { string path=Path.Combine(stage,"geometry.bin");WholeCraftSceneFormat.WriteGeometry(path,geometry);manifest.geometry="geometry.bin";manifest.geometrySha256=ScaleCheckpointLoadState.HashFile(path);geometry=WholeCraftSceneFormat.ReadGeometry(path); }
                 NativeAssemblySceneFormat.Validate(manifest,geometry);
                 string json=ReportJson.Encode(manifest);string manifestPath=Path.Combine(stage,"manifest.json"); using(var stream=new FileStream(manifestPath,FileMode.CreateNew,FileAccess.Write)) using(var writer=new StreamWriter(stream,new UTF8Encoding(false))) writer.Write(json);
-                if(Environment.GetEnvironmentVariable("CONTINUUM_OWNED_RUNTIME_CAPTURE")=="1")OwnedRuntimeKspCapture.Capture(vessel,manifest,manifestPath,Path.Combine(stage,"owned-parts.json"));
-                if(Environment.GetEnvironmentVariable("CONTINUUM_OWNED_FLIGHT_CAPTURE")=="1")OwnedFlightKspCapture.Capture(vessel,manifest,manifestPath,Path.Combine(stage,"owned-parts.json"),stage);
-                Need(File.ReadAllText(manifestPath)==json,"Native assembly manifest readback differs.");SafeParent(parent);Need(!Directory.Exists(output)&&!File.Exists(output),"Native assembly output appeared during capture.");Directory.Move(stage,output);return Path.Combine(output,"manifest.json");
+                OwnedRuntimeCapturedParts partsResult=null;OwnedFlightCapture contextResult=null;
+                if(captureParts)OwnedRuntimeKspCapture.Capture(vessel,manifest,manifestPath,Path.Combine(stage,"owned-parts.json"),out partsResult);
+                if(captureFlight)OwnedFlightKspCapture.Capture(vessel,manifest,manifestPath,Path.Combine(stage,"owned-parts.json"),stage,out contextResult,includeVisuals);
+                Need(File.ReadAllText(manifestPath)==json,"Native assembly manifest readback differs.");SafeParent(parent);Need(!Directory.Exists(output)&&!File.Exists(output),"Native assembly output appeared during capture.");Directory.Move(stage,output);capturedNative=manifest;capturedParts=partsResult;capturedContext=contextResult;return Path.Combine(output,"manifest.json");
             }
             catch { if(Directory.Exists(stage)) Directory.Delete(stage,true);throw; }
         }

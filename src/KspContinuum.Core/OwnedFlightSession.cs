@@ -7,7 +7,7 @@ namespace KspContinuum
         public string schema="continuum-owned-flight-session/v1", contextSha256, mode="local";
         public OwnedFlightCapture context;
         public double[] origin;
-        public double runtimeEpoch;
+        public double runtimeEpoch,minimumAltitudeMeters;
     }
 
     public sealed class OwnedFlightSession : IOwnedRuntimeEnvironmentField, IOwnedRuntimeStepGuard
@@ -15,6 +15,7 @@ namespace KspContinuum
         public readonly OwnedRuntimeWorld Runtime;
         public readonly OwnedFlightWorld Context;
         public readonly double RuntimeEpoch;
+        public readonly double MinimumAltitudeMeters;
         public readonly string FrameId;
         Vec origin;
         long frameRevision,extentTopology=-1,extentDefinition=-1;
@@ -27,16 +28,17 @@ namespace KspContinuum
         public string Mode { get; private set; }
         public double UniversalTime { get { CheckFrame(Runtime.Stamp);return Context.Epoch+(Runtime.Stamp.Time-RuntimeEpoch); } }
 
-        public OwnedFlightSession(OwnedRuntimeWorld runtime, OwnedFlightWorld context, Vec origin, double runtimeEpoch)
+        public OwnedFlightSession(OwnedRuntimeWorld runtime, OwnedFlightWorld context, Vec origin, double runtimeEpoch,double minimumAltitudeMeters=0)
         {
             if(runtime==null||context==null)throw new ArgumentNullException("runtime/context");
             OwnedFlightWorld.Require(origin);AssemblyModel.Finite(runtimeEpoch);
+            OwnedRuntimeEnvironment.Nonnegative(minimumAltitudeMeters);MinimumAltitudeMeters=minimumAltitudeMeters;
             Runtime=runtime;Context=context;this.origin=origin;RuntimeEpoch=runtimeEpoch;FrameId=context.Frame+"/local";
             OwnedFlightWorld.Need(runtime.Stamp.FrameId==FrameId && runtime.Stamp.Time>=runtimeEpoch,"Owned flight runtime frame/clock differs.");
             frameRevision=runtime.Stamp.FrameRevision;Mode="local";EnsureExtents(runtime.Stamp);
         }
 
-        public static OwnedFlightSession SeedCaptured(OwnedRuntimeWorld runtime, OwnedFlightWorld context, Vec origin)
+        public static OwnedFlightSession SeedCaptured(OwnedRuntimeWorld runtime, OwnedFlightWorld context, Vec origin,double minimumAltitudeMeters=0)
         {
             if(runtime==null||context==null)throw new ArgumentNullException("runtime/context");OwnedFlightWorld.Require(origin);
             var expected=runtime.Stamp;OwnedRuntimeMotion motion;
@@ -51,7 +53,7 @@ namespace KspContinuum
                     "Captured placement is at or below the central-body sphere.");
             }
             runtime.SetRegionMotions(expected,new[]{motion},expected.Time,context.Frame+"/local");
-            return new OwnedFlightSession(runtime,context,origin,expected.Time);
+            return new OwnedFlightSession(runtime,context,origin,expected.Time,minimumAltitudeMeters);
         }
 
         public Vec BodyPosition(int region)
@@ -85,7 +87,7 @@ namespace KspContinuum
         public OwnedRuntimeEnvironmentSample Sample(OwnedRuntimeStamp stamp,int region,OwnedRuntimeMotion motion,RigidAssemblyProperties properties)
         {
             CheckFrame(stamp);EnsureExtents(stamp);OwnedFlightWorld.Need(region>=0&&region<extents.Length&&properties!=null,"Owned flight region sample is absent.");
-            Vec center=Center(motion,properties);OwnedFlightWorld.Need(OwnedFlightWorld.Norm(center)>Context.Radius+GuardExtent(region,properties),"Owned flight reached its finite-size surface guard.");
+            Vec center=Center(motion,properties);OwnedFlightWorld.Need(OwnedFlightWorld.Norm(center)>Context.Radius+MinimumAltitudeMeters+GuardExtent(region,properties),"Owned flight reached its finite-size domain guard.");
             var environment=Context.EvaluateSample(center,Context.Epoch+(stamp.Time-RuntimeEpoch),stamp.Time);
             sampledCenters[region]=center;sampledVelocities[region]=motion.Velocity;sampledProperties[region]=properties;
             sampledStamps[region]=stamp;sampled[region]=true;return environment;
@@ -95,7 +97,7 @@ namespace KspContinuum
             CheckFrame(source);EnsureExtents(source);AssemblyModel.Finite(stageTime);
             OwnedFlightWorld.Need(source.Matches(Runtime.Stamp)&&stageTime>=source.Time&&stageTime<=source.Time+.1&&region>=0&&region<extents.Length&&properties!=null,"Numerical stage source/domain differs.");
             OwnedRuntimeWorld.ValidateMotion(motion);Vec center=Center(motion,properties);
-            OwnedFlightWorld.Need(OwnedFlightWorld.Norm(center)>Context.Radius+GuardExtent(region,properties),"Numerical stage reached its finite-size surface guard.");
+            OwnedFlightWorld.Need(OwnedFlightWorld.Norm(center)>Context.Radius+MinimumAltitudeMeters+GuardExtent(region,properties),"Numerical stage reached its finite-size domain guard.");
             return Context.EvaluateSample(center,Context.Epoch+(stageTime-RuntimeEpoch),stageTime);
         }
         internal void ValidateNumericalInterval(OwnedRuntimeStamp source,double delta,OwnedRuntimeMotion[] initial,RigidAssemblyProperties[] initialProperties,
@@ -118,7 +120,7 @@ namespace KspContinuum
             Vec direction=b+a*-1;double square=OwnedFlightWorld.Dot(direction,direction);AssemblyModel.Finite(square);
             double u=square==0?0:Math.Max(0,Math.Min(1,-OwnedFlightWorld.Dot(a,direction)/square));
             double margin=OwnedFlightWorld.Norm(velocityB+velocityA*-1)*interval*.125;
-            OwnedFlightWorld.Need(OwnedFlightWorld.Norm(a+direction*u)-margin>Context.Radius+extent,"Numerical interval reaches its finite-size spherical surface guard.");
+            OwnedFlightWorld.Need(OwnedFlightWorld.Norm(a+direction*u)-margin>Context.Radius+MinimumAltitudeMeters+extent,"Numerical interval reaches its finite-size domain guard.");
         }
         public void ValidateStep(OwnedRuntimeStep step)
         {
@@ -138,7 +140,7 @@ namespace KspContinuum
                     // The constant-force COM step deviates from its chord by at most |delta-v|*dt/8.
                     double curveMargin=OwnedFlightWorld.Norm(after.Motion.Velocity+sampledVelocities[r]*-1)*step.DeltaTime*.125;
                     double extent=GuardExtent(r,after.Properties);
-                    OwnedFlightWorld.Need(minimum-curveMargin>Context.Radius+extent,"Owned flight local interval reaches the spherical surface guard.");
+                    OwnedFlightWorld.Need(minimum-curveMargin>Context.Radius+MinimumAltitudeMeters+extent,"Owned flight local interval reaches the spherical domain guard.");
                 }
             }} finally {ClearSamples();}
         }
@@ -149,7 +151,7 @@ namespace KspContinuum
             ClearSamples();try {var stamp=Runtime.AdaptiveMechanicalEnabled?host.AdvanceAdaptive(delta,input,this,controls):host.Advance(delta,input,this,controls);Mode="local";return stamp;}finally{ClearSamples();}
         }
         internal OwnedFlightSession CreateTrialSession(OwnedRuntimeWorld trial)
-        {return new OwnedFlightSession(trial,Context,origin,RuntimeEpoch);}
+        {return new OwnedFlightSession(trial,Context,origin,RuntimeEpoch,MinimumAltitudeMeters);}
         internal void AdvanceTrial(OwnedRuntimeHost host,double delta,OwnedRuntimeInput input,OwnedRuntimeControls controls)
         {ClearSamples();try{host.Advance(delta,input,this,controls);Mode="local";}finally{ClearSamples();}}
         internal void SyncTrial(OwnedFlightSession source)
@@ -171,7 +173,7 @@ namespace KspContinuum
             using(var read=Runtime.AcquireRead())
             {
                 OwnedFlightWorld.Need(read.Stamp.Matches(expected)&&read.RegionCount==1,"Placement requires one current rigid region.");
-                var region=read.GetRegion(0);OwnedFlightWorld.Need(OwnedFlightWorld.Norm(centerPosition)>Context.Radius+GuardExtent(0,region.Properties),"Placement intersects the spherical surface guard.");
+                var region=read.GetRegion(0);OwnedFlightWorld.Need(OwnedFlightWorld.Norm(centerPosition)>Context.Radius+MinimumAltitudeMeters+GuardExtent(0,region.Properties),"Placement intersects the spherical domain guard.");
                 motion=region.Motion;motion.RootPosition=centerPosition+origin*-1+motion.Orientation.Rotate(region.Properties.CenterOfMass)*-1;motion.Velocity=centerVelocity;
             }
             var stamp=Runtime.SetRegionMotions(expected,new[]{motion},expected.Time,FrameId);Mode="local";return stamp;
@@ -220,14 +222,14 @@ namespace KspContinuum
                     for(int r=0;r<seeds.Length;r++)
                     {
                         var state=read.GetRegion(r);OwnedFlightWorld.Need(Zero(state.Motion.AngularMomentum),"Torque-free rotating attitude requires local stepping.");
-                        Vec position=Center(state.Motion,state.Properties);double radius=OwnedFlightWorld.Norm(position),guardRadius=Context.Radius+Context.AtmosphereDepth+GuardExtent(r,state.Properties);
+                        Vec position=Center(state.Motion,state.Properties);double radius=OwnedFlightWorld.Norm(position),guardRadius=Context.Radius+Math.Max(Context.AtmosphereDepth,MinimumAltitudeMeters)+GuardExtent(r,state.Properties);
                         OwnedFlightWorld.Need(radius>guardRadius,"Coast requires vacuum outside the finite-size atmosphere guard.");
                         seeds[r]=new CoastingBody(r,position,state.Motion.Velocity);
                     }
                     var engine=new CoastingEngine(startUniversal,Context.Mu,seeds,Math.Max(1,seeds.Length));
                     for(int r=0;r<seeds.Length;r++)
                     {
-                        double guardRadius=Context.Radius+Context.AtmosphereDepth+GuardExtent(r,read.GetRegion(r).Properties),radius=OwnedFlightWorld.Norm(seeds[r].Position);
+                        double guardRadius=Context.Radius+Math.Max(Context.AtmosphereDepth,MinimumAltitudeMeters)+GuardExtent(r,read.GetRegion(r).Properties),radius=OwnedFlightWorld.Norm(seeds[r].Position);
                         Vec position=seeds[r].Position,velocity=seeds[r].Velocity;double speedSquare=OwnedFlightWorld.Dot(velocity,velocity),rv=OwnedFlightWorld.Dot(position,velocity);
                         Vec eccentric=(position*(speedSquare-Context.Mu/radius)+velocity*(-rv))*(1/Context.Mu);
                         double e=OwnedFlightWorld.Norm(eccentric),h2=OwnedFlightWorld.Dot(Vec.Cross(position,velocity),Vec.Cross(position,velocity));AssemblyModel.Finite(h2);
@@ -270,7 +272,7 @@ namespace KspContinuum
                     for(int r=0;r<candidate.Length;r++)
                     {
                         var state=read.GetRegion(r);var final=engine.SampleBodyAt(r,selectedUniversal);
-                        OwnedFlightWorld.Need(OwnedFlightWorld.Norm(final.Position)>Context.Radius+Context.AtmosphereDepth+GuardExtent(r,state.Properties),"Coast endpoint reaches atmosphere/surface guard.");
+                        OwnedFlightWorld.Need(OwnedFlightWorld.Norm(final.Position)>Context.Radius+Math.Max(Context.AtmosphereDepth,MinimumAltitudeMeters)+GuardExtent(r,state.Properties),"Coast endpoint reaches atmosphere/domain guard.");
                         candidate[r]=state.Motion;candidate[r].RootPosition=final.Position+origin*-1+candidate[r].Orientation.Rotate(state.Properties.CenterOfMass)*-1;candidate[r].Velocity=final.Velocity;
                     }
                     window.ReachedUniversalTime=selectedUniversal;window.RuntimeTime=targetRuntimeTime;motions=candidate;return true;
@@ -293,11 +295,11 @@ namespace KspContinuum
         internal void PublishCoast(OwnedRuntimeStamp expected,OwnedRuntimeMotion[] motions,double time)
         {CheckFrame(expected);Runtime.SetRegionMotions(expected,motions,time,FrameId);Mode="kepler";}
         public OwnedFlightSessionData Capture()
-        {CheckFrame(Runtime.Stamp);return new OwnedFlightSessionData {context=Context.Capture(),contextSha256=Context.SourceSha256,origin=new[]{origin.X,origin.Y,origin.Z},runtimeEpoch=RuntimeEpoch,mode=Mode};}
+        {CheckFrame(Runtime.Stamp);return new OwnedFlightSessionData {context=Context.Capture(),contextSha256=Context.SourceSha256,origin=new[]{origin.X,origin.Y,origin.Z},runtimeEpoch=RuntimeEpoch,minimumAltitudeMeters=MinimumAltitudeMeters,mode=Mode};}
         public static OwnedFlightSession Restore(OwnedRuntimeWorld runtime,OwnedFlightSessionData data,string nativeSha,string partSpecsSha)
         {
             OwnedFlightWorld.Need(data!=null&&data.schema=="continuum-owned-flight-session/v1"&&(data.mode=="local"||data.mode=="kepler"),"Owned flight session schema/mode differs.");
-            var result=new OwnedFlightSession(runtime,OwnedFlightWorld.Admit(data.context,nativeSha,partSpecsSha,data.contextSha256),OwnedFlightWorld.Vector(data.origin),data.runtimeEpoch);
+            var result=new OwnedFlightSession(runtime,OwnedFlightWorld.Admit(data.context,nativeSha,partSpecsSha,data.contextSha256),OwnedFlightWorld.Vector(data.origin),data.runtimeEpoch,data.minimumAltitudeMeters);
             result.Mode=data.mode;return result;
         }
         void CheckFrame(OwnedRuntimeStamp stamp)

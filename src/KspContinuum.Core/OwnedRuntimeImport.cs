@@ -74,7 +74,7 @@ namespace KspContinuum
     }
     [Serializable] public sealed class OwnedRuntimeSourceBinding
     {
-        public string schema="continuum-owned-runtime-source/v1",runId,vesselId,nativeManifestSha256,partSpecsSha256,rendererManifestSha256,colliderGeometrySha256,scope;
+        public string schema="continuum-owned-runtime-source/v1",runId,vesselId,nativeManifestSha256,partSpecsSha256,rendererManifestSha256,colliderGeometrySha256,supplyCaptureSha256,scope;
         public string resourcePolicy="strict-capacity/v1";
         public int processId;
         public double[] subtractedNativeCenterVelocity,sourceFrameVelocity;
@@ -90,6 +90,7 @@ namespace KspContinuum
         public OwnedRuntimeCapturedParts CapturedParts;
         public NativeAssemblySceneManifest NativeScene;
         public WholeCraftGeometry ColliderGeometry;
+        public OwnedRuntimeSupplyCapturePacket CapturedSupply;
         public OwnedRuntimeBodyBinding[] BodyBindings {get{return Source.bodies;}}
         public OwnedRuntimeRendererBinding[] RendererBindings {get{return Source.renderers;}}
         public string[] Omissions {get{return Source.omissions;}}
@@ -148,10 +149,12 @@ namespace KspContinuum
         public static OwnedRuntimeImportResult Create(NativeAssemblySceneManifest nativeScene,WholeCraftGeometry colliderGeometry,
             OwnedRuntimeCapturedParts capturedParts,string nativeManifestSha256,string partSpecsSha256,
             WholeCraftSceneManifest rendererScene=null,WholeCraftGeometry rendererGeometry=null,string rendererManifestSha256=null,
-            double wheelMomentumCapacity=100,bool allowAcquiredSurplus=false)
+            double wheelMomentumCapacity=100,bool allowAcquiredSurplus=false,OwnedRuntimeSupplyCapturePacket supplyCapture=null,string supplyCaptureSha256=null)
         {
             NativeAssemblySceneFormat.Validate(nativeScene,colliderGeometry);
             ValidateCapturedParts(capturedParts,nativeScene,nativeManifestSha256,allowAcquiredSurplus);Digest(partSpecsSha256);Positive(wheelMomentumCapacity);
+            if(supplyCapture!=null)ValidateSupplyCapture(supplyCapture,capturedParts,nativeScene,nativeManifestSha256,partSpecsSha256,supplyCaptureSha256);
+            else Need(string.IsNullOrEmpty(supplyCaptureSha256),"Supply hash has no captured packet.");
             var omissions=new List<string>(capturedParts.omissions);
             foreach(var o in nativeScene.omissions)omissions.Add("collider:"+o.colliderId+":"+o.reason);
             var acquired=capturedParts.parts.ToDictionary(p=>p.partId);
@@ -200,6 +203,7 @@ namespace KspContinuum
                     if(a.kind=="wheel"&&a.actuatorMode==0)
                         for(int axis=0;axis<3;axis++)if(a.maxTorqueNewtonMeters[axis]*a.authorityFraction>0)
                             providerKeys.Add(checked((long)p.partId*1000000+(long)a.moduleIndex*4+axis));
+            if(supplyCapture!=null){foreach(var solar in supplyCapture.solar)providerKeys.Add(solar.rateProviderKey);foreach(var command in supplyCapture.commands)providerKeys.Add(command.readinessProviderKey);}
             var definition=new OwnedRuntimeDefinition("native/"+nativeScene.vesselId+"/"+nativeManifestSha256,0,partDefinitions,dryBodies,resourceDefinitions.ToArray(),providerKeys.ToArray());
             var connections=new List<OwnedRuntimeConnection>();foreach(var a in aliases)if(a.parentPartId!=0)connections.Add(new OwnedRuntimeConnection(a.partId,a.parentPartId,a.partId));
             var topology=OwnedRuntimeTopology.Compile(definition,connections);Need(topology.RegionCount==1,"Initial captured craft does not form one rigid region.");
@@ -207,6 +211,12 @@ namespace KspContinuum
             var projection=RigidAssemblyProjection.Project(sourceMotion);
             var motion=new OwnedRuntimeMotion{RootPosition=new Vec(0,0,0),Orientation=root,Velocity=new Vec(0,0,0),AngularMomentum=root.Rotate(projection.AngularMomentumAboutCenter)};
             var world=new OwnedRuntimeWorld(definition,topology,motion,0,"captured-native-Galilean-rest/metres");
+            if(supplyCapture!=null)
+            {
+                var initial=world.CaptureSnapshot();
+                foreach(var command in supplyCapture.commands)initial.ProviderState[providerKeys.IndexOf(command.readinessProviderKey)]=command.initialReady?1:0;
+                world=OwnedRuntimeWorld.RestoreSnapshot(initial);
+            }
             using(var read=world.AcquireRead())for(int b=0;b<wet.Length;b++)CheckWet(read.GetBody(b),wet[b]);
             var actuators=new List<OwnedRuntimeActuatorSpec>();var enabled=new List<bool>();var wheelSlots=new List<int>();
             Rotation control=Q(capturedParts.controlRotationInRoot);
@@ -269,10 +279,29 @@ namespace KspContinuum
             else Need(rendererGeometry==null&&rendererManifestSha256==null,"Renderer geometry/hash lacks manifest.");
             var bindings=new OwnedRuntimeBodyBinding[bodies.Length];for(int b=0;b<bodies.Length;b++)bindings[b]=new OwnedRuntimeBodyBinding{sourceBodyId=bodies[b].bodyId,bodyId=bodies[b].bodyId,bodySlot=b};
             var source=new OwnedRuntimeSourceBinding{runId=nativeScene.runId,vesselId=nativeScene.vesselId,processId=nativeScene.processId,nativeManifestSha256=nativeManifestSha256,partSpecsSha256=partSpecsSha256,rendererManifestSha256=rendererManifestSha256,colliderGeometrySha256=nativeScene.geometrySha256,
+                supplyCaptureSha256=supplyCaptureSha256??"",
                 resourcePolicy=allowAcquiredSurplus?"acquired-initial-surplus-consume-only/v1":"strict-capacity/v1",
                 scope="SI; captured native Galilean rest; unique-body rigid momentum projection; zero-intrinsic-inertia point resources at acquired part origins; authored finite wheel reserve and acquired module EC maximum partitioned by torque capacity; declared negative-PYR controller and deterministic shared-region propellant pools; no stock wheel-demand/crossfeed/RCS-allocation/contact/atmospheric parity; frozen renderer-local bindings",
                 subtractedNativeCenterVelocity=A(root.Rotate(projection.Velocity)),sourceFrameVelocity=(double[])nativeScene.frameVelocity.Clone(),bodies=bindings,renderers=rendererBindings.ToArray(),omissions=omissions.ToArray()};
-            return new OwnedRuntimeImportResult{World=world,Systems=systems,Source=source,CapturedParts=capturedParts,NativeScene=nativeScene,ColliderGeometry=colliderGeometry};
+            return new OwnedRuntimeImportResult{World=world,Systems=systems,Source=source,CapturedParts=capturedParts,NativeScene=nativeScene,ColliderGeometry=colliderGeometry,CapturedSupply=supplyCapture};
+        }
+        public static void ValidateSupplyCapture(OwnedRuntimeSupplyCapturePacket packet,OwnedRuntimeCapturedParts parts,NativeAssemblySceneManifest scene,string nativeSha,string partsSha,string supplySha)
+        {
+            Digest(supplySha);Need(packet!=null&&packet.schema=="continuum-owned-clock-providers/v1","Supply schema differs.");
+            Need(packet.runId==scene.runId&&packet.vesselId==scene.vesselId&&packet.processId==scene.processId&&packet.nativeManifestSha256==nativeSha&&packet.partSpecsSha256==partsSha&&packet.sourceAssemblySha256==parts.sourceAssemblySha256&&packet.sourceAssemblyMvid==parts.sourceAssemblyMvid,"Supply provenance differs.");
+            Need(packet.unityFrame==scene.unityFrame&&packet.unityFrameEnd==packet.unityFrame&&packet.fixedTime==scene.fixedTime&&packet.fixedTimeEnd==packet.fixedTime&&packet.universalTime==scene.universalTime&&packet.universalTimeEnd==packet.universalTime&&packet.epochUnchanged&&packet.identityUnchanged,"Supply acquisition epoch differs.");
+            Need(packet.clockFrequency>0&&packet.startedTicks>=0&&packet.copiedTicks>=packet.startedTicks,"Supply clocks differ.");
+            Text(packet.modelScope);Need(packet.solar!=null&&packet.commands!=null&&packet.engines!=null&&packet.unsupported!=null&&packet.idleTransmitters!=null&&packet.solar.Length<=50000&&packet.commands.Length<=50000&&packet.engines.Length<=50000,"Supply tables absent or excessive.");
+            Need(packet.unsupported.Length==0,"Supply packet includes unsupported writers.");
+            var ids=new HashSet<long>();var sourceParts=new HashSet<uint>(parts.parts.Select(p=>p.partId));
+            foreach(var command in packet.commands)
+            {
+                Need(command!=null&&sourceParts.Contains(command.partId)&&command.moduleIndex>=0&&command.moduleIndex<65536&&command.id==((long)command.partId<<16)+command.moduleIndex&&command.readinessProviderKey==long.MinValue+command.id&&ids.Add(command.id),"Command source identity differs.");
+                Nonnegative(command.unitsPerSecond);Nonnegative(command.hibernationMultiplier);Need(command.hibernationMultiplier<=1&&command.minimumCrew==0,"Command model unsupported.");
+                Digest(command.definitionSha256);Text(command.sourceType);Text(command.resourceKind);
+            }
+            foreach(var solar in packet.solar){Need(solar!=null&&sourceParts.Contains(solar.partId)&&solar.moduleIndex>=0&&solar.moduleIndex<65536&&solar.id==((long)solar.partId<<16)+solar.moduleIndex&&solar.rateProviderKey==long.MinValue+solar.id&&ids.Add(solar.id),"Solar source identity differs.");Digest(solar.definitionSha256);}
+            foreach(var engine in packet.engines){Need(engine!=null&&sourceParts.Contains(engine.partId)&&engine.moduleIndex>=0&&engine.moduleIndex<65536&&engine.id==((long)engine.partId<<16)+engine.moduleIndex&&ids.Add(engine.id),"Engine source identity differs.");Digest(engine.definitionSha256);}
         }
         static RigidAssemblyMember SubtractResources(RigidAssemblyMember wet,List<Tuple<double,Vec>> resources)
         {

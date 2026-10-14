@@ -58,7 +58,23 @@ namespace KspContinuum
             }
             var type = value.GetType();
             bool pluginDiagnostic = type.Assembly == typeof(ReportJson).Assembly &&
-                (type.FullName == "KspContinuum.FlightDiagnosticControlReport" ||
+                (type.FullName == "KspContinuum.OwnedClockLightingFacts+Receipt" ||
+                 type.FullName == "KspContinuum.OwnedClockPhysicsSettlement+ReportData" ||
+                 type.FullName == "KspContinuum.OwnedClockProbeStage+ReportData" ||
+                 type.FullName == "KspContinuum.OwnedClockFlightService+ReportData" ||
+                 type.FullName == "KspContinuum.OwnedClockFlightService+EventRow" ||
+                 type.FullName == "KspContinuum.OwnedClockFlightService+ShellData" ||
+                 type.FullName == "KspContinuum.OwnedClockFlightService+ShellRow" ||
+                 type.FullName == "KspContinuum.OwnedClockFlightService+CheckpointReceipt" ||
+                 type.FullName == "KspContinuum.OwnedClockFlightService+RestoreFailureReceipt" ||
+                 type.FullName == "KspContinuum.OwnedClockFlightService+AcquisitionFailureReceipt" ||
+                 type.FullName == "KspContinuum.OwnedClockKspBridge+ReportData" ||
+                 type.FullName == "KspContinuum.OwnedClockKspBridge+SourceRow" ||
+                 type.FullName == "KspContinuum.OwnedClockThermalHandback+Receipt" ||
+                 type.FullName == "KspContinuum.OwnedClockThermalHandback+SourceRow" ||
+                 type.FullName == "KspContinuum.OwnedClockThermalHandback+PartRow" ||
+                 type.FullName == "KspContinuum.OwnedClockProviderBinding" ||
+                 type.FullName == "KspContinuum.FlightDiagnosticControlReport" ||
                  type.FullName == "KspContinuum.FlightLighting+ReportData" ||
                  type.FullName == "KspContinuum.DockingQualification+ReportData" ||
                  type.FullName == "KspContinuum.DockingQualification+EventRow" ||
@@ -256,6 +272,8 @@ namespace KspContinuum
                 type != typeof(LiveControlIdentity) && type != typeof(LiveVesselSnapshot) &&
                 type != typeof(LiveSweepStatus) &&
                 type != typeof(LiveRigidStatus) &&
+                type != typeof(LiveClockStatus) &&
+                type != typeof(OwnedFlightWorkerStatus) && type != typeof(OwnedFlightTimelineProgress) && type != typeof(OwnedRuntimeStamp) &&
                 type != typeof(LiveControlReply) &&
                 type != typeof(NativeBoundaryMonoReport) && type != typeof(NativeBoundaryMonoRow) &&
                 type != typeof(MultiscaleSceneManifest) && type != typeof(ScientificAnchorSet) && type != typeof(ScientificAnchorData) && type != typeof(ResidentMaterialManifest) && type != typeof(ResidentTextureAsset) &&
@@ -267,6 +285,8 @@ namespace KspContinuum
                 type != typeof(OwnedRuntimeThermalState) && type != typeof(OwnedRuntimeMechanicalState) && type != typeof(OwnedRuntimeAdaptiveObservation) &&
                 type != typeof(OwnedFlightTimelineState) && type != typeof(OwnedFlightTimelineSegmentState) && type != typeof(OwnedFlightEventRow) && type != typeof(OwnedFlightEventHistory) && type != typeof(OwnedFlightEventQueueData) &&
                 type != typeof(OwnedRuntimeCapturedParts) && type != typeof(OwnedRuntimeCapturedPart) && type != typeof(OwnedRuntimeCapturedResource) && type != typeof(OwnedRuntimeCapturedActuator) && type != typeof(OwnedRuntimeCapturedThruster) && type != typeof(OwnedRuntimeCapturedPropellant) && type != typeof(OwnedRuntimeCapturedResourceRate) &&
+                type != typeof(OwnedRuntimeSupplyCapturePacket) && type != typeof(OwnedRuntimeSupplyEphemerisData) && type != typeof(OwnedRuntimeSupplyCurveData) && type != typeof(OwnedRuntimeCapturedSolarSupply) && type != typeof(OwnedRuntimeCapturedCommandLoad) && type != typeof(OwnedRuntimeCapturedEngineState) && type != typeof(OwnedRuntimeSolarSupplySample) &&
+                type != typeof(OwnedRuntimeSupplyConfiguration) && type != typeof(OwnedRuntimeSupplyObservation) && type != typeof(OwnedRuntimeSupplyTotals) &&
                 type != typeof(OwnedRuntimeCheckpointData) && type != typeof(OwnedRuntimeCheckpointPart) && type != typeof(OwnedRuntimeCheckpointBody) && type != typeof(OwnedRuntimeCheckpointResource) && type != typeof(OwnedRuntimeCheckpointMember) && type != typeof(OwnedRuntimeCheckpointConnection) && type != typeof(OwnedRuntimeCheckpointMotion) && type != typeof(OwnedRuntimeCheckpointInput) && type != typeof(OwnedRuntimeCheckpointActuator) && type != typeof(OwnedRuntimeCheckpointSurface) && type != typeof(OwnedRuntimeCheckpointThermalLink) && type != typeof(OwnedRuntimeCheckpointEnvironment) && type != typeof(OwnedRuntimeSourceBinding) && type != typeof(OwnedRuntimeBodyBinding) && type != typeof(OwnedRuntimeRendererBinding) &&
                 type != typeof(ResidentMaterialAsset) && type != typeof(ResidentMaterialProperty) &&
                 type != typeof(ResidentInstanceAsset) && type != typeof(ResidentLighting) &&

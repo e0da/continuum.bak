@@ -10,7 +10,7 @@ namespace KspContinuum
 {
     public static class OwnedRuntimeCheckpointBinary
     {
-        public const int Version=5,HeaderBytes=76,MaximumPayloadBytes=64*1024*1024;
+        public const int Version=6,HeaderBytes=76,MaximumPayloadBytes=64*1024*1024;
         public const int MaximumArrayLength=1048576,MaximumArrayElements=8388608,MaximumStringBytes=65536,MaximumDepth=32;
         static readonly byte[] Magic={79,82,67,66};
         static readonly Encoding Utf8=new UTF8Encoding(false,true);
@@ -19,11 +19,13 @@ namespace KspContinuum
             typeof(OwnedRuntimeCheckpointResource),typeof(OwnedRuntimeCheckpointConnection),typeof(OwnedRuntimeCheckpointMotion),
             typeof(OwnedRuntimeCheckpointInput),typeof(OwnedRuntimeCheckpointActuator),typeof(OwnedRuntimeCheckpointSurface),
             typeof(OwnedRuntimeCheckpointThermalLink),typeof(OwnedRuntimeCheckpointEnvironment),typeof(OwnedRuntimeSourceBinding),
-            typeof(OwnedRuntimeBodyBinding),typeof(OwnedRuntimeRendererBinding),typeof(OwnedRuntimeThermalState),typeof(OwnedRuntimeMechanicalState)};
+            typeof(OwnedRuntimeBodyBinding),typeof(OwnedRuntimeRendererBinding),typeof(OwnedRuntimeThermalState),typeof(OwnedRuntimeMechanicalState),
+            typeof(OwnedRuntimeSupplyConfiguration),typeof(OwnedRuntimeSupplyCapturePacket),typeof(OwnedRuntimeSupplyEphemerisData),typeof(OwnedRuntimeSupplyCurveData),typeof(OwnedRuntimeCapturedSolarSupply),typeof(OwnedRuntimeCapturedCommandLoad),typeof(OwnedRuntimeCapturedEngineState),typeof(OwnedRuntimeCapturedThruster),typeof(OwnedRuntimeCapturedPropellant)};
         static readonly Type[] FlightTypes=Types.Concat(new[]{typeof(OwnedFlightCheckpointData),typeof(OwnedFlightPilotData),
             typeof(OwnedFlightSessionData),typeof(OwnedFlightCapture),typeof(OwnedFlightManeuverData),typeof(OwnedFlightTimelineState),typeof(OwnedFlightTimelineSegmentState),typeof(OwnedFlightEventRow),typeof(OwnedFlightEventHistory),typeof(OwnedFlightEventQueueData)}).ToArray();
         static readonly Dictionary<Type,FieldInfo[]> Fields=BuildFields();
-        static readonly Dictionary<Type,FieldInfo[]> Version4Fields=Fields.ToDictionary(pair=>pair.Key,pair=>pair.Value.Where(field=>pair.Key!=typeof(OwnedRuntimeCheckpointData)||field.Name!="deadlineStrategy").ToArray());
+        static readonly Dictionary<Type,FieldInfo[]> Version5Fields=Fields.Where(pair=>!NewVersion6Type(pair.Key)).ToDictionary(pair=>pair.Key,pair=>pair.Value.Where(field=>(pair.Key!=typeof(OwnedRuntimeCheckpointData)||field.Name!="scalarSupply")&&(pair.Key!=typeof(OwnedRuntimeSourceBinding)||field.Name!="supplyCaptureSha256")&&(pair.Key!=typeof(OwnedFlightSessionData)||field.Name!="minimumAltitudeMeters")).ToArray());
+        static readonly Dictionary<Type,FieldInfo[]> Version4Fields=Version5Fields.ToDictionary(pair=>pair.Key,pair=>pair.Value.Where(field=>pair.Key!=typeof(OwnedRuntimeCheckpointData)||field.Name!="deadlineStrategy").ToArray());
         static readonly Dictionary<Type,FieldInfo[]> Version3Fields=Version4Fields.ToDictionary(pair=>pair.Key,pair=>pair.Value.Where(field=>(pair.Key!=typeof(OwnedRuntimeCheckpointData)||field.Name!="executionStrategy")&&(pair.Key!=typeof(OwnedRuntimeMechanicalState)||field.Name!="method")).ToArray());
         static readonly Dictionary<Type,FieldInfo[]> Version2Fields=Version3Fields.Where(pair=>!NewVersion3Type(pair.Key)).ToDictionary(pair=>pair.Key,pair=>pair.Value.Where(field=>(pair.Key!=typeof(OwnedRuntimeCheckpointData)||field.Name!="mechanical")&&(pair.Key!=typeof(OwnedFlightCheckpointData)||field.Name!="timeline")).ToArray());
         static readonly Dictionary<Type,FieldInfo[]> LegacyFields=Version2Fields.Where(pair=>pair.Key!=typeof(OwnedRuntimeThermalState)).ToDictionary(pair=>pair.Key,pair=>pair.Value.Where(field=>pair.Key!=typeof(OwnedRuntimeCheckpointData)||field.Name!="thermal").ToArray());
@@ -39,6 +41,10 @@ namespace KspContinuum
         static readonly byte[] Version3FlightSchemaDigest=VersionDigest(FlightTypes,Version3Fields);
         static readonly byte[] Version4SchemaDigest=VersionDigest(Types,Version4Fields);
         static readonly byte[] Version4FlightSchemaDigest=VersionDigest(FlightTypes,Version4Fields);
+        static readonly byte[] Version5SchemaDigest=VersionDigest(Types,Version5Fields);
+        static readonly byte[] Version5FlightSchemaDigest=VersionDigest(FlightTypes,Version5Fields);
+        static bool NewVersion6Type(Type t)
+        {return t==typeof(OwnedRuntimeSupplyConfiguration)||t==typeof(OwnedRuntimeSupplyCapturePacket)||t==typeof(OwnedRuntimeSupplyEphemerisData)||t==typeof(OwnedRuntimeSupplyCurveData)||t==typeof(OwnedRuntimeCapturedSolarSupply)||t==typeof(OwnedRuntimeCapturedCommandLoad)||t==typeof(OwnedRuntimeCapturedEngineState)||t==typeof(OwnedRuntimeCapturedThruster)||t==typeof(OwnedRuntimeCapturedPropellant);}
         static bool NewVersion3Type(Type t)
         {return t==typeof(OwnedRuntimeMechanicalState)||t==typeof(OwnedFlightTimelineState)||t==typeof(OwnedFlightTimelineSegmentState)||t==typeof(OwnedFlightEventRow)||t==typeof(OwnedFlightEventHistory)||t==typeof(OwnedFlightEventQueueData);}
         static byte[] LegacyDigest(Type[] types)
@@ -60,9 +66,17 @@ namespace KspContinuum
             return result;
         }
         static bool Allowed(Type type)
-        {return type==typeof(string)||type==typeof(double)||type==typeof(long)||type==typeof(int)||type==typeof(bool)
+        {return type==typeof(string)||type==typeof(double)||type==typeof(long)||type==typeof(int)||type==typeof(uint)||type==typeof(bool)
             ||FlightTypes.Contains(type)||(type.IsArray&&type.GetArrayRank()==1&&Allowed(type.GetElementType()));}
         static byte[] Digest(byte[] bytes){using(var sha=SHA256.Create())return sha.ComputeHash(bytes);}
+        public static string SupplyPacketDigest(OwnedRuntimeSupplyCapturePacket packet)
+        {
+            using(var stream=new MemoryStream())
+            {
+                using(var writer=new BinaryWriter(stream,Utf8,true))Write(writer,typeof(OwnedRuntimeSupplyCapturePacket),packet,new Budget(),0);
+                return BitConverter.ToString(Digest(stream.ToArray())).Replace("-","").ToLowerInvariant();
+            }
+        }
         static bool Same(byte[] a,byte[] b)
         {if(a.Length!=b.Length)return false;int different=0;for(int i=0;i<a.Length;i++)different|=a[i]^b[i];return different==0;}
         static void Space(Stream stream,int count)
@@ -100,7 +114,7 @@ namespace KspContinuum
                 using(var stream=new MemoryStream(bytes,false))using(var reader=new BinaryReader(stream,Utf8,true))
                 {
                     Need(Same(reader.ReadBytes(4),magic),"Checkpoint binary magic differs.");int version=reader.ReadInt32();Need(version>=1&&version<=Version,"Checkpoint binary version differs.");
-                    byte[] admitted=version==1?(Same(magic,Magic)?LegacySchemaDigest:LegacyFlightSchemaDigest):version==2?(Same(magic,Magic)?Version2SchemaDigest:Version2FlightSchemaDigest):version==3?(Same(magic,Magic)?Version3SchemaDigest:Version3FlightSchemaDigest):version==4?(Same(magic,Magic)?Version4SchemaDigest:Version4FlightSchemaDigest):schemaDigest;
+                    byte[] admitted=version==1?(Same(magic,Magic)?LegacySchemaDigest:LegacyFlightSchemaDigest):version==2?(Same(magic,Magic)?Version2SchemaDigest:Version2FlightSchemaDigest):version==3?(Same(magic,Magic)?Version3SchemaDigest:Version3FlightSchemaDigest):version==4?(Same(magic,Magic)?Version4SchemaDigest:Version4FlightSchemaDigest):version==5?(Same(magic,Magic)?Version5SchemaDigest:Version5FlightSchemaDigest):schemaDigest;
                     Need(Same(reader.ReadBytes(32),admitted),"Checkpoint binary typed schema differs.");
                     int length=reader.ReadInt32();Need(length>0&&length<=MaximumPayloadBytes&&bytes.Length==HeaderBytes+length,"Checkpoint binary payload length/trailing bytes differ.");
                     byte[] expected=reader.ReadBytes(32),actual;using(var sha=SHA256.Create())actual=sha.ComputeHash(bytes,HeaderBytes,length);
@@ -118,6 +132,7 @@ namespace KspContinuum
             if(type==typeof(double)){Space(stream,8);writer.Write(BitConverter.DoubleToInt64Bits((double)value));return;}
             if(type==typeof(long)){Space(stream,8);writer.Write((long)value);return;}
             if(type==typeof(int)){Space(stream,4);writer.Write((int)value);return;}
+            if(type==typeof(uint)){Space(stream,4);writer.Write((uint)value);return;}
             if(type==typeof(bool)){Space(stream,1);writer.Write((byte)((bool)value?1:0));return;}
             if(type==typeof(string))
             {
@@ -139,6 +154,7 @@ namespace KspContinuum
             Need(depth<=MaximumDepth,"Checkpoint binary depth exceeded.");
             if(type==typeof(double))return BitConverter.Int64BitsToDouble(reader.ReadInt64());
             if(type==typeof(long))return reader.ReadInt64();if(type==typeof(int))return reader.ReadInt32();
+            if(type==typeof(uint))return reader.ReadUInt32();
             if(type==typeof(bool)){byte flag=reader.ReadByte();Need(flag<=1,"Checkpoint binary bool encoding differs.");return flag==1;}
             if(type==typeof(string))
             {
@@ -152,7 +168,7 @@ namespace KspContinuum
                 Need(length<=reader.BaseStream.Length-reader.BaseStream.Position,"Checkpoint binary array cannot fit payload.");
                 var array=Array.CreateInstance(element,length);for(int i=0;i<length;i++)array.SetValue(Read(reader,element,budget,depth+1,version),i);return array;
             }
-            FieldInfo[] fields;Need((version==1?LegacyFields:version==2?Version2Fields:version==3?Version3Fields:version==4?Version4Fields:Fields).TryGetValue(type,out fields),"Checkpoint binary DTO is not whitelisted.");byte presence=reader.ReadByte();Need(presence<=1,"Checkpoint binary DTO marker differs.");if(presence==0)return null;
+            FieldInfo[] fields;Need((version==1?LegacyFields:version==2?Version2Fields:version==3?Version3Fields:version==4?Version4Fields:version==5?Version5Fields:Fields).TryGetValue(type,out fields),"Checkpoint binary DTO is not whitelisted.");byte presence=reader.ReadByte();Need(presence<=1,"Checkpoint binary DTO marker differs.");if(presence==0)return null;
             object value=Activator.CreateInstance(type);foreach(var field in fields)field.SetValue(value,Read(reader,field.FieldType,budget,depth+1,version));return value;
         }
     }

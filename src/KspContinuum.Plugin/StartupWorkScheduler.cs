@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Threading;
 using HarmonyLib;
 using UnityEngine;
 
@@ -22,6 +23,11 @@ namespace KspContinuum
         Harmony harmony;
         MethodInfo move, partsMove;
         bool requested, exported;
+        bool retired, retirementFailed;
+        int mainThread, activeChildren;
+        string runId;
+        readonly HashSet<IEnumerator> pendingRoots = new HashSet<IEnumerator>();
+        long databaseCompletions, partCompletions;
         string status = "not-requested";
         long dispatches, dragDispatches, completedJobs, suspendedJobs, resumedSteps, explicitWaits, nullWaits, rootBudgetYields, failures, drainedCompletions, rootReturns;
 
@@ -29,6 +35,7 @@ namespace KspContinuum
         {
             requested = Environment.GetCommandLineArgs().Contains("--continuum-startup-work-scheduler");
             if (!requested) return;
+            mainThread = Thread.CurrentThread.ManagedThreadId;
             DontDestroyOnLoad(gameObject);
             try
             {
@@ -40,6 +47,7 @@ namespace KspContinuum
                 string[] identities = Environment.GetCommandLineArgs().Where(value => value.StartsWith("--continuum-research-run=", StringComparison.Ordinal)).ToArray();
                 if (identities.Length != 1 || identities[0].Length == "--continuum-research-run=".Length)
                     throw new InvalidOperationException("One owned run identity required.");
+                runId = identities[0].Substring("--continuum-research-run=".Length);
                 Assembly game = typeof(GameDatabase).Assembly;
                 StartupPinnedGameIdentity.Require(game);
                 Type iterator = typeof(GameDatabase).GetNestedType("<LoadObjects>d__90", BindingFlags.NonPublic);
@@ -57,7 +65,7 @@ namespace KspContinuum
                     harmony.Patch(target, transpiler: new HarmonyMethod(typeof(StartupWorkScheduler), nameof(Transpile)),
                         postfix: new HarmonyMethod(typeof(StartupWorkScheduler), nameof(MovePostfix)));
                     Patches patches = Harmony.GetPatchInfo(target);
-                    if (patches == null || patches.Transpilers.Count != 1 || patches.Postfixes.Count != 1 || patches.Owners.Any(owner => owner != Owner))
+                    if (!HasExactOwnPatches(patches) || patches.Owners.Any(owner => owner != Owner))
                         throw new InvalidOperationException("Scheduler ownership verification failed.");
                 }
                 status = "installed"; Debug.Log(Marker + "status=" + status);
@@ -108,8 +116,16 @@ namespace KspContinuum
                 active.rootReturns++;
                 if (__result)
                 {
+                    active.pendingRoots.Add(__instance);
                     if (__instance.Current == null) active.rootBudgetYields++;
                     else active.explicitWaits++;
+                }
+                else
+                {
+                    active.pendingRoots.Remove(__instance);
+                    if (__instance.GetType() == active.move.DeclaringType) active.databaseCompletions++;
+                    else if (__instance.GetType() == active.partsMove.DeclaringType) active.partCompletions++;
+                    else throw new InvalidOperationException("Scheduler root identity differs.");
                 }
             }
             catch { active.failures++; DisposeQuietly(__instance); throw; }
@@ -142,9 +158,10 @@ namespace KspContinuum
         sealed class PrimedChild : IEnumerator, IDisposable
         {
             IEnumerator source;
+            readonly StartupWorkScheduler scheduler;
             bool primed = true;
             bool waitCounted;
-            public PrimedChild(IEnumerator source) { this.source = source; }
+            public PrimedChild(IEnumerator source) { this.source = source; scheduler = active; scheduler.activeChildren++; }
             public object Current
             {
                 get
@@ -152,7 +169,7 @@ namespace KspContinuum
                     object yielded = source.Current;
                     if (!waitCounted)
                     {
-                        if (yielded == null) active.nullWaits++; else active.explicitWaits++;
+                        if (yielded == null) scheduler.nullWaits++; else scheduler.explicitWaits++;
                         waitCounted = true;
                     }
                     return yielded;
@@ -162,7 +179,7 @@ namespace KspContinuum
             {
                 if (source == null) return false;
                 if (primed) { primed = false; waitCounted = false; return true; }
-                active.resumedSteps++;
+                scheduler.resumedSteps++;
                 try
                 {
                     bool result = source.MoveNext();
@@ -170,13 +187,114 @@ namespace KspContinuum
                     if (!result) Dispose();
                     return result;
                 }
-                catch { active.failures++; DisposeQuietly(this); throw; }
+                catch { scheduler.failures++; DisposeQuietly(this); throw; }
             }
             public void Reset() { throw new NotSupportedException(); }
-            public void Dispose() { IEnumerator owned = source; source = null; if (owned != null) DisposeIterator(owned); }
+            public void Dispose()
+            {
+                IEnumerator owned = source; source = null;
+                if (owned == null) return;
+                try { DisposeIterator(owned); }
+                finally { scheduler.activeChildren--; }
+            }
         }
         public static void ObserveForMenu() { if (active != null) active.Export(); }
-        public void Update() { if (requested && !exported && HighLogic.LoadedScene == GameScenes.MAINMENU) Export(); }
+        public void Update()
+        {
+            if (requested && !exported && HighLogic.LoadedScene == GameScenes.MAINMENU) Export();
+            if (requested && active == this && !retired && !retirementFailed && status == "installed" && failures == 0 &&
+                activeChildren == 0 && pendingRoots.Count == 0 && draining == null && HighLogic.LoadedScene == GameScenes.FLIGHT && StartupReady())
+            {
+                try { RetireAfterStartupForClock(); }
+                catch (Exception error) { Debug.LogError(Marker + "retirementFailed=" + error); }
+            }
+        }
+        static bool StartupReady()
+        {
+            return GameDatabase.Instance != null && GameDatabase.Instance.IsReady() &&
+                PartLoader.Instance != null && PartLoader.Instance.IsReady();
+        }
+        public static void RetireAfterStartupForClock()
+        {
+            StartupWorkScheduler scheduler = active;
+            if (scheduler == null) return;
+            if (Thread.CurrentThread.ManagedThreadId != scheduler.mainThread)
+                throw new InvalidOperationException("Startup retirement requires its original main thread.");
+            if (scheduler.retired)
+            {
+                foreach (MethodInfo target in new[] { scheduler.move, scheduler.partsMove })
+                    if (PatchGroups(Harmony.GetPatchInfo(target)).Any(group => group.Any(patch => patch.owner == Owner)))
+                        throw new InvalidOperationException("Retired startup hooks reappeared.");
+                return;
+            }
+            if (scheduler.status != "installed" || scheduler.retirementFailed || !StartupReady() ||
+                draining != null || scheduler.activeChildren != 0 || scheduler.pendingRoots.Count != 0 || scheduler.failures != 0)
+                throw new InvalidOperationException("Startup retirement requires completed healthy loaders and no outstanding scheduler jobs.");
+            scheduler.Export();
+            MethodInfo[] targets = { scheduler.move, scheduler.partsMove };
+            Patch[][][] foreign = new Patch[targets.Length][][];
+            try
+            {
+                for (int i = 0; i < targets.Length; i++)
+                {
+                    Patches graph = Harmony.GetPatchInfo(targets[i]);
+                    if (!HasExactOwnPatches(graph)) throw new InvalidOperationException("Startup retirement own graph differs.");
+                    foreign[i] = PatchGroups(graph).Select(group => group.Where(patch => patch.owner != Owner).ToArray()).ToArray();
+                }
+                for (int i = 0; i < targets.Length; i++)
+                {
+                    scheduler.harmony.Unpatch(targets[i], HarmonyPatchType.All, Owner);
+                    Patch[][] after = PatchGroups(Harmony.GetPatchInfo(targets[i]));
+                    if (after.Any(group => group.Any(patch => patch.owner == Owner)))
+                        throw new InvalidOperationException("Startup retirement own hook removal incomplete.");
+                    for (int kind = 0; kind < after.Length; kind++)
+                        if (after[kind].Length != foreign[i][kind].Length ||
+                            after[kind].Where((patch, index) => !SamePatch(patch, foreign[i][kind][index])).Any())
+                            throw new InvalidOperationException("Startup retirement foreign graph changed.");
+                }
+                scheduler.retired = true;
+                Debug.Log(Marker + "retirement=completed runId=" + scheduler.runId + " frame=" + Time.frameCount +
+                    " thread=" + scheduler.mainThread + " databaseReady=true partsReady=true databaseCompletions=" + scheduler.databaseCompletions +
+                    " partCompletions=" + scheduler.partCompletions + " pendingRoots=0 activeChildren=0 ownHooksRemoved=4 foreignGraphsPreserved=true");
+            }
+            catch (Exception error)
+            {
+                scheduler.retirementFailed = true;
+                Debug.LogError(Marker + "retirement=failed runId=" + scheduler.runId + " error=" + error);
+                throw;
+            }
+        }
+        static Patch[][] PatchGroups(Patches graph)
+        {
+            return graph == null ? new[] { new Patch[0], new Patch[0], new Patch[0], new Patch[0] } :
+                new[] { graph.Prefixes.ToArray(), graph.Postfixes.ToArray(), graph.Transpilers.ToArray(), graph.Finalizers.ToArray() };
+        }
+        static bool SameMethod(MethodInfo a, MethodInfo b)
+        {
+            return a != null && b != null && (ReferenceEquals(a, b) ||
+                (a.Module == b.Module && a.MetadataToken == b.MetadataToken && a.DeclaringType == b.DeclaringType));
+        }
+        static bool HasExactOwnPatches(Patches graph)
+        {
+            Patch[][] groups = PatchGroups(graph);
+            MethodInfo postfix = AccessTools.DeclaredMethod(typeof(StartupWorkScheduler), nameof(MovePostfix));
+            MethodInfo transpiler = AccessTools.DeclaredMethod(typeof(StartupWorkScheduler), nameof(Transpile));
+            for (int kind = 0; kind < groups.Length; kind++)
+            {
+                Patch[] owned = groups[kind].Where(patch => patch.owner == Owner).ToArray();
+                if (kind == 0 || kind == 3) { if (owned.Length != 0) return false; }
+                else if (owned.Length != 1 || !SameMethod(owned[0].PatchMethod, kind == 1 ? postfix : transpiler) ||
+                    owned[0].priority != Priority.Normal || (owned[0].before != null && owned[0].before.Length != 0) ||
+                    (owned[0].after != null && owned[0].after.Length != 0)) return false;
+            }
+            return true;
+        }
+        static bool SamePatch(Patch a, Patch b)
+        {
+            return a.owner == b.owner && a.index == b.index && a.priority == b.priority && SameMethod(a.PatchMethod, b.PatchMethod) &&
+                (a.before ?? new string[0]).SequenceEqual(b.before ?? new string[0]) &&
+                (a.after ?? new string[0]).SequenceEqual(b.after ?? new string[0]);
+        }
         public void OnApplicationQuit() { if (requested) Export(); }
         void Export()
         {
@@ -188,7 +306,7 @@ namespace KspContinuum
         }
         void Cleanup()
         {
-            if (harmony == null) return;
+            if (harmony == null || retired) return;
             if (move != null) harmony.Unpatch(move, HarmonyPatchType.All, Owner);
             if (partsMove != null) harmony.Unpatch(partsMove, HarmonyPatchType.All, Owner);
         }

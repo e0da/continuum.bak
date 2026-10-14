@@ -68,12 +68,14 @@ namespace KspContinuum
                 ||data.flight==null||data.flight.contextSha256!=expectedContextSha||data.visualSha256!=(expectedVisualSha??""))
                 throw new InvalidOperationException("Flight checkpoint source/context/visual binding differs.");
             if((data.schema=="continuum-owned-flight-checkpoint/v2")!=(data.timeline!=null))throw new InvalidOperationException("Flight execution checkpoint presence differs.");
+            if(data.host==null||data.host.state==null||data.host.state.source==null||(data.host.state.source.supplyCaptureSha256??"")!=(imported.Source.supplyCaptureSha256??""))throw new InvalidOperationException("Flight checkpoint supply source differs.");
+            if(imported.CapturedSupply!=null&&(data.host.state.scalarSupply==null||OwnedRuntimeCheckpointBinary.SupplyPacketDigest(data.host.state.scalarSupply.packet)!=OwnedRuntimeCheckpointBinary.SupplyPacketDigest(imported.CapturedSupply)))throw new InvalidOperationException("Flight checkpoint captured provider packet differs.");
             var copied=CopyPilot(data.pilot);
             OwnedRuntimeRestoredState restored;var nextHost=current.RestoreCheckpoint(data.host,nativeSha,partSha,out restored);
             var session=OwnedFlightSession.Restore(restored.World,data.flight,nativeSha,partSha);
             if(copied.mode!="manual")session.FindRegion(copied.regionId);
             var nextImported=new OwnedRuntimeImportResult {World=restored.World,Systems=restored.Systems,Source=restored.Source,
-                CapturedParts=imported.CapturedParts,NativeScene=imported.NativeScene,ColliderGeometry=imported.ColliderGeometry};
+                CapturedParts=imported.CapturedParts,NativeScene=imported.NativeScene,ColliderGeometry=imported.ColliderGeometry,CapturedSupply=imported.CapturedSupply};
             OwnedFlightManeuverPlan node=data.maneuver==null?null:new OwnedFlightManeuverPlan(data.maneuver.id,session,nextHost,data.maneuver.regionId,data.maneuver.universalTime,OwnedRuntimeCheckpoint.V(data.maneuver.deltaVelocity));
             return new OwnedFlightRestoredState {Host=nextHost,Imported=nextImported,Session=session,Controls=restored.Controls,Plan=restored.Plan,Pilot=copied,Maneuver=node,TimelineState=data.timeline};
         }

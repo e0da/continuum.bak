@@ -256,12 +256,12 @@ static partial class Program
             {MultiscaleSceneFormat.PortablePath(input.Native.geometry);string parent=Path.GetDirectoryName(options["--native"])!;string path=Path.GetFullPath(Path.Combine(parent,input.Native.geometry));NoLinks(path);Need(path.StartsWith(Path.GetFullPath(parent)+Path.DirectorySeparatorChar,StringComparison.Ordinal)&&new FileInfo(path).Length<=1073741824,"Geometry path/size rejected.");string hash=HashFile(path);Need(hash==input.Native.geometrySha256,"Geometry hash differs.");input.Geometry=WholeCraftSceneFormat.ReadGeometry(path);input.Pins.Add(new Pin{role="geometry",path=path,sha256=hash,bytes=new FileInfo(path).Length});}
             Directory.CreateDirectory(output);created=true;
             bool executionOnly=options.GetValueOrDefault("--execution-only","false")=="true";Need(!options.ContainsKey("--execution-only")||options["--execution-only"]=="true"||options["--execution-only"]=="false","Execution-only accepts true or false.");
-            string executionModes=options.GetValueOrDefault("--execution-modes","all");Need(executionModes=="all"||executionModes=="adaptive"||executionModes=="deadlines","Execution modes accepts all, adaptive or deadlines.");
+            string executionModes=options.GetValueOrDefault("--execution-modes","all");Need(executionModes=="all"||executionModes=="adaptive"||executionModes=="deadlines"||executionModes=="higher-order"||executionModes=="higher-order-powered","Execution modes accepts all, adaptive, deadlines, higher-order or higher-order-powered.");
             if(options.TryGetValue("--forecast-situations",out string? forecastSelector))
             {Need(!executionOnly&&!options.ContainsKey("--mission-situations"),"Forecast situations are a separate consumer.");forecasts=ForecastSituations(input,output,forecastSelector);}
             else if(options.TryGetValue("--mission-situations",out string? missionSelector))
             {Need(!executionOnly,"Mission situations and execution-only are separate consumers.");missions=MissionSituations(input,output,missionSelector,options.GetValueOrDefault("--mission-method","embedded"),deadlineStrategy:options.GetValueOrDefault("--deadline-strategy","retained"));}
-            else if(executionOnly)executionMatrix=CompiledExecution(input,output,executionModes);
+            else if(executionOnly)executionMatrix=executionModes.StartsWith("higher-order",StringComparison.Ordinal)?HigherOrderExecution(input,output,executionModes=="higher-order-powered"):CompiledExecution(input,output,executionModes);
             else
             {
             if(options.TryGetValue("--legacy-checkpoint",out string? legacyPath))legacy=Legacy(legacyPath,input);

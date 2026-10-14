@@ -16,7 +16,7 @@ internal static class BinaryCheckpointTests
         Need(depth<16,"Unexpected recursive checkpoint schema.");
         if(type==typeof(string))return "precise-\u03bb-\ud83d\ude80";
         if(type==typeof(double))return BitConverter.Int64BitsToDouble(unchecked((long)0x3ff0000000000001UL));
-        if(type==typeof(long))return 9007199254740993L;if(type==typeof(int))return int.MinValue;if(type==typeof(bool))return true;
+        if(type==typeof(long))return 9007199254740993L;if(type==typeof(int))return int.MinValue;if(type==typeof(uint))return uint.MaxValue;if(type==typeof(bool))return true;
         if(type==typeof(double[]))return Bits();
         if(type.IsArray){Type element=type.GetElementType();var a=Array.CreateInstance(element,2);a.SetValue(Fill(element,depth+1),0);a.SetValue(element.IsValueType?Fill(element,depth+1):null,1);return a;}
         object value=Activator.CreateInstance(type);foreach(var field in type.GetFields(BindingFlags.Public|BindingFlags.Instance))field.SetValue(value,Fill(field.FieldType,depth+1));return value;

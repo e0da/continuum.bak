@@ -4,8 +4,18 @@
 environment forecasts, thermal lag deadlines and partial atmosphere-entry coast
 with the owned numerical timeline. [Executable situations](docs/owned-forecast-situations.md)
 exercise captured-craft entry and exact pending-state continuation. Native world-mode
-warp scales demand independently of the physical interval; full playable KSP clock
-transfer remains a separate integration gate.
+warp scales demand independently of the physical interval. A private stock probe
+now runs on that independent clock; full playable coverage remains open.
+
+The opt-in [owned KSP clock](docs/owned-clock-flight.md) connects that worker to
+the stock shell through a reversible lease of the complete fixed-update subtree.
+[Scalar supply](docs/owned-scalar-supply.md) combines acquired fixed solar panels,
+probe-command loads and actuator consumption in one accepted resource bank.
+The [stock probe producer](docs/owned-clock-probe-stage.md) establishes original
+construction, module initialization and save loading. Actual nine-part flight has
+demonstrated clock takeover, exact module/debt restore, 32×/128× demand and clean
+stock handback. This is a bounded vacuum consumer, with broader gameplay and mod
+coverage still open.
 
 An experimental KSP 1 mechanics and performance lab with an addon, captured workloads, and system replacements. Continuum and Gimbal share a longer-term goal of supporting Kerbal-like, toy and realism experiences. Their [runtime and repository boundary](docs/continuum-gimbal-boundary.md) remains provisional, including a possible complete KSP/Unity replacement. Rigid assembled craft is the primary motion model; optional flexibility and wobble remain research capabilities. `KspContinuum` remains the addon namespace.
 
@@ -17,7 +27,7 @@ The [owned central-body flight consumer](docs/owned-flight.md) adds captured orb
 
 The [owned flight timeline](docs/owned-flight-timeline.md) separates requested wall progress from committed physical time, retains ordered input/debt, and supports bounded local work, event barriers and admitted coast. Its [independent worker](docs/owned-flight-worker.md) owns simulation and publishes coherent leased presentation state. [Thermal evolution](docs/owned-runtime-thermal.md) retains ordered forcing and pending energy on a separate bounded cadence. [Adaptive mechanics](docs/owned-runtime-adaptive.md), [typed physical events](docs/owned-flight-events.md), complete execution checkpoints and [render interpolation](docs/owned-flight-interpolation.md) now extend that ownership without a global render-driven cadence. The [captured-craft consumer](docs/owned-flight-worker-consumer.md) and [causal flight lab](tools/KspContinuum.CausalFlightLab/README.md) exercise the transfer. The [persistent KSP flight service](docs/playable-rigid-flight.md) supports ordinary controls and safe stock transitions. KSP-wide clock ownership and complete playable qualification remain part of the [whole-runtime redesign](docs/whole-runtime-redesign.md).
 
-The selectable [compiled execution plan](docs/owned-runtime-execution-plan.md) retains physical dependencies and geometry, skips inactive vacuum aero, and probes actuator deadlines without copying the world. [Embedded mechanics](docs/owned-runtime-embedded.md) replaces repeated complete trials with two wrench samples around one scalar transaction. [Retained deadlines](docs/owned-runtime-deadlines.md) project resource/wheel events from current state and certify the frontier against original allocation. [Mission situations](docs/owned-mission-situations.md) exercise burn/cutoff, reversals, exact impulses, warp, complete continuation, airborne reentry and [local moving-frame split/join](docs/owned-topology-transfer.md). Original execution and step-doubling remain available; complete work counters distinguish physical work from render pacing. Binary v5 preserves choices with explicit v1–v4 decoding.
+The selectable [compiled execution plan](docs/owned-runtime-execution-plan.md) retains physical dependencies and geometry, skips inactive vacuum aero, and probes actuator deadlines without copying the world. [Embedded mechanics](docs/owned-runtime-embedded.md) replaces repeated complete trials with two wrench samples around one scalar transaction. [Higher-order mechanics](docs/owned-runtime-higher-order-comparison.md) adds RK23 with isolated force stages and explicit variable-mass/wheel fallback. [Retained deadlines](docs/owned-runtime-deadlines.md) project resource/wheel events from current state and certify the frontier against original allocation. [Mission situations](docs/owned-mission-situations.md) exercise burn/cutoff, reversals, exact impulses, warp, complete continuation, airborne reentry and [local moving-frame split/join](docs/owned-topology-transfer.md). Original execution and step-doubling remain available; complete work counters distinguish physical work from render pacing. Binary v6 preserves scalar-provider source bindings with explicit v1–v5 decoding.
 
 The [roadmap and goal index](docs/roadmap.md) connects existing research to the shared direction. The [replacement architecture](docs/research-replacement-architecture.md) targets complete workloads and avoidable work, rather than inheriting KSP's method and part boundaries. Broader gameplay dynamics qualification remains open; synthetic Rust CPU/Metal kernel results do not establish game-framerate gains.
 

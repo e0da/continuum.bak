@@ -119,12 +119,10 @@ namespace KspContinuum
                     if (present != entry.present || (current == null) != (entry.bytes == null)) return Fail("Harmony raw entry presence/null changed: " + entry.method);
                     if (current == null) continue;
                     if (current.Length != entry.bytes.Length) return Fail("Harmony raw entry length changed: " + entry.method);
-                    // Do not trust array identity: an in-place mutation must fail just like a replaced serialized entry.
-                    for (int n = 0; n < current.Length; n++)
-                    {
-                        if (current[n] != entry.bytes[n]) { ComparedBytes += n + 1; return Fail("Harmony raw entry bytes changed: " + entry.method); }
-                    }
-                    ComparedBytes += current.Length;
+                    int compared;
+                    bool same = SameBytes(current, entry.bytes, out compared);
+                    ComparedBytes += compared;
+                    if (!same) return Fail("Harmony raw entry bytes changed: " + entry.method);
                 }
                 return ReferenceEquals(readState(), state) || Fail("Harmony state dictionary changed during check.");
             }
@@ -133,10 +131,41 @@ namespace KspContinuum
         internal bool Fail(string reason) { failed = true; if (Failure == null) Failure = reason; return false; }
         internal static bool SameBytes(byte[] a, byte[] b)
         {
+            int compared;
+            return SameBytes(a, b, out compared);
+        }
+        internal static unsafe bool SameBytes(byte[] a, byte[] b, out int compared)
+        {
+            compared = 0;
             if (a == null || b == null) return a == null && b == null;
             if (a.Length != b.Length) return false;
-            for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
-            return true;
+            int length = a.Length;
+            if (length == 0) return true;
+            fixed (byte* left = a, right = b)
+            {
+                int offset = 0;
+                // Read complete aligned words only; unusual allocator alignment retains the scalar path.
+                if ((((ulong)left | (ulong)right) & 7) == 0)
+                {
+                    while (offset <= length - 32)
+                    {
+                        if (*(ulong*)(left + offset) != *(ulong*)(right + offset) ||
+                            *(ulong*)(left + offset + 8) != *(ulong*)(right + offset + 8) ||
+                            *(ulong*)(left + offset + 16) != *(ulong*)(right + offset + 16) ||
+                            *(ulong*)(left + offset + 24) != *(ulong*)(right + offset + 24)) break;
+                        offset += 32;
+                    }
+                    while (offset <= length - 8)
+                    {
+                        if (*(ulong*)(left + offset) != *(ulong*)(right + offset)) break;
+                        offset += 8;
+                    }
+                }
+                // No reference shortcut: in-place mutations still compare against the retained seal. The bad-word fallback preserves the earliest-byte counter.
+                for (; offset < length; offset++)
+                    if (left[offset] != right[offset]) { compared = offset + 1; return false; }
+                compared = length; return true;
+            }
         }
         static string HashFile(string path)
         {

@@ -28,8 +28,11 @@ namespace KspContinuum
             }
             Need(maximum>0&&!double.IsNaN(maximum)&&!double.IsInfinity(maximum),"Captured craft collision envelope is absent/nonfinite.");return maximum;
         }
-        public static void Capture(Vessel vessel,NativeAssemblySceneManifest native,string manifestPath,string partsPath,string directory)
+        public static void Capture(Vessel vessel,NativeAssemblySceneManifest native,string manifestPath,string partsPath,string directory,bool includeVisuals=true)
+        {OwnedFlightCapture ignored;Capture(vessel,native,manifestPath,partsPath,directory,out ignored,includeVisuals);}
+        public static void Capture(Vessel vessel,NativeAssemblySceneManifest native,string manifestPath,string partsPath,string directory,out OwnedFlightCapture captured,bool includeVisuals=true)
         {
+            captured=null;
             Need(vessel!=null&&vessel.loaded&&!vessel.packed&&vessel.mainBody!=null&&vessel.rootPart!=null,"Owned flight requires actual loaded craft/body.");
             Need(Time.frameCount==native.unityFrame&&Time.fixedTime==native.fixedTime&&Planetarium.GetUniversalTime()==native.universalTime,"Owned flight native epoch differs.");
             var body=vessel.mainBody;var root=vessel.rootPart.rb!=null?vessel.rootPart.rb:vessel.rootPart.Rigidbody;Need(root!=null&&vessel.orbit!=null,"Owned flight canonical native root/orbit is absent.");
@@ -54,9 +57,13 @@ namespace KspContinuum
                     "Central-body inertial patched-conic research context; no full solar ephemeris or third-body forces.","No terrain/contact solver; conservative source collider envelope supplies spherical entry guards.","Solar flux captured for diagnostics; existing owned thermal schedule has no direct solar absorption."}};
             OwnedFlightWorld.Admit(capture,capture.nativeManifestSha256,capture.partSpecsSha256,new string('0',64));
             WriteNew(Path.Combine(directory,"flight-world.json"),capture);
-            string visualDirectory=Path.Combine(directory,"visuals");Need(!Directory.Exists(visualDirectory),"New owned visual source required.");Directory.CreateDirectory(visualDirectory);
-            CaptureVisual(vessel,native,capture,visualDirectory);
+            if(includeVisuals)
+            {
+                string visualDirectory=Path.Combine(directory,"visuals");Need(!Directory.Exists(visualDirectory),"New owned visual source required.");Directory.CreateDirectory(visualDirectory);
+                CaptureVisual(vessel,native,capture,visualDirectory);
+            }
             Need(Time.frameCount==native.unityFrame&&Time.fixedTime==native.fixedTime&&Planetarium.GetUniversalTime()==native.universalTime&&ReferenceEquals(vessel.mainBody,body),"Owned flight acquisition epoch/body changed.");
+            captured=capture;
         }
         static void CaptureVisual(Vessel vessel,NativeAssemblySceneManifest native,OwnedFlightCapture context,string directory)
         {

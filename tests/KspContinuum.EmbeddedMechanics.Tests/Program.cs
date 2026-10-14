@@ -9,7 +9,7 @@ static class Program
         public readonly OwnedRuntimeSystems Systems;
         public readonly OwnedRuntimeHost Host;
         public readonly OwnedFlightSession Session;
-        public Fixture(bool orbit=false,bool wheel=false,double initialTime=0,double force=11,double fuel=1,double isp=1e100,bool opposing=false,double mu=4e6)
+        public Fixture(bool orbit=false,bool wheel=false,double initialTime=0,double force=11,double fuel=1,double isp=1e100,bool opposing=false,double mu=4e6,Vec forcePoint=default(Vec))
         {
             var part=new OwnedRuntimePartDefinition(1,"analytic",10,new Vec(),Rotation.Identity,100);
             var body=new OwnedRuntimeBodyDefinition(10,new RigidAssemblyMember(0,10,new Vec(),Rotation.Identity,new Vec(),new Vec(2,3,4),Rotation.Identity));
@@ -23,7 +23,7 @@ static class Program
                 altitudeMeters=new double[0],densityKilogramsPerCubicMeter=new double[0],temperatureKelvin=new double[0],omissions=new string[0]};
             Session=OwnedFlightSession.SeedCaptured(World,OwnedFlightWorld.Admit(capture,new string('a',64),new string('b',64),new string('c',64)),new Vec(1200,0,0));
             var actuator=wheel?new OwnedRuntimeActuatorSpec(0,OwnedRuntimeActuatorKind.ReactionWheel,new Vec(),new Vec(0,1,0),1,wheelMomentumCapacity:100):
-                new OwnedRuntimeActuatorSpec(0,OwnedRuntimeActuatorKind.Engine,new Vec(),new Vec(0,0,1),force,0,isp);
+                new OwnedRuntimeActuatorSpec(0,OwnedRuntimeActuatorKind.Engine,forcePoint,new Vec(0,0,1),force,0,isp);
             var actuators=opposing?new[]{actuator,new OwnedRuntimeActuatorSpec(0,OwnedRuntimeActuatorKind.Engine,new Vec(),new Vec(0,0,-1),force,1,isp)}:new[]{actuator};
             Systems=new OwnedRuntimeSystems(World,actuators,new OwnedRuntimeSurfaceSpec[0],wheelProviderSlots:wheel?new[]{0}:null);Host=new OwnedRuntimeHost(World,Systems);
         }
@@ -97,7 +97,60 @@ static class Program
         double loose=Orbit(1e-4),tight=Orbit(1e-5);Need(tight<loose&&tight<.02,"Embedded central gravity did not converge toward independent circular motion: "+loose+" / "+tight);
     }
     public static int Main()
-    {ConstantAndChangingMass();SpinAndWheel();RejectionAndAdmission();RefinementFloor();Console.WriteLine("PASS embedded mechanics: independent force/depletion integrals, wheel total-H, asymmetric spin energy, orbital convergence, exact clock tails, atomic rejection, fine-domain refinement and builtin stage admission");return 0;}
+    {ConstantAndChangingMass();SpinAndWheel();RejectionAndAdmission();RefinementFloor();HigherOrderChecks();Console.WriteLine("PASS embedded mechanics: independent force/depletion integrals, wheel total-H, asymmetric spin energy, orbital convergence, exact clock tails, atomic rejection, fine-domain refinement, RK23 and builtin stage admission");return 0;}
+    static void Higher(Fixture f,double maximum=.1,double tolerance=1e-4)
+    {f.Systems.SetMechanicalPolicy(f.World.Stamp,new OwnedRuntimeMechanicalPolicy(true,maximumInterval:maximum,initialInterval:maximum,positionTolerance:tolerance,velocityTolerance:tolerance,method:OwnedRuntimeMechanicalMethod.HigherOrderRK23));}
+    static void HigherOrderChecks()
+    {
+        var constant=new Fixture();Higher(constant);var source=constant.World.Stamp;constant.Session.AdvanceLocal(constant.Host,.1,Controls(1));
+        Near(constant.Motion.Velocity.Z,.1);Near(constant.Motion.RootPosition.Z,.005);
+        Need(constant.Host.AdaptiveObservation.HigherOrderForceSamples==4&&constant.Host.AdaptiveObservation.HigherOrderFallbacks==0&&constant.World.Stamp.StateRevision==source.StateRevision+1,"RK23 did not use four samples/one publication.");
+        var torque=new Fixture(forcePoint:new Vec(1,0,0));Higher(torque);double h=.01,inertia=torque.Properties.Inertia.YY;
+        torque.Session.AdvanceLocal(torque.Host,h,Controls(1));Near(torque.Motion.AngularMomentum.Y,-11*h);
+        Vec forward=torque.Motion.Orientation.Rotate(new Vec(0,0,1));double angle=-11*h*h/(2*inertia);Near(forward.X,Math.Sin(angle),2e-9);Near(forward.Z,Math.Cos(angle),2e-9);
+        var burning=new Fixture(force:10,fuel:10,isp:1);Higher(burning);double mass=burning.Properties.Mass,rate=10/9.80665;
+        burning.Session.AdvanceLocal(burning.Host,.1,Controls(1));Near(burning.Fuel,10-rate*.1);Near(burning.Motion.Velocity.Z,10/rate*Math.Log(mass/(mass-rate*.1)));
+        Need(burning.Host.AdaptiveObservation.HigherOrderFallbacks==1&&burning.Host.AdaptiveObservation.LastHigherOrderFallback=="preflight-possible-resource-mass-change"&&burning.Host.AdaptiveObservation.HigherOrderAttempts==0&&burning.Systems.Counters.FailedSteps==0&&burning.World.CaptureSnapshot().InputHistory.Length==1,"Mass preflight hid or duplicated scalar allocation.");
+        var wheel=new Fixture(wheel:true);Higher(wheel);wheel.Session.AdvanceLocal(wheel.Host,.01,Controls(attitude:new Vec(0,1,0)));
+        Need(wheel.Host.AdaptiveObservation.HigherOrderFallbacks==1&&wheel.Host.AdaptiveObservation.LastHigherOrderFallback=="preflight-possible-internal-wheel-change"&&wheel.Host.AdaptiveObservation.HigherOrderAttempts==0,"Rotor treatment must fall back before preparing scalars.");
+        using(var read=wheel.World.AcquireRead())Near(wheel.Motion.AngularMomentum+wheel.Motion.Orientation.Rotate(new Vec(0,read.GetProviderState(0),0)),new Vec());
+        long prepared=wheel.Host.AdaptiveObservation.HigherOrderAttempts;wheel.Session.AdvanceLocal(wheel.Host,.01,Controls());Need(wheel.Host.AdaptiveObservation.LastHigherOrderFallback=="preflight-existing-internal-wheel-momentum"&&wheel.Host.AdaptiveObservation.HigherOrderAttempts==prepared,"Held rotor history must reject without another preliminary fold.");
+        double coarse=HigherOrbit(.1),fine=HigherOrbit(.05);Need(fine<coarse*.3,"RK23 circular orbit failed third-order convergence: "+coarse+" / "+fine);
+        var free=new Fixture();var m=free.Motion;m.AngularMomentum=new Vec(.1,.2,.3);free.World.SetRegionMotions(free.World.Stamp,new[]{m},0,free.World.Stamp.FrameId);Higher(free,maximum:.02);
+        Rotation reference=FreeRotorReference(new Vec(.1,.2,.3),free.Properties.PrincipalInertia,.2);
+        while(free.World.Stamp.Time<.2)free.Session.AdvanceLocal(free.Host,Math.Min(.02,.2-free.World.Stamp.Time),Controls());
+        Near(free.Motion.AngularMomentum,m.AngularMomentum);Need(RotationDistance(free.Motion.Orientation,reference)<2e-8,"RK23 asymmetric rotor disagreed with independent Euler/RK4 integration.");
+        var failed=new Fixture(orbit:true);failed.Systems.SetMechanicalPolicy(failed.World.Stamp,new OwnedRuntimeMechanicalPolicy(true,positionTolerance:1e-30,velocityTolerance:1e-30,angleTolerance:1e-30,scaledStateTolerance:1e-30,method:OwnedRuntimeMechanicalMethod.HigherOrderRK23));
+        source=failed.World.Stamp;bool rejected=false;try{failed.Session.AdvanceLocal(failed.Host,.02,Controls());}catch(OwnedRuntimeMechanicalAccuracyException){rejected=true;}
+        Need(rejected&&source.Matches(failed.World.Stamp)&&failed.Fuel==1&&failed.World.CaptureSnapshot().InputHistory.Length==0,"Failed RK23 trial published physical state.");
+        Higher(failed);failed.Session.AdvanceLocal(failed.Host,.01,Controls());Need(failed.World.Stamp.Time>0,"Canceled RK23 trial poisoned continuation.");
+        Need(constant.Host.AdaptiveObservation.DominantError!=null&&constant.Host.AdaptiveObservation.PositionError>=0&&constant.Host.AdaptiveObservation.AngleError>=0,"Component observation absent.");
+    }
+    static double HigherOrbit(double step)
+    {
+        var f=new Fixture(orbit:true);Higher(f,step);
+        while(f.World.Stamp.Time<.4)f.Session.AdvanceLocal(f.Host,Math.Min(step,.4-f.World.Stamp.Time),Controls());
+        double w=Math.Sqrt(4e6/(1200d*1200*1200));return Norm(f.Session.CenterPosition(0)+new Vec(1200*Math.Cos(w*.4),1200*Math.Sin(w*.4),0)*-1);
+    }
+    static double RotationDistance(Rotation a,Rotation b)
+    {double sign=Rotation.Dot(a,b)<0?-1:1,dx=a.X-sign*b.X,dy=a.Y-sign*b.Y,dz=a.Z-sign*b.Z,dw=a.W-sign*b.W;return 4*Math.Asin(Math.Min(1,.5*Math.Sqrt(dx*dx+dy*dy+dz*dz+dw*dw)));}
+    static Rotation FreeRotorReference(Vec initialL,Vec inertia,double duration)
+    {
+        double[] state={initialL.X/inertia.X,initialL.Y/inertia.Y,initialL.Z/inertia.Z,0,0,0,1};double dt=duration/2000;
+        for(int n=0;n<2000;n++)
+        {
+            var a=RotorRate(state,inertia);var b=RotorRate(RotorShift(state,a,dt*.5),inertia);var c=RotorRate(RotorShift(state,b,dt*.5),inertia);var d=RotorRate(RotorShift(state,c,dt),inertia);
+            for(int i=0;i<7;i++)state[i]+=dt*(a[i]+2*b[i]+2*c[i]+d[i])/6;
+        }
+        return new Rotation(state[3],state[4],state[5],state[6]);
+    }
+    static double[] RotorShift(double[] state,double[] rate,double dt)
+    {var result=new double[7];for(int i=0;i<7;i++)result[i]=state[i]+rate[i]*dt;return result;}
+    static double[] RotorRate(double[] s,Vec i)
+    {
+        double x=s[0],y=s[1],z=s[2],qx=s[3],qy=s[4],qz=s[5],qw=s[6];
+        return new[]{(i.Y-i.Z)*y*z/i.X,(i.Z-i.X)*z*x/i.Y,(i.X-i.Y)*x*y/i.Z,.5*(qw*x+qy*z-qz*y),.5*(qw*y+qz*x-qx*z),.5*(qw*z+qx*y-qy*x),-.5*(qx*x+qy*y+qz*z)};
+    }
     static void RefinementFloor()
     {
         const double mu=1e11,radius=1200;var blocked=new Fixture(orbit:true,mu:mu);blocked.Embedded();var prior=blocked.World.Stamp;bool refused=false;

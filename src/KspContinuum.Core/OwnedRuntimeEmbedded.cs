@@ -34,10 +34,10 @@ namespace KspContinuum
         }
         internal bool Matches(OwnedRuntimeHost host)
         {return ReferenceEquals(world,host.World)&&ReferenceEquals(definition,world.Definition)&&ReferenceEquals(topology,world.Topology)&&configuration==systems.ConfigurationRevision&&code==host.CodeGeneration;}
-        internal OwnedRuntimeStamp Advance(OwnedRuntimeHost host,double maximum,OwnedRuntimeInput input,OwnedFlightSession session,OwnedRuntimeControls controls,ref OwnedRuntimeAdaptiveObservation observation)
+        internal OwnedRuntimeStamp Advance(OwnedRuntimeHost host,double maximum,OwnedRuntimeInput input,OwnedFlightSession session,OwnedRuntimeControls controls,ref OwnedRuntimeAdaptiveObservation observation,long predecessorAttempts=0,long predecessorRejected=0)
         {
             var expected=world.Stamp;var policy=world.MechanicalInternal;policy.Validate();
-            double interval=Math.Min(maximum,Math.Min(policy.maximumInterval,policy.nextInterval));long rejected=0,attempts=0;
+            double interval=Math.Min(maximum,Math.Min(policy.maximumInterval,policy.nextInterval));long rejected=predecessorRejected,attempts=predecessorAttempts;
             field.Session=session;field.Source=expected;
             try
             {
@@ -72,12 +72,14 @@ namespace KspContinuum
                                 upper[r]=AdvanceMotion(source[r],before[r],midpoint[r],terminal[r],force0[r],force1[r],torque1[r],environment0[r].Gravity,environment1[r].Gravity,systems.OldWheelMomentum[r],systems.NewWheelMomentum[r],interval,true);
                         }
                         else {integrationBegin=systems.WorkObservation?Stopwatch.GetTimestamp():0;Array.Copy(lower,upper,upper.Length);}
-                        double error=Estimate(coalesced?source:lower,coalesced?before:terminal,upper,terminal,policy);
+                        double error=Estimate(coalesced?source:lower,coalesced?before:terminal,upper,terminal,policy,ref observation);
                         if(coalesced)
                         {
                             var original=world.CurrentForTrial;
-                            for(int i=0;i<original.ResourceQuantity.Length;i++)error=Math.Max(error,ScalarChange(original.ResourceQuantity[i],step.Bank.ResourceQuantity[i],policy.scaledStateTolerance));
-                            for(int i=0;i<original.ProviderState.Length;i++)error=Math.Max(error,ScalarChange(original.ProviderState[i],systems.GetMechanicalProviderState(step,i),policy.scaledStateTolerance));
+                            double scalar=0;
+                            for(int i=0;i<original.ResourceQuantity.Length;i++)scalar=Math.Max(scalar,ScalarChange(original.ResourceQuantity[i],step.Bank.ResourceQuantity[i],policy.scaledStateTolerance));
+                            for(int i=0;i<original.ProviderState.Length;i++)scalar=Math.Max(scalar,ScalarChange(original.ProviderState[i],systems.GetMechanicalProviderState(step,i),policy.scaledStateTolerance));
+                            error=Math.Max(error,scalar);observation.Components(observation.PositionError,observation.VelocityError,observation.AngleError,observation.MomentumError,scalar);
                         }
                         if(systems.WorkObservation)systems.RecordMechanicalIntegrationTicks(Stopwatch.GetTimestamp()-integrationBegin);
                         observation.LastError=error;
@@ -166,18 +168,18 @@ namespace KspContinuum
         {double s=Math.Max(Math.Abs(v.X),Math.Max(Math.Abs(v.Y),Math.Abs(v.Z)));if(s==0)return 0;double n=s*Math.Sqrt((v.X/s)*(v.X/s)+(v.Y/s)*(v.Y/s)+(v.Z/s)*(v.Z/s));AssemblyModel.Finite(n);return n;}
         static double ScalarChange(double a,double b,double tolerance)
         {double error=Math.Abs(a-b)/(tolerance*Math.Max(1,Math.Max(Math.Abs(a),Math.Abs(b))));AssemblyModel.Finite(error);return error;}
-        static double Estimate(OwnedRuntimeMotion[] a,RigidAssemblyProperties[] pa,OwnedRuntimeMotion[] b,RigidAssemblyProperties[] pb,OwnedRuntimeMechanicalState policy)
+        internal static double Estimate(OwnedRuntimeMotion[] a,RigidAssemblyProperties[] pa,OwnedRuntimeMotion[] b,RigidAssemblyProperties[] pb,OwnedRuntimeMechanicalState policy,ref OwnedRuntimeAdaptiveObservation observation)
         {
-            double error=0;
+            double position=0,velocity=0,angle=0,momentum=0;
             for(int r=0;r<a.Length;r++)
             {
                 Vec ca=a[r].RootPosition+a[r].Orientation.Rotate(pa[r].CenterOfMass),cb=b[r].RootPosition+b[r].Orientation.Rotate(pb[r].CenterOfMass);
-                error=Math.Max(error,Norm(ca+cb*-1)/policy.positionTolerance);error=Math.Max(error,Norm(a[r].Velocity+b[r].Velocity*-1)/policy.velocityTolerance);
+                position=Math.Max(position,Norm(ca+cb*-1)/policy.positionTolerance);velocity=Math.Max(velocity,Norm(a[r].Velocity+b[r].Velocity*-1)/policy.velocityTolerance);
                 double sign=Rotation.Dot(a[r].Orientation,b[r].Orientation)<0?-1:1,dx=a[r].Orientation.X-sign*b[r].Orientation.X,dy=a[r].Orientation.Y-sign*b[r].Orientation.Y,dz=a[r].Orientation.Z-sign*b[r].Orientation.Z,dw=a[r].Orientation.W-sign*b[r].Orientation.W;
-                error=Math.Max(error,4*Math.Asin(Math.Min(1,.5*Math.Sqrt(dx*dx+dy*dy+dz*dz+dw*dw)))/policy.angleTolerance);
-                error=Math.Max(error,Norm(a[r].AngularMomentum+b[r].AngularMomentum*-1)/(policy.scaledStateTolerance*Math.Max(1,Math.Max(Norm(a[r].AngularMomentum),Norm(b[r].AngularMomentum)))));
+                angle=Math.Max(angle,4*Math.Asin(Math.Min(1,.5*Math.Sqrt(dx*dx+dy*dy+dz*dz+dw*dw)))/policy.angleTolerance);
+                momentum=Math.Max(momentum,Norm(a[r].AngularMomentum+b[r].AngularMomentum*-1)/(policy.scaledStateTolerance*Math.Max(1,Math.Max(Norm(a[r].AngularMomentum),Norm(b[r].AngularMomentum)))));
             }
-            AssemblyModel.Finite(error);return error;
+            observation.Components(position,velocity,angle,momentum);double error=Math.Max(Math.Max(position,velocity),Math.Max(angle,momentum));AssemblyModel.Finite(error);return error;
         }
     }
 }

@@ -40,7 +40,10 @@ namespace KspContinuum
                 maxTorqueNewtonMeters=new double[3],thrusters=new OwnedRuntimeCapturedThruster[0],propellants=new OwnedRuntimeCapturedPropellant[0],resourceRates=new OwnedRuntimeCapturedResourceRate[0]};
         }
         public static void Capture(Vessel vessel,NativeAssemblySceneManifest native,string manifestPath,string output)
+        {OwnedRuntimeCapturedParts ignored;Capture(vessel,native,manifestPath,output,out ignored);}
+        public static void Capture(Vessel vessel,NativeAssemblySceneManifest native,string manifestPath,string output,out OwnedRuntimeCapturedParts captured)
         {
+            captured=null;
             Need(vessel!=null&&vessel.loaded&&!vessel.packed&&vessel.transform!=null&&vessel.rootPart!=null,"Owned runtime capture requires loaded craft.");
             Need(!File.Exists(output)&&!Directory.Exists(output),"Owned runtime cold capture must be new.");
             long started=Stopwatch.GetTimestamp();int frame=Time.frameCount;double fixedTime=Time.fixedTime,ut=Planetarium.GetUniversalTime();
@@ -142,6 +145,7 @@ namespace KspContinuum
             var aeroPacket=new OwnedRuntimeCapturedAero {nativeManifestSha256=packet.nativeManifestSha256,runId=packet.runId,vesselId=packet.vesselId,unityFrame=frame,fixedTime=fixedTime,universalTime=ut,
                 recipe="Acquired six stock weighted face areas; owned isotropic mean-face drag area at part origin, Cd=1, no lift, total-face thermal area, emissivity=.8, heating fraction=.0001. No stock occlusion/Mach/curve/force equivalence.",parts=aero.ToArray()};
             using(var file=new FileStream(Path.Combine(Path.GetDirectoryName(output),"owned-aero.json"),FileMode.CreateNew,FileAccess.Write))using(var writer=new StreamWriter(file,new UTF8Encoding(false)))writer.Write(ReportJson.Encode(aeroPacket));
+            captured=packet;
         }
     }
 }

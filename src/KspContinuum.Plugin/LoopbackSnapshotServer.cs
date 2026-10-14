@@ -14,7 +14,7 @@ namespace KspContinuum
         sealed class Pending
         {
             public string Command, RequestId, Response;
-            public bool Canceled;
+            public bool Canceled, Started, Completed;
             public readonly ManualResetEvent Done = new ManualResetEvent(false);
         }
 
@@ -22,6 +22,7 @@ namespace KspContinuum
         readonly Queue<Pending> queue = new Queue<Pending>();
         readonly TcpListener listener;
         readonly Thread worker;
+        readonly int quickWaitMilliseconds, clockWaitMilliseconds;
         readonly AutoResetEvent outboundReady = new AutoResetEvent(false);
         TcpClient activeClient;
         bool pushEnabled;
@@ -32,9 +33,12 @@ namespace KspContinuum
         public int Port { get { return ((IPEndPoint)listener.LocalEndpoint).Port; } }
         public bool PushEnabled { get { lock (sync) return !stopped && pushEnabled; } }
 
-        public LoopbackSnapshotServer(int port)
+        public LoopbackSnapshotServer(int port, int quickWaitMilliseconds = 3000, int clockWaitMilliseconds = 60000)
         {
             if (port < 0 || port > 65535) throw new ArgumentOutOfRangeException("port");
+            if (quickWaitMilliseconds <= 0 || quickWaitMilliseconds > 60000) throw new ArgumentOutOfRangeException("quickWaitMilliseconds");
+            if (clockWaitMilliseconds < quickWaitMilliseconds || clockWaitMilliseconds > 60000) throw new ArgumentOutOfRangeException("clockWaitMilliseconds");
+            this.quickWaitMilliseconds = quickWaitMilliseconds; this.clockWaitMilliseconds = clockWaitMilliseconds;
             listener = new TcpListener(IPAddress.Loopback, port);
             listener.Start(1);
             worker = new Thread(Serve) { IsBackground = true, Name = "Continuum read-only loopback" };
@@ -51,13 +55,14 @@ namespace KspContinuum
                 while (queue.Count != 0)
                 {
                     Pending candidate = queue.Dequeue();
-                    if (!candidate.Canceled) { pending = candidate; break; }
+                    if (!candidate.Canceled) { candidate.Started = true; pending = candidate; break; }
                 }
             }
             if (pending == null) return false;
-            try { pending.Response = handle(pending.Command); }
-            catch { pending.Response = Error("handler-failed", pending.RequestId); }
-            finally { pending.Done.Set(); }
+            string response;
+            try { response = handle(pending.Command); }
+            catch { response = Error("handler-failed", pending.RequestId); }
+            lock (sync) { pending.Response = response; pending.Completed = true; pending.Done.Set(); }
             return true;
         }
 
@@ -92,6 +97,8 @@ namespace KspContinuum
                 catch (SocketException) { return; }
                 catch (ObjectDisposedException) { return; }
                 catch (InvalidOperationException) { return; }
+                Socket socket = client.Client;
+                if (socket == null) { client.Close(); continue; }
                 lock (sync)
                 {
                     if (stopped) { client.Close(); return; }
@@ -104,13 +111,15 @@ namespace KspContinuum
                 {
                     try
                     {
-                        client.SendTimeout = 3000;
-                        NetworkStream stream = client.GetStream();
+                        socket.SendTimeout = 3000;
+                        using (NetworkStream stream = new NetworkStream(socket, false))
+                        {
                         while (true)
                         {
                             string observation = null;
                             lock (sync)
                             {
+                                if (stopped) break;
                                 if (pushEnabled && latestPush != null)
                                 { observation = latestPush; latestPush = null; latestPushTerminal = false; }
                             }
@@ -119,9 +128,9 @@ namespace KspContinuum
                                 WriteLine(stream, observation);
                                 continue;
                             }
-                            if (client.Available == 0)
+                            if (socket.Available == 0)
                             {
-                                if (client.Client.Poll(0, SelectMode.SelectRead) && client.Available == 0) break;
+                                if (socket.Poll(0, SelectMode.SelectRead) && socket.Available == 0) break;
                                 outboundReady.WaitOne(10);
                                 continue;
                             }
@@ -131,8 +140,8 @@ namespace KspContinuum
                             if (command == null) response = Error("invalid-frame");
                             else
                             {
-                                var pending = new Pending { Command = command,
-                                    RequestId = LiveControlRequest.Parse(command).requestId };
+                                var parsed = LiveControlRequest.Parse(command);
+                                var pending = new Pending { Command = command, RequestId = parsed.requestId };
                                 lock (sync)
                                 {
                                     if (stopped || queue.Count >= 8)
@@ -141,20 +150,25 @@ namespace KspContinuum
                                 }
                                 if (response == null)
                                 {
-                                    if (pending.Done.WaitOne(3000)) response = pending.Response;
-                                    else
+                                    int wait = IsClockAdministration(parsed.operation) ? clockWaitMilliseconds : quickWaitMilliseconds;
+                                    pending.Done.WaitOne(wait);
+                                    lock (sync)
                                     {
-                                        lock (sync) pending.Canceled = true;
-                                        response = Error("game-thread-timeout", pending.RequestId);
+                                        if (pending.Completed) response = pending.Response;
+                                        else if (!pending.Started)
+                                        { pending.Canceled = true; response = Error("game-thread-timeout-cancelled-before-execution", pending.RequestId); }
+                                        else response = ReportJson.Encode(new LiveControlReply { status = "in-progress", reason = "handler-still-running", requestId = pending.RequestId, protocolVersion = parsed.protocolVersion });
                                     }
                                 }
                             }
                             WriteLine(stream, response);
                             if (command == null) break;
                         }
+                        }
                     }
                     catch (IOException) { }
                     catch (ObjectDisposedException) { }
+                    catch (SocketException) { }
                 }
                 lock (sync) if (ReferenceEquals(activeClient, client))
                 { activeClient = null; pushEnabled = false; latestPush = null; latestPushTerminal = false; }
@@ -183,6 +197,8 @@ namespace KspContinuum
 
         static string Error(string reason, string requestId = null)
         { return ReportJson.Encode(new LiveControlReply { status = "rejected", reason = reason, requestId = requestId }); }
+        static bool IsClockAdministration(LiveControlOperation operation)
+        { return operation == LiveControlOperation.ClockEnable || operation == LiveControlOperation.ClockDisable || operation == LiveControlOperation.ClockSave || operation == LiveControlOperation.ClockRestore; }
 
         public void Dispose()
         {
@@ -193,6 +209,7 @@ namespace KspContinuum
                 while (queue.Count != 0)
                 {
                     Pending pending = queue.Dequeue();
+                    pending.Canceled = true; pending.Completed = true;
                     pending.Response = Error("stopped", pending.RequestId);
                     pending.Done.Set();
                 }

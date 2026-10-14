@@ -245,6 +245,8 @@ namespace KspContinuum
         double mechanicalForceLedger,mechanicalTorqueLedger,mechanicalFuelLedger,mechanicalElectricLedger,mechanicalHeatLedger;
         long mechanicalStepsLedger,mechanicalIntegrationsLedger;
         bool mechanicalCompleted;
+        OwnedRuntimeSupplyPipeline scalarSupply;
+        OwnedRuntimeBank pendingSupplyBank;OwnedRuntimeSupplyObservation pendingSupply,lastSupply;OwnedRuntimeSupplyTotals supplyTotals;
         readonly double[] boundaryInitialResources;
         OwnedRuntimeBank boundaryBank;
         OwnedRuntimeDeadlinePlan deadlinePlan;
@@ -342,6 +344,30 @@ namespace KspContinuum
         void RequireThermalPlan(OwnedRuntimeBank bank)
         {if(bank.Thermal.pendingDuration!=0&&bank.Thermal.planId!=thermalPlanId)throw new InvalidOperationException("Pending thermal model belongs to a different system plan.");}
 
+        public bool HasScalarSupply {get{return scalarSupply!=null;}}
+        public OwnedRuntimeSupplyObservation LastScalarSupplyObservation {get{RequireConfigurationIdle();SettleScalarSupply();return lastSupply;}}
+        public OwnedRuntimeSupplyTotals ScalarSupplyTotals {get{RequireConfigurationIdle();SettleScalarSupply();return supplyTotals;}}
+        public void ConfigureScalarSupply(OwnedRuntimeStamp expected,OwnedRuntimeSupplyCapturePacket packet,string supplySha256,Vec originBodyMeters,double runtimeEpoch)
+        {RestoreScalarSupplyConfiguration(expected,new OwnedRuntimeSupplyConfiguration{packet=packet,supplySha256=supplySha256,frameId=expected.FrameId,frameRevision=expected.FrameRevision,runtimeEpoch=runtimeEpoch,originBodyMeters=new[]{originBodyMeters.X,originBodyMeters.Y,originBodyMeters.Z}});}
+        public OwnedRuntimeSupplyConfiguration CaptureScalarSupplyConfiguration()
+        {lock(configurationGate){RequireConfigurationIdle();SettleScalarSupply();return scalarSupply==null?null:scalarSupply.CaptureConfiguration();}}
+        public void RestoreScalarSupplyConfiguration(OwnedRuntimeStamp expected,OwnedRuntimeSupplyConfiguration config)
+        {lock(configurationGate){RequireConfigurationIdle();if(!world.Stamp.Matches(expected))throw new InvalidOperationException("Supply source is stale.");var candidate=config==null?null:new OwnedRuntimeSupplyPipeline(definition,config);if(candidate!=null)candidate.RequireSource(expected,double.Epsilon);long revision=checked(configurationRevision+1);SettleScalarSupply();scalarSupply=candidate;configurationRevision=revision;deadlinePlan=null;}}
+        void SettleScalarSupply()
+        {
+            world.RequireWriterThread();if(pendingSupplyBank==null)return;
+            if(ReferenceEquals(world.CurrentForTrial,pendingSupplyBank))
+            {lastSupply=pendingSupply;lastSupply.PublishedStamp=pendingSupplyBank.Stamp;supplyTotals.AcceptedIntervals++;supplyTotals.GeneratedUnits+=lastSupply.GeneratedUnits;supplyTotals.CreditedUnits+=lastSupply.CreditedUnits;supplyTotals.SpilledUnits+=lastSupply.SpilledUnits;supplyTotals.CommandRequestedUnits+=lastSupply.CommandRequestedUnits;supplyTotals.CommandWithdrawnUnits+=lastSupply.CommandWithdrawnUnits;}
+            pendingSupplyBank=null;
+        }
+        OwnedRuntimeControls ApplyScalarSupply(OwnedRuntimeBank bank,OwnedRuntimeStamp stamp,double delta,OwnedRuntimeControls controls,bool record)
+        {
+            if(scalarSupply==null)return controls;
+            if(record)SettleScalarSupply();var observation=scalarSupply.Apply(bank,stamp,delta,flowEnabled);
+            if(record){pendingSupplyBank=bank;pendingSupply=observation;}
+            if(scalarSupply.CommandCount>0&&observation.ReadyCommands==0){controls.Throttle=0;controls.Attitude=default(Vec);controls.Translation=default(Vec);controls.EnginesEnabled=controls.RcsEnabled=controls.WheelsEnabled=false;}
+            return controls;
+        }
         public int ActuatorCount{get{return actuators.Length;}}
         public int SurfaceCount{get{return surfaces.Length;}}
         public int ThermalLinkCount{get{return links.Length;}}
@@ -368,19 +394,19 @@ namespace KspContinuum
             lock(configurationGate)
             {
                 RequireConfigurationIdle();var s=new OwnedRuntimeSystems(target,actuators,surfaces,links,flowEnabled,observeClock,wheelProviderSlots,ControlOrientation);
-                Array.Copy(enabled,s.enabled,enabled.Length);s.executionStrategy=executionStrategy;s.deadlineStrategy=deadlineStrategy;s.configurationRevision=configurationRevision;return s;
+                Array.Copy(enabled,s.enabled,enabled.Length);s.executionStrategy=executionStrategy;s.deadlineStrategy=deadlineStrategy;s.configurationRevision=configurationRevision;if(scalarSupply!=null)s.scalarSupply=new OwnedRuntimeSupplyPipeline(s.definition,scalarSupply.CaptureConfiguration());return s;
             }
         }
         internal void ResetTrialCounters()
-        {Counters.DeadlineAdmissionFallbacks=Counters.DeadlineLowerBracketFallbacks=Counters.DeadlineUpperBracketFallbacks=Counters.DeadlineReplayFallbacks=0;Counters.DeadlinePlanBuilds=Counters.DeadlinePlanHits=Counters.DeadlineLocalProbes=Counters.DeadlineFallbacks=0;Counters.BoundaryProbes=Counters.BoundaryResourceCopies=Counters.BoundaryResourceRowsCopied=Counters.BoundaryTicks=0;Counters.ScalarTicks=Counters.AeroTicks=Counters.ThermalTicks=Counters.RegionIntegrationTicks=Counters.PlanTicks=0;Counters.Steps=Counters.FailedSteps=Counters.ActuatorRows=Counters.SurfaceRows=Counters.ThermalLinks=Counters.RegionIntegrations=Counters.ObservedTicks=0;Counters.ExecutionPlanBuilds=Counters.CompiledActuatorRows=Counters.InactiveActuatorRows=Counters.CompiledSurfaceRows=Counters.VacuumSurfaceRows=Counters.RegionMotionContexts=Counters.RetainedGeometryRows=0;Counters.DeliveredForceNewtonSeconds=Counters.DeliveredTorqueNewtonMeterSeconds=Counters.PropellantKilograms=Counters.ElectricUnits=Counters.ActuatorHeatJoules=0;}
+        {SettleScalarSupply();supplyTotals=default(OwnedRuntimeSupplyTotals);lastSupply=default(OwnedRuntimeSupplyObservation);Counters.DeadlineAdmissionFallbacks=Counters.DeadlineLowerBracketFallbacks=Counters.DeadlineUpperBracketFallbacks=Counters.DeadlineReplayFallbacks=0;Counters.DeadlinePlanBuilds=Counters.DeadlinePlanHits=Counters.DeadlineLocalProbes=Counters.DeadlineFallbacks=0;Counters.BoundaryProbes=Counters.BoundaryResourceCopies=Counters.BoundaryResourceRowsCopied=Counters.BoundaryTicks=0;Counters.ScalarTicks=Counters.AeroTicks=Counters.ThermalTicks=Counters.RegionIntegrationTicks=Counters.PlanTicks=0;Counters.Steps=Counters.FailedSteps=Counters.ActuatorRows=Counters.SurfaceRows=Counters.ThermalLinks=Counters.RegionIntegrations=Counters.ObservedTicks=0;Counters.ExecutionPlanBuilds=Counters.CompiledActuatorRows=Counters.InactiveActuatorRows=Counters.CompiledSurfaceRows=Counters.VacuumSurfaceRows=Counters.RegionMotionContexts=Counters.RetainedGeometryRows=0;Counters.DeliveredForceNewtonSeconds=Counters.DeliveredTorqueNewtonMeterSeconds=Counters.PropellantKilograms=Counters.ElectricUnits=Counters.ActuatorHeatJoules=0;}
         internal void AccumulateTrialCounters(OwnedRuntimeSystems s)
-        {Counters.DeadlineAdmissionFallbacks+=s.Counters.DeadlineAdmissionFallbacks;Counters.DeadlineLowerBracketFallbacks+=s.Counters.DeadlineLowerBracketFallbacks;Counters.DeadlineUpperBracketFallbacks+=s.Counters.DeadlineUpperBracketFallbacks;Counters.DeadlineReplayFallbacks+=s.Counters.DeadlineReplayFallbacks;Counters.DeadlinePlanBuilds+=s.Counters.DeadlinePlanBuilds;Counters.DeadlinePlanHits+=s.Counters.DeadlinePlanHits;Counters.DeadlineLocalProbes+=s.Counters.DeadlineLocalProbes;Counters.DeadlineFallbacks+=s.Counters.DeadlineFallbacks;Counters.BoundaryProbes+=s.Counters.BoundaryProbes;Counters.BoundaryResourceCopies+=s.Counters.BoundaryResourceCopies;Counters.BoundaryResourceRowsCopied+=s.Counters.BoundaryResourceRowsCopied;Counters.BoundaryTicks+=s.Counters.BoundaryTicks;Counters.ScalarTicks+=s.Counters.ScalarTicks;Counters.AeroTicks+=s.Counters.AeroTicks;Counters.ThermalTicks+=s.Counters.ThermalTicks;Counters.RegionIntegrationTicks+=s.Counters.RegionIntegrationTicks;Counters.PlanTicks+=s.Counters.PlanTicks;Counters.Steps+=s.Counters.Steps;Counters.ActuatorRows+=s.Counters.ActuatorRows;Counters.SurfaceRows+=s.Counters.SurfaceRows;Counters.ThermalLinks+=s.Counters.ThermalLinks;Counters.RegionIntegrations+=s.Counters.RegionIntegrations;Counters.ExecutionPlanBuilds+=s.Counters.ExecutionPlanBuilds;Counters.CompiledActuatorRows+=s.Counters.CompiledActuatorRows;Counters.InactiveActuatorRows+=s.Counters.InactiveActuatorRows;Counters.CompiledSurfaceRows+=s.Counters.CompiledSurfaceRows;Counters.VacuumSurfaceRows+=s.Counters.VacuumSurfaceRows;Counters.RegionMotionContexts+=s.Counters.RegionMotionContexts;Counters.RetainedGeometryRows+=s.Counters.RetainedGeometryRows;Counters.DeliveredForceNewtonSeconds+=s.Counters.DeliveredForceNewtonSeconds;Counters.DeliveredTorqueNewtonMeterSeconds+=s.Counters.DeliveredTorqueNewtonMeterSeconds;Counters.PropellantKilograms+=s.Counters.PropellantKilograms;Counters.ElectricUnits+=s.Counters.ElectricUnits;Counters.ActuatorHeatJoules+=s.Counters.ActuatorHeatJoules;}
+        {s.SettleScalarSupply();if(s.supplyTotals.AcceptedIntervals>0){lastSupply=s.lastSupply;lastSupply.PublishedStamp=world.Stamp;supplyTotals.AcceptedIntervals+=s.supplyTotals.AcceptedIntervals;supplyTotals.GeneratedUnits+=s.supplyTotals.GeneratedUnits;supplyTotals.CreditedUnits+=s.supplyTotals.CreditedUnits;supplyTotals.SpilledUnits+=s.supplyTotals.SpilledUnits;supplyTotals.CommandRequestedUnits+=s.supplyTotals.CommandRequestedUnits;supplyTotals.CommandWithdrawnUnits+=s.supplyTotals.CommandWithdrawnUnits;}Counters.DeadlineAdmissionFallbacks+=s.Counters.DeadlineAdmissionFallbacks;Counters.DeadlineLowerBracketFallbacks+=s.Counters.DeadlineLowerBracketFallbacks;Counters.DeadlineUpperBracketFallbacks+=s.Counters.DeadlineUpperBracketFallbacks;Counters.DeadlineReplayFallbacks+=s.Counters.DeadlineReplayFallbacks;Counters.DeadlinePlanBuilds+=s.Counters.DeadlinePlanBuilds;Counters.DeadlinePlanHits+=s.Counters.DeadlinePlanHits;Counters.DeadlineLocalProbes+=s.Counters.DeadlineLocalProbes;Counters.DeadlineFallbacks+=s.Counters.DeadlineFallbacks;Counters.BoundaryProbes+=s.Counters.BoundaryProbes;Counters.BoundaryResourceCopies+=s.Counters.BoundaryResourceCopies;Counters.BoundaryResourceRowsCopied+=s.Counters.BoundaryResourceRowsCopied;Counters.BoundaryTicks+=s.Counters.BoundaryTicks;Counters.ScalarTicks+=s.Counters.ScalarTicks;Counters.AeroTicks+=s.Counters.AeroTicks;Counters.ThermalTicks+=s.Counters.ThermalTicks;Counters.RegionIntegrationTicks+=s.Counters.RegionIntegrationTicks;Counters.PlanTicks+=s.Counters.PlanTicks;Counters.Steps+=s.Counters.Steps;Counters.ActuatorRows+=s.Counters.ActuatorRows;Counters.SurfaceRows+=s.Counters.SurfaceRows;Counters.ThermalLinks+=s.Counters.ThermalLinks;Counters.RegionIntegrations+=s.Counters.RegionIntegrations;Counters.ExecutionPlanBuilds+=s.Counters.ExecutionPlanBuilds;Counters.CompiledActuatorRows+=s.Counters.CompiledActuatorRows;Counters.InactiveActuatorRows+=s.Counters.InactiveActuatorRows;Counters.CompiledSurfaceRows+=s.Counters.CompiledSurfaceRows;Counters.VacuumSurfaceRows+=s.Counters.VacuumSurfaceRows;Counters.RegionMotionContexts+=s.Counters.RegionMotionContexts;Counters.RetainedGeometryRows+=s.Counters.RetainedGeometryRows;Counters.DeliveredForceNewtonSeconds+=s.Counters.DeliveredForceNewtonSeconds;Counters.DeliveredTorqueNewtonMeterSeconds+=s.Counters.DeliveredTorqueNewtonMeterSeconds;Counters.PropellantKilograms+=s.Counters.PropellantKilograms;Counters.ElectricUnits+=s.Counters.ElectricUnits;Counters.ActuatorHeatJoules+=s.Counters.ActuatorHeatJoules;}
         public OwnedRuntimeActuatorBoundary FindActuatorBoundary(OwnedRuntimeStamp expected,OwnedRuntimeControls controls,double maximumHorizonSeconds)
-        {return deadlineStrategy==OwnedRuntimeDeadlineStrategy.Retained?FindRetainedBoundary(expected,controls,maximumHorizonSeconds):FindActuatorBoundaryExactOracle(expected,controls,maximumHorizonSeconds);}
+        {return scalarSupply!=null?FindActuatorBoundaryExactOracle(expected,controls,maximumHorizonSeconds):deadlineStrategy==OwnedRuntimeDeadlineStrategy.Retained?FindRetainedBoundary(expected,controls,maximumHorizonSeconds):FindActuatorBoundaryExactOracle(expected,controls,maximumHorizonSeconds);}
         public OwnedRuntimeActuatorBoundary FindActuatorBoundaryExactOracle(OwnedRuntimeStamp expected,OwnedRuntimeControls controls,double maximumHorizonSeconds)
         {
             long probes=Counters.BoundaryProbes;var value=FindExactBoundary(expected,controls,maximumHorizonSeconds,true);
-            return PublishBoundary(value,expected,controls,maximumHorizonSeconds,OwnedRuntimeDeadlineStrategy.ExactOracle,"bounded-64-bisection-upper",null,probes);
+            return PublishBoundary(value,expected,controls,maximumHorizonSeconds,OwnedRuntimeDeadlineStrategy.ExactOracle,scalarSupply==null?"bounded-64-bisection-upper":"supply-augmented-64-bisection-upper",scalarSupply==null?null:"time-varying-supply-retained-certificate-disabled",probes);
         }
         OwnedRuntimeActuatorBoundary PublishBoundary(OwnedRuntimeActuatorBoundary value,OwnedRuntimeStamp expected,OwnedRuntimeControls controls,double horizon,OwnedRuntimeDeadlineStrategy strategy,string certification,string fallback,long probes)
         {
@@ -392,7 +418,7 @@ namespace KspContinuum
             lock(configurationGate)
             {
                 RequireConfigurationIdle();if(!world.Stamp.Matches(expected))throw new InvalidOperationException("Actuator boundary source is stale.");
-                bool compact=executionStrategy==OwnedRuntimeExecutionStrategy.Compiled;
+                bool compact=scalarSupply==null&&executionStrategy==OwnedRuntimeExecutionStrategy.Compiled;
                 if(compact)world.EnterAdmission(expected);
                 long begin=observeClock&&observeBoundaryClock?Stopwatch.GetTimestamp():0;
                 try
@@ -511,7 +537,7 @@ namespace KspContinuum
                 PrepareExecutionPlan(step.Bank);
                 boundaryActuator=boundaryResource=-1;boundaryKind=null;Array.Clear(forces,0,forces.Length);Array.Clear(torques,0,torques.Length);Array.Clear(heat,0,heat.Length);Array.Clear(oldWheel,0,oldWheel.Length);Array.Clear(newWheel,0,newWheel.Length);
                 for(int i=0;i<actuators.Length;i++){wheelMomentum[i]=wheelProviderSlots[i]<0?0:step.Bank.ProviderState[wheelProviderSlots[i]];stagedWheelMomentum[i]=wheelMomentum[i];}
-                Actuate(step,controls,false);return boundaryActuator>=0;
+                controls=ApplyScalarSupply(step.Bank,expected,delta,controls,false);if(scalarSupply!=null&&scalarSupply.BoundaryResource>=0)ReachedBoundary(actuators.Length,scalarSupply.BoundaryResource,"supply-resource-boundary");Actuate(step,controls,false);return boundaryActuator>=0;
             }
         }
         void ReachedBoundary(int actuator,int resource,string kind)
@@ -548,7 +574,7 @@ namespace KspContinuum
             {
                 if(!executing||executionThread!=System.Threading.Thread.CurrentThread.ManagedThreadId)
                     throw new InvalidOperationException("System execution scope is not owned by this thread.");
-                executing=false;executionThread=0;
+                SettleScalarSupply();executing=false;executionThread=0;
             }
         }
 
@@ -577,7 +603,7 @@ namespace KspContinuum
                 for(int i=0;i<actuators.Length;i++)
                 {wheelMomentum[i]=wheelProviderSlots[i]<0?0:bank.ProviderState[wheelProviderSlots[i]];AssemblyModel.Finite(wheelMomentum[i]);if(Math.Abs(wheelMomentum[i])>actuators[i].WheelMomentumCapacity)throw new InvalidOperationException("Wheel momentum exceeds admitted capacity.");stagedWheelMomentum[i]=wheelMomentum[i];}
                 for(int r=0;r<regions;r++)oldCenters[r]=bank.Properties[r].CenterOfMass;
-                long begin=observeClock?Stopwatch.GetTimestamp():0;stagingLocal=true;try{Actuate(step,controls);}finally{stagingLocal=false;}
+                long begin=observeClock?Stopwatch.GetTimestamp():0;controls=ApplyScalarSupply(bank,step.ExpectedStamp,step.DeltaTime,controls,true);stagingLocal=true;try{Actuate(step,controls);}finally{stagingLocal=false;}
                 step.RefreshMassProperties();
                 for(int r=0;r<regions;r++)localActuatorTorques[r]=localActuatorTorques[r]+Vec.Cross(oldCenters[r]+bank.Properties[r].CenterOfMass*-1,localActuatorForces[r]);
                 if(observeClock)Counters.ScalarTicks+=Stopwatch.GetTimestamp()-begin;
@@ -592,13 +618,13 @@ namespace KspContinuum
             Counters.DeliveredForceNewtonSeconds=mechanicalForceLedger;Counters.DeliveredTorqueNewtonMeterSeconds=mechanicalTorqueLedger;Counters.PropellantKilograms=mechanicalFuelLedger;Counters.ElectricUnits=mechanicalElectricLedger;Counters.ActuatorHeatJoules=mechanicalHeatLedger;
             Counters.Steps=mechanicalStepsLedger;Counters.RegionIntegrations=mechanicalIntegrationsLedger;
             if(observeClock&&!mechanicalCompleted)Counters.ObservedTicks+=Stopwatch.GetTimestamp()-mechanicalBegin;
-            Counters.FailedSteps++;mechanicalToken=0;mechanicalBank=null;stagingLocal=false;
+            pendingSupplyBank=null;Counters.FailedSteps++;mechanicalToken=0;mechanicalBank=null;stagingLocal=false;
         }
         internal void AcknowledgeMechanical(OwnedRuntimeStep step)
         {
             world.RequireWriterThread();
             if(!mechanicalCompleted||step.Token!=mechanicalToken||!ReferenceEquals(step.World,world)||!ReferenceEquals(step.Bank,mechanicalBank)||!ReferenceEquals(world.CurrentForTrial,step.Bank))throw new InvalidOperationException("Mechanical acknowledgment requires its actual published bank.");
-            mechanicalToken=0;mechanicalBank=null;
+            SettleScalarSupply();mechanicalToken=0;mechanicalBank=null;
         }
         void RequireMechanical(OwnedRuntimeStep step)
         {world.CheckStep(step);if(mechanicalCompleted||step.Token!=mechanicalToken||!ReferenceEquals(step.Bank,mechanicalBank)||configurationRevision!=mechanicalConfiguration)throw new InvalidOperationException("Mechanical stage is stale, foreign or already completed.");}
@@ -704,7 +730,7 @@ namespace KspContinuum
                 }
                 for(int r=0;r<regions;r++)oldCenters[r]=bank.Properties[r].CenterOfMass;
                 long stage=observeClock?Stopwatch.GetTimestamp():0;
-                Actuate(step,controls);
+                controls=ApplyScalarSupply(bank,step.ExpectedStamp,dt,controls,true);Actuate(step,controls);
                 step.RefreshMassProperties();
                 if(observeClock){Counters.ScalarTicks+=Stopwatch.GetTimestamp()-stage;stage=Stopwatch.GetTimestamp();}
                 for(int r=0;r<regions;r++)

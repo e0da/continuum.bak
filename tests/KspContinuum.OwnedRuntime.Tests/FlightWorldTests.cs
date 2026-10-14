@@ -63,6 +63,17 @@ public static class FlightWorldTests
     }
     public static void Run()
     {
+        var bounded=OwnedFlightSession.SeedCaptured(Runtime(),Context(),new Vec(1200,0,0),150);
+        var boundedStamp=bounded.Runtime.Stamp;
+        Reject(()=>bounded.Place(boundedStamp,new Vec(1120,0,0),new Vec()));
+        Need(bounded.Runtime.Stamp.Matches(boundedStamp),"Rejected domain placement published state.");
+        double domainApo=1400,domainPeri=1120,domainSemimajor=(domainApo+domainPeri)*.5;
+        bounded.Place(boundedStamp,new Vec(domainApo,0,0),new Vec(0,Math.Sqrt(bounded.Context.Mu*(2/domainApo-1/domainSemimajor)),0));
+        string boundedReason;var coastStamp=bounded.Runtime.Stamp;
+        Need(!bounded.TryCoast(coastStamp,bounded.UniversalTime+Math.PI*Math.Sqrt(domainSemimajor*domainSemimajor*domainSemimajor/bounded.Context.Mu),Quiet(),true,double.PositiveInfinity,0,out boundedReason),"Coast crossed the higher domain floor despite clearing atmosphere.");
+        Need(bounded.Runtime.Stamp.Matches(coastStamp),"Rejected domain coast published state.");
+        var boundedRestore=OwnedFlightSession.Restore(OwnedRuntimeWorld.RestoreSnapshot(bounded.Runtime.CaptureSnapshot()),bounded.Capture(),NativeSha,PartsSha);
+        Need(boundedRestore.MinimumAltitudeMeters==150,"Session checkpoint discarded its domain floor.");
         var data=Capture();var context=OwnedFlightWorld.Admit(data,NativeSha,PartsSha,WorldSha);
         data.altitudeMeters[1]=99;data.angularVelocity[2]=123;data.rootPositionBodyRelative[0]=900;
         Near(context.CapturedRootPosition,new Vec(1200,0,0));Near(context.AngularVelocity,new Vec(0,0,.01));

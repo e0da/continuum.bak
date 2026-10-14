@@ -2,7 +2,7 @@ using System;
 
 namespace KspContinuum
 {
-    public enum LiveControlOperation { Invalid, Hello, ActiveVesselSnapshot, StartSweep, SweepStatus, SubscribeSweep, QuitWhenIdle, RigidStatus, RigidEnable, RigidDisable, RigidRetry, RigidWarp4, RigidNormal, RigidSave, RigidLoad, RigidCapture }
+    public enum LiveControlOperation { Invalid, Hello, ActiveVesselSnapshot, StartSweep, SweepStatus, SubscribeSweep, QuitWhenIdle, RigidStatus, RigidEnable, RigidDisable, RigidRetry, RigidWarp4, RigidNormal, RigidSave, RigidLoad, RigidCapture, ClockStatus, ClockEnable, ClockDisable, ClockNormal, ClockWarp32, ClockWarp128, ClockPause, ClockResume, ClockSave, ClockRestore, ClockLighting }
 
     public sealed class LiveControlRequest
     {
@@ -28,13 +28,20 @@ namespace KspContinuum
             string[] words = line.Split(' ');
             string id = words.Length > 2 && Token(words[2], 64) ? words[2] : null;
             bool supported = words.Length > 1 &&
-                (words[1] == "1.0.0" || words[1] == "1.1.0" || words[1] == "1.2.0" || words[1] == "1.3.0");
+                (words[1] == "1.0.0" || words[1] == "1.1.0" || words[1] == "1.2.0" || words[1] == "1.3.0" || words[1] == "1.4.0");
             if (words.Length < 3 || !supported || id == null)
                 return new LiveControlRequest(LiveControlOperation.Invalid, id, null,
                     words.Length > 1 ? words[1] : null, null, 0, 0,
                     words.Length > 1 && !supported ? "unsupported-version" : "invalid-request");
             if (words[0] == "hello" && words.Length == 3)
                 return new LiveControlRequest(LiveControlOperation.Hello, id, null, words[1], null, 0, 0, null);
+            if(words[0].StartsWith("clock-",StringComparison.Ordinal)&&words.Length==5&&words[1]=="1.4.0")
+            {
+                LiveControlOperation operation=words[0]=="clock-status"?LiveControlOperation.ClockStatus:words[0]=="clock-enable"?LiveControlOperation.ClockEnable:words[0]=="clock-disable"?LiveControlOperation.ClockDisable:words[0]=="clock-normal"?LiveControlOperation.ClockNormal:words[0]=="clock-warp32"?LiveControlOperation.ClockWarp32:words[0]=="clock-warp128"?LiveControlOperation.ClockWarp128:words[0]=="clock-pause"?LiveControlOperation.ClockPause:words[0]=="clock-resume"?LiveControlOperation.ClockResume:words[0]=="clock-save"?LiveControlOperation.ClockSave:words[0]=="clock-restore"?LiveControlOperation.ClockRestore:words[0]=="clock-lighting"?LiveControlOperation.ClockLighting:LiveControlOperation.Invalid;
+                Guid session;long epoch;
+                if(operation!=LiveControlOperation.Invalid&&Guid.TryParseExact(words[3],"D",out session)&&session!=Guid.Empty&&long.TryParse(words[4],System.Globalization.NumberStyles.None,System.Globalization.CultureInfo.InvariantCulture,out epoch)&&epoch>=1)
+                    return new LiveControlRequest(operation,id,session.ToString("D"),words[1],null,epoch,0,null);
+            }
             if (words[0].StartsWith("rigid-", StringComparison.Ordinal) && words.Length == 5 && words[1] == "1.3.0")
             {
                 LiveControlOperation operation = words[0] == "rigid-status" ? LiveControlOperation.RigidStatus :
@@ -94,7 +101,7 @@ namespace KspContinuum
                 words[0] == "sweep-status" || words[0] == "sweep-subscribe" ||
                 words[0] == "quit-when-idle" || words[0] == "rigid-status" || words[0] == "rigid-enable" ||
                 words[0] == "rigid-disable" || words[0] == "rigid-retry" || words[0] == "rigid-warp4" ||
-                words[0] == "rigid-normal" || words[0] == "rigid-save" || words[0] == "rigid-load" || words[0] == "rigid-capture" ? "invalid-request" : "unknown-operation");
+                words[0] == "rigid-normal" || words[0] == "rigid-save" || words[0] == "rigid-load" || words[0] == "rigid-capture" || words[0] == "clock-lighting" ? "invalid-request" : "unknown-operation");
         }
 
         static bool Token(string value, int maximum)
@@ -125,16 +132,25 @@ namespace KspContinuum
     [Serializable] public sealed class LiveControlReply
     {
         public string schema = "continuum-live-control/v1";
-        public string protocolVersion = "1.0.0", supportedProtocolMin = "1.0.0", supportedProtocolMax = "1.3.0";
+        public string protocolVersion = "1.0.0", supportedProtocolMin = "1.0.0", supportedProtocolMax = "1.4.0";
         public string requestId;
         public string status, reason;
         public string[] capabilities = { "hello", "active-vessel-snapshot", "dry-buoyancy-sweep",
-            "dry-buoyancy-sweep-push", "quit-when-idle", "playable-rigid-control" };
+            "dry-buoyancy-sweep-push", "quit-when-idle", "playable-rigid-control", "owned-clock-control", "owned-clock-lighting" };
         public LiveControlIdentity identity;
         public LiveVesselSnapshot snapshot;
         public LiveSweepStatus sweep;
         public LiveRigidStatus rigid;
+        public LiveClockStatus clock;
         public long observerNanoseconds;
+    }
+
+    [Serializable] public sealed class LiveClockStatus
+    {
+        public string state,operationError,reportJson,lightingPath;
+        public bool owned,enabled;
+        public double universalTime,debtSeconds;
+        public long publications;
     }
 
     [Serializable] public sealed class LiveRigidStatus
@@ -195,7 +211,7 @@ namespace KspContinuum
         public LiveControlReply Execute(LiveControlRequest request, long renderFrame, long observedFixedCallbacks,
             Func<LiveVesselSnapshot> capture, Func<LiveSweepStatus> startSweep = null,
             Func<LiveSweepStatus> sweepStatus = null, Func<string> requestQuit = null,
-            Func<LiveControlOperation, LiveRigidStatus> rigidOperation = null)
+            Func<LiveControlOperation, LiveRigidStatus> rigidOperation = null,Func<LiveControlOperation,LiveClockStatus> clockOperation=null)
         {
             if (request == null) throw new ArgumentNullException("request");
             if (epoch == 0 || renderFrame < 0 || observedFixedCallbacks < 0)
@@ -203,11 +219,21 @@ namespace KspContinuum
             var identity = new LiveControlIdentity { sessionId = sessionId, scene = scene, vesselId = vesselId,
                 epoch = epoch, renderFrame = renderFrame, observedFixedCallbacks = observedFixedCallbacks };
             var reply = new LiveControlReply { identity = identity, requestId = request.requestId,
-                protocolVersion = request.protocolVersion == "1.3.0" ? "1.3.0" : request.protocolVersion == "1.2.0" ? "1.2.0" :
+                protocolVersion = request.protocolVersion == "1.4.0" ? "1.4.0" : request.protocolVersion == "1.3.0" ? "1.3.0" : request.protocolVersion == "1.2.0" ? "1.2.0" :
                     request.protocolVersion == "1.1.0" ? "1.1.0" : "1.0.0" };
             if (request.operation == LiveControlOperation.Invalid)
             { reply.status = "rejected"; reply.reason = request.error; return reply; }
             if (request.operation == LiveControlOperation.Hello) { reply.status = "ok"; return reply; }
+            if(request.operation>=LiveControlOperation.ClockStatus&&request.operation<=LiveControlOperation.ClockLighting)
+            {
+                if(request.sessionId!=sessionId||request.expectedEpoch!=epoch){reply.status="rejected";reply.reason="stale-identity";return reply;}
+                if(clockOperation==null){reply.status="unavailable";reply.reason="clock-service-unavailable";return reply;}
+                var status=clockOperation(request.operation);
+                if(status==null||!Bounded(status.state,64)||!OptionalBounded(status.operationError,1024)||!OptionalBounded(status.lightingPath,4096)||status.publications<0||!Finite(status.universalTime)||!Finite(status.debtSeconds)||status.debtSeconds<0||status.reportJson!=null&&status.reportJson.Length>1048576 ||
+                    request.operation==LiveControlOperation.ClockLighting&&status.operationError==null&&(!Bounded(status.lightingPath,4096)||!System.IO.Path.IsPathRooted(status.lightingPath)))
+                {reply.status="rejected";reply.reason="invalid-clock-status";return reply;}
+                reply.clock=status;reply.status=status.operationError==null?"ok":"rejected";reply.reason=status.operationError;return reply;
+            }
             if (request.operation >= LiveControlOperation.RigidStatus && request.operation <= LiveControlOperation.RigidCapture)
             {
                 if (request.sessionId != sessionId || request.expectedEpoch != epoch)
