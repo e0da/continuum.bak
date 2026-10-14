@@ -61,6 +61,9 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         public DisplayData display=new DisplayData();
         public OwnedRuntimeMechanicalState mechanical;
         public OwnedRuntimeAdaptiveObservation adaptiveObservation;
+        public string executionStrategy;
+        public OwnedRuntimeWork bankWork;
+        public OwnedRuntimeSystemCounters systemWork;
         public int pendingEvents;public long appliedEvents;public double nextEventRuntimeTime;public bool hasPendingEvent;
         public string checkpointScope;
         public double thermalIntegratedTime,thermalPendingDuration,thermalMaximumLagSeconds,thermalMaximumDeferredKelvin,thermalAbsoluteKelvinError,thermalRelativeError;
@@ -472,6 +475,7 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         var thermal=host.World.CaptureSnapshot().Thermal;receipt.thermalIndependent=thermal.independent;receipt.thermalAdvances=thermal.advances;receipt.thermalDeferredSteps=thermal.deferredSteps;receipt.thermalCausalRevision=thermal.causalRevision;receipt.thermalIntegratedCausalRevision=thermal.integratedCausalRevision;
         receipt.thermalMaximumLagSeconds=thermal.maximumLagSeconds;receipt.thermalMaximumDeferredKelvin=thermal.maximumDeferredKelvin;receipt.thermalAbsoluteKelvinError=thermal.absoluteKelvinError;receipt.thermalRelativeError=thermal.relativeError;
         receipt.mechanical=host.World.Mechanical;receipt.adaptiveObservation=host.AdaptiveObservation;
+        receipt.executionStrategy=host.Systems.ExecutionStrategy.ToString();receipt.bankWork=host.World.Work;receipt.systemWork=host.Systems.Counters.Snapshot();
         if(timeline!=null){receipt.pendingEvents=timeline.PendingEvents;receipt.appliedEvents=timeline.TotalEventsApplied;receipt.hasPendingEvent=timeline.PendingEvents>0;receipt.nextEventRuntimeTime=receipt.hasPendingEvent?timeline.NextEventRuntimeTime:0;}
     }
     void SaveReceipt(){File.WriteAllText(Path.Combine(output,"status.json"),JsonUtility.ToJson(receipt,true));}
@@ -502,7 +506,7 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         {
             var kind=args[0]=="restore"?OwnedFlightWorkerInvocation.CheckpointReplacement:args[0]=="reload"?OwnedFlightWorkerInvocation.SameTimeMutation:
                 args[0]=="step"||args[0]=="timeline"||args[0]=="coast"?OwnedFlightWorkerInvocation.TimelineMutation:
-                args[0]=="orbit"||args[0]=="atmo-flight"||args[0]=="rebase"||args[0]=="pilot"||args[0]=="node"||args[0]=="split"||args[0]=="join"||args[0]=="restore"||args[0]=="execute-node"||args[0]=="thermal"||args[0]=="mechanics"?OwnedFlightWorkerInvocation.ColdMutation:OwnedFlightWorkerInvocation.ReadOnly;
+                args[0]=="orbit"||args[0]=="atmo-flight"||args[0]=="rebase"||args[0]=="pilot"||args[0]=="node"||args[0]=="split"||args[0]=="join"||args[0]=="restore"||args[0]=="execute-node"||args[0]=="thermal"||args[0]=="mechanics"||args[0]=="execution"||args[0]=="work-timing"?OwnedFlightWorkerInvocation.ColdMutation:OwnedFlightWorkerInvocation.ReadOnly;
             OnWorker(delegate(OwnedFlightWorkerContext context)
             {
                 try
@@ -603,7 +607,11 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         else if(args[0]=="wind"&&args.Length==4)environment=new OwnedRuntimeEnvironment("explicit-flow-research",environment.Revision+1,host.World.Stamp.Time,environment.Density,environment.Temperature,new Vec(Number(args[1]),Number(args[2]),Number(args[3])),environment.Gravity,environment.ConvectiveCoefficient,environment.RadiationTemperature);
         else if(args[0]=="warp"&&args.Length==2)plan=new OwnedRuntimeStepPlan(.02,Number(args[1]));
         else if(args[0]=="mechanics"&&(args.Length==2||args.Length==3))
-        {RequireColdTimeline();Need(args[1]=="adaptive"||args[1]=="fixed","Mechanics expects adaptive or fixed [maximum interval].");Need(args[1]!="adaptive"||host.SupportsAdaptiveMechanical,"Current executable schedule does not admit isolated repeated trials.");double maximum=args.Length==3?Number(args[2]):.1;var policy=new OwnedRuntimeMechanicalPolicy(args[1]=="adaptive",maximumInterval:maximum,initialInterval:Math.Min(.02,maximum));host.Systems.SetMechanicalPolicy(host.World.Stamp,policy);}
+        {RequireColdTimeline();Need(args[1]=="adaptive"||args[1]=="fixed"||args[1]=="embedded","Mechanics expects fixed, adaptive or embedded [maximum interval].");Need(args[1]!="adaptive"||host.SupportsAdaptiveMechanical,"Current executable schedule does not admit isolated repeated trials.");Need(args[1]!="embedded"||host.SupportsEmbeddedMechanical,"Current executable schedule does not admit builtin staged mechanics.");double maximum=args.Length==3?Number(args[2]):.1;var policy=new OwnedRuntimeMechanicalPolicy(args[1]!="fixed",maximumInterval:maximum,initialInterval:Math.Min(.02,maximum),method:args[1]=="embedded"?OwnedRuntimeMechanicalMethod.EmbeddedMidpoint:OwnedRuntimeMechanicalMethod.StepDoubling);host.Systems.SetMechanicalPolicy(host.World.Stamp,policy);}
+        else if(args[0]=="execution"&&args.Length==2)
+        {RequireColdTimeline();Need(args[1]=="reference"||args[1]=="compiled","Execution expects reference or compiled.");host.Systems.SetExecutionStrategy(args[1]=="compiled"?OwnedRuntimeExecutionStrategy.Compiled:OwnedRuntimeExecutionStrategy.Reference);host.Systems.CompileExecutionPlan(host.World.Stamp);}
+        else if(args[0]=="work-timing"&&args.Length==2)
+        {RequireColdTimeline();Need(args[1]=="on"||args[1]=="off","Work timing expects on or off.");host.World.SetWorkObservation(host.World.Stamp,args[1]=="on");host.Systems.SetWorkObservation(args[1]=="on");}
         else if(args[0]=="event"&&args.Length==7&&args[1]=="impulse")
         {Need(timeline!=null&&pilot.mode=="manual","Manual world flight events required.");long sequence=checked(Math.Max(eventSequence,timeline.CaptureState().events.lastSequence)+1);var e=new OwnedFlightEvent("operator-impulse/"+receipt.lastRequest,sequence,Number(args[2]),OwnedFlightEventKind.Impulse,long.Parse(args[3],CultureInfo.InvariantCulture),new Vec(Number(args[4]),Number(args[5]),Number(args[6])));timeline.EnqueueEvent(e);eventSequence=sequence;}
         else if(args[0]=="thermal"&&args.Length==2)
@@ -630,9 +638,9 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
             Need(timeline==null||receipt.paused&&timeline.Paused,"Code reload requires pause.");Need(timeline==null||configuredDeadline>flight.UniversalTime,"Resolve the reached event barrier before code reload.");
             Need(reloadCount<8&&Path.IsPathRooted(args[1])&&File.Exists(args[1]),"Owned code reload outside its bound.");
             Need(new FileInfo(args[1]).Length<=16*1024*1024,"Reload image exceeds16MiB.");byte[] bytes=File.ReadAllBytes(args[1]);Need(bytes.Length<=16*1024*1024,"Reload image exceeds16MiB.");
-            var assembly=Assembly.Load(bytes);var type=assembly.GetType(args[2],true);
+            var image=OwnedRuntimeScheduleImages.Load(bytes);var type=image.Assembly.GetType(args[2],true);
             Need(typeof(IOwnedRuntimeSchedule).IsAssignableFrom(type),"Reload type does not implement the current ABI.");
-            var next=(IOwnedRuntimeSchedule)Activator.CreateInstance(type);host.SwapSchedule(next,Hash(bytes),host.World.Stamp);reloadCount++;
+            var next=(IOwnedRuntimeSchedule)Activator.CreateInstance(type);host.SwapSchedule(next,image.Sha256,host.World.Stamp);reloadCount++;
         }
         else throw new ArgumentException("Unknown owned runtime command.");
         if(timeline!=null)

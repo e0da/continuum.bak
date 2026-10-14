@@ -110,7 +110,7 @@ does not grant arbitrary modules permission to skip their evolution.
 
 Rendering reads committed state independently. Presentation interpolation,
 resolution and effects do not become integration inputs. The current consumer
-uses committed poses; smooth interpolation remains implementation work. The
+interpolates copied committed poses with an explicit presentation delay. The
 configured local quantum is a numerical contract, not an inherited requirement
 that every future system run at 50 Hz. Specialized systems can later use their
 own error bounds, dependencies and deadlines inside a complete transaction.
@@ -140,9 +140,15 @@ option; it does not define causal validity or numerical scheduling. The owned
 implementation now combines worker ownership, atomic presentation metadata,
 checkpointed causal state, bounded thermal history, adaptive mechanical trials
 and exact typed events. Rendering interpolates copied committed poses. The next
-transfer should replace expensive repeated trial/fold work with domain-specific
-error estimates and validity horizons, retaining complete-work accounting and
-the existing independent analytic and continuation checks.
+transfer now includes compiled physical dependency plans, retained geometry,
+compact scalar deadline probes and a two-wrench embedded mechanical operator.
+The original fold and step-doubling remain selectable references. Complete bank,
+reducer, validation and staged work are observed separately from render pacing;
+independent analytic and continuation checks remain the numerical gates. The
+next scheduling redesign should derive retained resource/control deadlines from
+their actual dependency changes, rather than repeatedly bisecting whole scalar
+folds. Builtin mechanics and current thermal-source quadrature remain explicit
+scopes; this does not confer arbitrary module or contact validity.
 
 Live KSP still owns its game clock and stock callback dispatch. Its Planetarium
 advances universal time separately from Unity physics; TimeWarp changes both

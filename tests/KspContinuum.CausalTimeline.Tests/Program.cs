@@ -98,5 +98,15 @@ static class Program
         Run(f,.2);Near(f.Fuel,1-.75/(1000*9.80665));
         Need(f.Timeline.HeldControls.Throttle==0&&f.Timeline.TotalEventsApplied==1,"Timed controls overwrote a future authored input boundary.");
     }
-    static void Main(){EventsAndFuel();CheckpointDemandAndFutureEvents();TinySemanticBoundary();WorkerHeldControls();ManualCoastQueue();FutureInputBoundary();Console.WriteLine("PASS causal timeline: exact events/fuel, future work and controller checkpoint continuation, semantic tails and worker held controls");}
+    static void ColdConfiguration()
+    {
+        using(var worker=new OwnedFlightWorker(()=>{var f=new Fixture(false);return new OwnedFlightWorkerContext(f.Host,f.Session,f);},new OwnedFlightWorkerOptions{AutomaticProgress=false,WallClock=()=>0}))
+        {
+            Need(worker.WaitUntilReady(3000),"Worker configuration fixture failed.");
+            var change=worker.Invoke(c=>c.Host.Systems.SetExecutionStrategy(OwnedRuntimeExecutionStrategy.Compiled),OwnedFlightWorkerInvocation.ColdMutation);
+            Need(change.Wait(3000)&&change.Error==null,"Cold configuration rejected.");
+            var step=worker.Step(.02);Need(step.Wait(3000)&&step.Error==null&&step.Result.Fault==null,"Cold same-stamp configuration left timeline identity stale.");
+        }
+    }
+    static void Main(){EventsAndFuel();CheckpointDemandAndFutureEvents();TinySemanticBoundary();WorkerHeldControls();ManualCoastQueue();FutureInputBoundary();ColdConfiguration();Console.WriteLine("PASS causal timeline: exact events/fuel, future work and controller checkpoint continuation, semantic tails, worker held controls and compiled configuration");}
 }

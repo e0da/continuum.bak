@@ -190,12 +190,16 @@ namespace KspContinuum
         public double Delta { get { return FixedDelta*WarpRate; } }
     }
 
-    public sealed class OwnedRuntimeSystemCounters
+    [Serializable] public sealed class OwnedRuntimeSystemCounters
     {
+        public long ExecutionPlanBuilds,CompiledActuatorRows,InactiveActuatorRows,CompiledSurfaceRows,VacuumSurfaceRows,RegionMotionContexts,RetainedGeometryRows;
+        public long ScalarTicks,AeroTicks,ThermalTicks,RegionIntegrationTicks,PlanTicks;
+        public long BoundaryProbes,BoundaryResourceCopies,BoundaryResourceRowsCopied,BoundaryTicks;
         public long Steps, FailedSteps, ActuatorRows, SurfaceRows, ThermalLinks, RegionIntegrations, ObservedTicks;
         public double DeliveredForceNewtonSeconds, DeliveredTorqueNewtonMeterSeconds, PropellantKilograms,
             ElectricUnits, ActuatorHeatJoules;
         public readonly long ClockFrequency=Stopwatch.Frequency;
+        public OwnedRuntimeSystemCounters Snapshot(){return (OwnedRuntimeSystemCounters)MemberwiseClone();}
     }
 
     public struct OwnedRuntimeExternalForce
@@ -227,9 +231,20 @@ namespace KspContinuum
         readonly int[] resourceParts,partBodies;
         readonly int[] wheelProviderSlots;
         readonly Vec[] forces, torques, oldCenters, oldWheel, newWheel;
+        readonly Vec[] regionOmega;
+        OwnedRuntimeExecutionPlan executionPlan;
+        OwnedRuntimeExecutionStrategy executionStrategy;
         readonly double[] heat, wheelMomentum, stagedWheelMomentum;
-        readonly bool observeClock;
+        bool observeClock;
+        readonly Vec[] localActuatorForces,localActuatorTorques;
+        bool stagingLocal;
+        long mechanicalToken,mechanicalBegin,mechanicalConfiguration;
+        OwnedRuntimeBank mechanicalBank;
+        double mechanicalForceLedger,mechanicalTorqueLedger,mechanicalFuelLedger,mechanicalElectricLedger,mechanicalHeatLedger;
+        long mechanicalStepsLedger,mechanicalIntegrationsLedger;
+        bool mechanicalCompleted;
         readonly double[] boundaryInitialResources;
+        OwnedRuntimeBank boundaryBank;
         int boundaryActuator=-1,boundaryResource=-1;
         string boundaryKind;
         public readonly Rotation ControlOrientation;
@@ -249,7 +264,7 @@ namespace KspContinuum
                 throw new ArgumentException("System plan exceeds bounded row capacity.");
             this.world=world;definition=world.Definition;
             ControlOrientation=controlOrientation??Rotation.Identity;RigidAssemblyProperties.RequireRotation(ControlOrientation);
-            partBodies=new int[definition.PartCount];environments=new OwnedRuntimeEnvironmentSample[definition.BodyCount];
+            partBodies=new int[definition.PartCount];environments=new OwnedRuntimeEnvironmentSample[definition.BodyCount];regionOmega=new Vec[definition.BodyCount];
             for(int p=0;p<partBodies.Length;p++)partBodies[p]=definition.BodySlot(definition.GetPart(p).BodyId);
             this.actuators=(OwnedRuntimeActuatorSpec[])actuators.Clone();this.surfaces=(OwnedRuntimeSurfaceSpec[])surfaces.Clone();
             links=thermalLinks==null?new OwnedRuntimeThermalLink[0]:(OwnedRuntimeThermalLink[])thermalLinks.Clone();
@@ -303,6 +318,7 @@ namespace KspContinuum
             foreach(var link in links){if(link==null)throw new ArgumentException("Null thermal link.");Part(link.A);Part(link.B);}
             forces=new Vec[definition.BodyCount];torques=new Vec[definition.BodyCount];oldCenters=new Vec[definition.BodyCount];
             oldWheel=new Vec[definition.BodyCount];newWheel=new Vec[definition.BodyCount];
+            localActuatorForces=new Vec[definition.BodyCount];localActuatorTorques=new Vec[definition.BodyCount];
             heat=new double[definition.PartCount];wheelMomentum=new double[actuators.Length];stagedWheelMomentum=new double[actuators.Length];
             this.observeClock=observeClock;
             boundaryInitialResources=new double[definition.ResourceCount];
@@ -324,39 +340,82 @@ namespace KspContinuum
         public int SurfaceCount{get{return surfaces.Length;}}
         public int ThermalLinkCount{get{return links.Length;}}
         public long ConfigurationRevision{get{return configurationRevision;}}
+        public OwnedRuntimeExecutionStrategy ExecutionStrategy {get{return executionStrategy;}}
+        public void SetWorkObservation(bool enabled){lock(configurationGate){RequireConfigurationIdle();observeClock=enabled;}}
+        internal bool WorkObservation {get{return observeClock;}}
+        internal void RecordMechanicalIntegrationTicks(long ticks){if(ticks<0)throw new ArgumentOutOfRangeException("ticks");if(observeClock)Counters.RegionIntegrationTicks+=ticks;}
+        public void SetExecutionStrategy(OwnedRuntimeExecutionStrategy strategy)
+        {lock(configurationGate){RequireConfigurationIdle();if(!Enum.IsDefined(typeof(OwnedRuntimeExecutionStrategy),strategy))throw new ArgumentException("Unknown execution strategy.");if(executionStrategy!=strategy){long revision=checked(configurationRevision+1);var plan=strategy==OwnedRuntimeExecutionStrategy.Compiled?new OwnedRuntimeExecutionPlan(world.CurrentForTrial,actuators,surfaces,fuelPools,flowEnabled,revision):null;executionStrategy=strategy;configurationRevision=revision;executionPlan=plan;if(plan!=null)Counters.ExecutionPlanBuilds++;}}}
+        public void CompileExecutionPlan(OwnedRuntimeStamp expected)
+        {lock(configurationGate){RequireConfigurationIdle();if(!world.Stamp.Matches(expected))throw new InvalidOperationException("Execution plan source is stale.");PrepareExecutionPlan(world.CurrentForTrial);}}
+        void PrepareExecutionPlan(OwnedRuntimeBank bank)
+        {if(executionStrategy==OwnedRuntimeExecutionStrategy.Compiled&&(executionPlan==null||!executionPlan.Matches(bank,configurationRevision))){long begin=observeClock?Stopwatch.GetTimestamp():0;executionPlan=new OwnedRuntimeExecutionPlan(bank,actuators,surfaces,fuelPools,flowEnabled,configurationRevision);Counters.ExecutionPlanBuilds++;if(observeClock)Counters.PlanTicks+=Stopwatch.GetTimestamp()-begin;}}
         public OwnedRuntimeStamp SetMechanicalPolicy(OwnedRuntimeStamp expected,OwnedRuntimeMechanicalPolicy policy)
         {lock(configurationGate){RequireConfigurationIdle();return world.MutateMechanical(expected,policy);}}
         internal OwnedRuntimeSystems CreateTrialSystems(OwnedRuntimeWorld target)
         {
             lock(configurationGate)
             {
-                RequireConfigurationIdle();var s=new OwnedRuntimeSystems(target,actuators,surfaces,links,flowEnabled,false,wheelProviderSlots,ControlOrientation);
-                Array.Copy(enabled,s.enabled,enabled.Length);s.configurationRevision=configurationRevision;return s;
+                RequireConfigurationIdle();var s=new OwnedRuntimeSystems(target,actuators,surfaces,links,flowEnabled,observeClock,wheelProviderSlots,ControlOrientation);
+                Array.Copy(enabled,s.enabled,enabled.Length);s.executionStrategy=executionStrategy;s.configurationRevision=configurationRevision;return s;
             }
         }
         internal void ResetTrialCounters()
-        {Counters.Steps=Counters.FailedSteps=Counters.ActuatorRows=Counters.SurfaceRows=Counters.ThermalLinks=Counters.RegionIntegrations=Counters.ObservedTicks=0;Counters.DeliveredForceNewtonSeconds=Counters.DeliveredTorqueNewtonMeterSeconds=Counters.PropellantKilograms=Counters.ElectricUnits=Counters.ActuatorHeatJoules=0;}
+        {Counters.BoundaryProbes=Counters.BoundaryResourceCopies=Counters.BoundaryResourceRowsCopied=Counters.BoundaryTicks=0;Counters.ScalarTicks=Counters.AeroTicks=Counters.ThermalTicks=Counters.RegionIntegrationTicks=Counters.PlanTicks=0;Counters.Steps=Counters.FailedSteps=Counters.ActuatorRows=Counters.SurfaceRows=Counters.ThermalLinks=Counters.RegionIntegrations=Counters.ObservedTicks=0;Counters.ExecutionPlanBuilds=Counters.CompiledActuatorRows=Counters.InactiveActuatorRows=Counters.CompiledSurfaceRows=Counters.VacuumSurfaceRows=Counters.RegionMotionContexts=Counters.RetainedGeometryRows=0;Counters.DeliveredForceNewtonSeconds=Counters.DeliveredTorqueNewtonMeterSeconds=Counters.PropellantKilograms=Counters.ElectricUnits=Counters.ActuatorHeatJoules=0;}
         internal void AccumulateTrialCounters(OwnedRuntimeSystems s)
-        {Counters.Steps+=s.Counters.Steps;Counters.ActuatorRows+=s.Counters.ActuatorRows;Counters.SurfaceRows+=s.Counters.SurfaceRows;Counters.ThermalLinks+=s.Counters.ThermalLinks;Counters.RegionIntegrations+=s.Counters.RegionIntegrations;Counters.DeliveredForceNewtonSeconds+=s.Counters.DeliveredForceNewtonSeconds;Counters.DeliveredTorqueNewtonMeterSeconds+=s.Counters.DeliveredTorqueNewtonMeterSeconds;Counters.PropellantKilograms+=s.Counters.PropellantKilograms;Counters.ElectricUnits+=s.Counters.ElectricUnits;Counters.ActuatorHeatJoules+=s.Counters.ActuatorHeatJoules;}
+        {Counters.BoundaryProbes+=s.Counters.BoundaryProbes;Counters.BoundaryResourceCopies+=s.Counters.BoundaryResourceCopies;Counters.BoundaryResourceRowsCopied+=s.Counters.BoundaryResourceRowsCopied;Counters.BoundaryTicks+=s.Counters.BoundaryTicks;Counters.ScalarTicks+=s.Counters.ScalarTicks;Counters.AeroTicks+=s.Counters.AeroTicks;Counters.ThermalTicks+=s.Counters.ThermalTicks;Counters.RegionIntegrationTicks+=s.Counters.RegionIntegrationTicks;Counters.PlanTicks+=s.Counters.PlanTicks;Counters.Steps+=s.Counters.Steps;Counters.ActuatorRows+=s.Counters.ActuatorRows;Counters.SurfaceRows+=s.Counters.SurfaceRows;Counters.ThermalLinks+=s.Counters.ThermalLinks;Counters.RegionIntegrations+=s.Counters.RegionIntegrations;Counters.ExecutionPlanBuilds+=s.Counters.ExecutionPlanBuilds;Counters.CompiledActuatorRows+=s.Counters.CompiledActuatorRows;Counters.InactiveActuatorRows+=s.Counters.InactiveActuatorRows;Counters.CompiledSurfaceRows+=s.Counters.CompiledSurfaceRows;Counters.VacuumSurfaceRows+=s.Counters.VacuumSurfaceRows;Counters.RegionMotionContexts+=s.Counters.RegionMotionContexts;Counters.RetainedGeometryRows+=s.Counters.RetainedGeometryRows;Counters.DeliveredForceNewtonSeconds+=s.Counters.DeliveredForceNewtonSeconds;Counters.DeliveredTorqueNewtonMeterSeconds+=s.Counters.DeliveredTorqueNewtonMeterSeconds;Counters.PropellantKilograms+=s.Counters.PropellantKilograms;Counters.ElectricUnits+=s.Counters.ElectricUnits;Counters.ActuatorHeatJoules+=s.Counters.ActuatorHeatJoules;}
         public OwnedRuntimeActuatorBoundary FindActuatorBoundary(OwnedRuntimeStamp expected,OwnedRuntimeControls controls,double maximumHorizonSeconds)
         {
             controls.Validate();AssemblyModel.Positive(maximumHorizonSeconds);if(maximumHorizonSeconds>7200)throw new ArgumentOutOfRangeException("maximumHorizonSeconds");
             lock(configurationGate)
             {
                 RequireConfigurationIdle();if(!world.Stamp.Matches(expected))throw new InvalidOperationException("Actuator boundary source is stale.");
-                var result=new OwnedRuntimeActuatorBoundary{Supported=true,Reached=false,DeltaSeconds=maximumHorizonSeconds,Actuator=-1,Resource=-1,Kind="none",SourceStamp=expected,ConfigurationRevision=configurationRevision};
-                using(var read=world.AcquireRead())for(int i=0;i<boundaryInitialResources.Length;i++)boundaryInitialResources[i]=read.GetResourceQuantity(i);
-                if(!ProbeBoundary(expected,controls,maximumHorizonSeconds))return result;
-                double low=0,high=maximumHorizonSeconds;
-                for(int i=0;i<64;i++){double middle=low+(high-low)*.5;if(middle==low||middle==high)break;if(ProbeBoundary(expected,controls,middle))high=middle;else low=middle;}
-                ProbeBoundary(expected,controls,high);result.Reached=true;result.DeltaSeconds=high;result.Actuator=boundaryActuator;result.Resource=boundaryResource;result.Kind=boundaryKind;return result;
+                bool compact=executionStrategy==OwnedRuntimeExecutionStrategy.Compiled;
+                if(compact)world.EnterAdmission(expected);
+                long begin=observeClock?Stopwatch.GetTimestamp():0;
+                try
+                {
+                    var result=new OwnedRuntimeActuatorBoundary{Supported=true,Reached=false,DeltaSeconds=maximumHorizonSeconds,Actuator=-1,Resource=-1,Kind="none",SourceStamp=expected,ConfigurationRevision=configurationRevision};
+                    using(var read=world.AcquireRead())
+                    {
+                        var source=world.CurrentForTrial;if(!read.Stamp.Matches(expected)||!source.Stamp.Matches(expected)||!ReferenceEquals(source.Definition,definition))throw new InvalidOperationException("Boundary source read changed.");
+                        for(int i=0;i<boundaryInitialResources.Length;i++)boundaryInitialResources[i]=read.GetResourceQuantity(i);
+                        if(compact)
+                        {
+                            PrepareExecutionPlan(source);
+                            if(boundaryBank==null||!ReferenceEquals(boundaryBank.Topology,source.Topology))boundaryBank=new OwnedRuntimeBank(source.Definition,source.Topology);
+                            boundaryBank.Members=source.Members;boundaryBank.ProviderState=source.ProviderState;boundaryBank.RegionMotion=source.RegionMotion;boundaryBank.Properties=source.Properties;
+                            boundaryBank.Input=new OwnedRuntimeInput(controls.Throttle,controls.Attitude.X,controls.Attitude.Y,controls.Attitude.Z,controls.Translation.X,controls.Translation.Y,controls.Translation.Z);
+                        }
+                        try
+                        {
+                            if(!ProbeBoundary(expected,controls,maximumHorizonSeconds,compact))return CheckedBoundary(result,expected);
+                            double low=0,high=maximumHorizonSeconds;
+                            for(int i=0;i<64;i++){double middle=low+(high-low)*.5;if(middle==low||middle==high)break;if(ProbeBoundary(expected,controls,middle,compact))high=middle;else low=middle;}
+                            ProbeBoundary(expected,controls,high,compact);result.Reached=true;result.DeltaSeconds=high;result.Actuator=boundaryActuator;result.Resource=boundaryResource;result.Kind=boundaryKind;return CheckedBoundary(result,expected);
+                        }
+                        finally{if(compact){boundaryBank.Members=null;boundaryBank.ProviderState=null;boundaryBank.RegionMotion=null;boundaryBank.Properties=null;}}
+                    }
+                }
+                finally{if(compact)world.ExitAdmission();if(observeClock)Counters.BoundaryTicks+=Stopwatch.GetTimestamp()-begin;}
             }
         }
-        bool ProbeBoundary(OwnedRuntimeStamp expected,OwnedRuntimeControls controls,double delta)
+        OwnedRuntimeActuatorBoundary CheckedBoundary(OwnedRuntimeActuatorBoundary value,OwnedRuntimeStamp expected)
+        {if(!world.Stamp.Matches(expected)||value.ConfigurationRevision!=configurationRevision)throw new InvalidOperationException("Boundary source/configuration changed during search.");return value;}
+        bool ProbeBoundary(OwnedRuntimeStamp expected,OwnedRuntimeControls controls,double delta,bool compact)
         {
+            Counters.BoundaryProbes++;
+            if(compact)
+            {
+                Array.Copy(boundaryInitialResources,boundaryBank.ResourceQuantity,boundaryInitialResources.Length);Counters.BoundaryResourceCopies++;Counters.BoundaryResourceRowsCopied+=boundaryInitialResources.Length;
+                boundaryActuator=boundaryResource=-1;boundaryKind=null;
+                for(int i=0;i<actuators.Length;i++){wheelMomentum[i]=wheelProviderSlots[i]<0?0:boundaryBank.ProviderState[wheelProviderSlots[i]];stagedWheelMomentum[i]=wheelMomentum[i];}
+                ActuateBank(boundaryBank,delta,controls,false,true);return boundaryActuator>=0;
+            }
             var input=new OwnedRuntimeInput(controls.Throttle,controls.Attitude.X,controls.Attitude.Y,controls.Attitude.Z,controls.Translation.X,controls.Translation.Y,controls.Translation.Z);
             using(var step=world.BeginStep(expected,delta,input))
             {
+                PrepareExecutionPlan(step.Bank);
                 boundaryActuator=boundaryResource=-1;boundaryKind=null;Array.Clear(forces,0,forces.Length);Array.Clear(torques,0,torques.Length);Array.Clear(heat,0,heat.Length);Array.Clear(oldWheel,0,oldWheel.Length);Array.Clear(newWheel,0,newWheel.Length);
                 for(int i=0;i<actuators.Length;i++){wheelMomentum[i]=wheelProviderSlots[i]<0?0:step.Bank.ProviderState[wheelProviderSlots[i]];stagedWheelMomentum[i]=wheelMomentum[i];}
                 Actuate(step,controls,false);return boundaryActuator>=0;
@@ -385,9 +444,9 @@ namespace KspContinuum
         public void SetResourceFlowEnabled(int index,bool value)
         {lock(configurationGate){RequireConfigurationIdle();if(flowEnabled[index]!=value){long next=checked(configurationRevision+1);flowEnabled[index]=value;configurationRevision=next;}}}
         internal void RestoreConfigurationRevision(long value)
-        {lock(configurationGate){RequireConfigurationIdle();if(value<0)throw new ArgumentOutOfRangeException("value");configurationRevision=value;}}
+        {lock(configurationGate){RequireConfigurationIdle();if(value<0)throw new ArgumentOutOfRangeException("value");configurationRevision=value;executionPlan=null;}}
         void RequireConfigurationIdle()
-        {world.RequireWriterThread();if(executing)throw new InvalidOperationException("Cold system configuration cannot change during schedule execution.");}
+        {world.RequireWriterThread();if(executing||mechanicalToken!=0)throw new InvalidOperationException("Cold system configuration cannot change during schedule execution or an unacknowledged mechanical transaction.");}
         internal void EnterExecution()
         {lock(configurationGate){RequireConfigurationIdle();executing=true;executionThread=System.Threading.Thread.CurrentThread.ManagedThreadId;}}
         internal void ExitExecution()
@@ -398,6 +457,113 @@ namespace KspContinuum
                     throw new InvalidOperationException("System execution scope is not owned by this thread.");
                 executing=false;executionThread=0;
             }
+        }
+
+        internal Vec[] OldWheelMomentum {get{return oldWheel;}}
+        internal Vec[] NewWheelMomentum {get{return newWheel;}}
+        internal double GetMechanicalProviderState(OwnedRuntimeStep step,int slot)
+        {
+            RequireMechanical(step);if(slot<0||slot>=step.Bank.ProviderState.Length)throw new ArgumentOutOfRangeException("slot");
+            for(int i=0;i<wheelProviderSlots.Length;i++)if(wheelProviderSlots[i]==slot)return stagedWheelMomentum[i];
+            return step.Bank.ProviderState[slot];
+        }
+        public void BeginMechanical(OwnedRuntimeStep step,OwnedRuntimeControls controls)
+        {
+            world.CheckStep(step);if(mechanicalToken!=0)throw new InvalidOperationException("Prior mechanical transaction requires acknowledgment or abort.");controls.Validate();var bank=step.Bank;var input=bank.Input;
+            if(!ReferenceEquals(bank.Definition,definition)||controls.Throttle!=input.Throttle||controls.Attitude.X!=input.Pitch||controls.Attitude.Y!=input.Yaw||controls.Attitude.Z!=input.Roll||controls.Translation.X!=input.X||controls.Translation.Y!=input.Y||controls.Translation.Z!=input.Z)
+                throw new InvalidOperationException("Mechanical transaction input/definition differs.");
+            if(step.DeltaTime>.1)throw new ArgumentOutOfRangeException("step","Mechanical interval exceeds model bound.");
+            step.ClaimSystemsExecution();step.BeginMechanicalPublication();mechanicalToken=step.Token;mechanicalBank=bank;mechanicalConfiguration=configurationRevision;mechanicalBegin=observeClock?Stopwatch.GetTimestamp():0;
+            mechanicalForceLedger=Counters.DeliveredForceNewtonSeconds;mechanicalTorqueLedger=Counters.DeliveredTorqueNewtonMeterSeconds;mechanicalFuelLedger=Counters.PropellantKilograms;mechanicalElectricLedger=Counters.ElectricUnits;mechanicalHeatLedger=Counters.ActuatorHeatJoules;
+            mechanicalStepsLedger=Counters.Steps;mechanicalIntegrationsLedger=Counters.RegionIntegrations;mechanicalCompleted=false;
+            try
+            {
+                PrepareExecutionPlan(bank);int regions=bank.RegionMotion.Length;
+                Array.Clear(forces,0,regions);Array.Clear(torques,0,regions);Array.Clear(heat,0,heat.Length);Array.Clear(oldWheel,0,regions);Array.Clear(newWheel,0,regions);
+                Array.Clear(localActuatorForces,0,regions);Array.Clear(localActuatorTorques,0,regions);
+                for(int i=0;i<actuators.Length;i++)
+                {wheelMomentum[i]=wheelProviderSlots[i]<0?0:bank.ProviderState[wheelProviderSlots[i]];AssemblyModel.Finite(wheelMomentum[i]);if(Math.Abs(wheelMomentum[i])>actuators[i].WheelMomentumCapacity)throw new InvalidOperationException("Wheel momentum exceeds admitted capacity.");stagedWheelMomentum[i]=wheelMomentum[i];}
+                for(int r=0;r<regions;r++)oldCenters[r]=bank.Properties[r].CenterOfMass;
+                long begin=observeClock?Stopwatch.GetTimestamp():0;stagingLocal=true;try{Actuate(step,controls);}finally{stagingLocal=false;}
+                step.RefreshMassProperties();
+                for(int r=0;r<regions;r++)localActuatorTorques[r]=localActuatorTorques[r]+Vec.Cross(oldCenters[r]+bank.Properties[r].CenterOfMass*-1,localActuatorForces[r]);
+                if(observeClock)Counters.ScalarTicks+=Stopwatch.GetTimestamp()-begin;
+            }
+            catch{AbortMechanical(step);step.Dispose();throw;}
+        }
+        public void AbortMechanical(OwnedRuntimeStep step)
+        {
+            if(mechanicalToken==0)return;world.RequireWriterThread();
+            if(step.Token!=mechanicalToken||!ReferenceEquals(step.World,world)||!ReferenceEquals(step.Bank,mechanicalBank))throw new InvalidOperationException("Cannot abort a foreign mechanical transaction.");
+            if(ReferenceEquals(world.CurrentForTrial,step.Bank))throw new InvalidOperationException("Published mechanical state requires acknowledgment, not ledger rollback.");
+            Counters.DeliveredForceNewtonSeconds=mechanicalForceLedger;Counters.DeliveredTorqueNewtonMeterSeconds=mechanicalTorqueLedger;Counters.PropellantKilograms=mechanicalFuelLedger;Counters.ElectricUnits=mechanicalElectricLedger;Counters.ActuatorHeatJoules=mechanicalHeatLedger;
+            Counters.Steps=mechanicalStepsLedger;Counters.RegionIntegrations=mechanicalIntegrationsLedger;
+            if(observeClock&&!mechanicalCompleted)Counters.ObservedTicks+=Stopwatch.GetTimestamp()-mechanicalBegin;
+            Counters.FailedSteps++;mechanicalToken=0;mechanicalBank=null;stagingLocal=false;
+        }
+        internal void AcknowledgeMechanical(OwnedRuntimeStep step)
+        {
+            world.RequireWriterThread();
+            if(!mechanicalCompleted||step.Token!=mechanicalToken||!ReferenceEquals(step.World,world)||!ReferenceEquals(step.Bank,mechanicalBank)||!ReferenceEquals(world.CurrentForTrial,step.Bank))throw new InvalidOperationException("Mechanical acknowledgment requires its actual published bank.");
+            mechanicalToken=0;mechanicalBank=null;
+        }
+        void RequireMechanical(OwnedRuntimeStep step)
+        {world.CheckStep(step);if(mechanicalCompleted||step.Token!=mechanicalToken||!ReferenceEquals(step.Bank,mechanicalBank)||configurationRevision!=mechanicalConfiguration)throw new InvalidOperationException("Mechanical stage is stale, foreign or already completed.");}
+        public void SampleMechanical(OwnedRuntimeStep step,IOwnedRuntimeEnvironmentField field,OwnedRuntimeStamp stageStamp,OwnedRuntimeMotion[] motions,
+            RigidAssemblyProperties[] properties,Vec[] nonGravityForce,Vec[] torque,OwnedRuntimeEnvironmentSample[] sampled,double[] heatWatts)
+        {
+            RequireMechanical(step);var source=step.ExpectedStamp;int regions=step.Bank.RegionMotion.Length;
+            AssemblyModel.Finite(stageStamp.Time);
+            if(field==null||motions==null||properties==null||nonGravityForce==null||torque==null||sampled==null||heatWatts==null||motions.Length!=regions||properties.Length!=regions||nonGravityForce.Length!=regions||torque.Length!=regions||sampled.Length!=regions||heatWatts.Length!=heat.Length)
+                throw new ArgumentException("Mechanical sample buffers differ from admitted regions/parts.");
+            if(stageStamp.Epoch!=source.Epoch||stageStamp.StateRevision!=source.StateRevision||stageStamp.TopologyRevision!=source.TopologyRevision||stageStamp.DefinitionRevision!=source.DefinitionRevision||stageStamp.FrameRevision!=source.FrameRevision||stageStamp.FrameId!=source.FrameId||stageStamp.Time<source.Time||stageStamp.Time>source.Time+step.DeltaTime)
+                throw new InvalidOperationException("Mechanical stage clock/source differs.");
+            long begin=observeClock?Stopwatch.GetTimestamp():0;Array.Clear(heatWatts,0,heatWatts.Length);
+            for(int r=0;r<regions;r++)
+            {
+                OwnedRuntimeWorld.ValidateMotion(motions[r]);if(properties[r]==null)throw new ArgumentException("Mechanical stage properties absent.");
+                sampled[r]=field.Sample(stageStamp,r,motions[r],properties[r]);sampled[r].Validate();if(sampled[r].Epoch>stageStamp.Time)throw new InvalidOperationException("Mechanical sample is from the future.");
+                nonGravityForce[r]=motions[r].Orientation.Rotate(localActuatorForces[r]);
+                Vec centerShift=motions[r].Orientation.Rotate(step.Bank.Properties[r].CenterOfMass+properties[r].CenterOfMass*-1);
+                torque[r]=motions[r].Orientation.Rotate(localActuatorTorques[r])+Vec.Cross(centerShift,nonGravityForce[r]);
+                if(sampled[r].Density!=0&&(executionStrategy!=OwnedRuntimeExecutionStrategy.Compiled||executionPlan.SurfaceCounts[r]>0))
+                {regionOmega[r]=OwnedRuntimeDynamics.AngularVelocity(properties[r],motions[r].Orientation,motions[r].AngularMomentum);Counters.RegionMotionContexts++;}
+            }
+            var bank=step.Bank;bool compiled=executionStrategy==OwnedRuntimeExecutionStrategy.Compiled;
+            for(int i=0;i<surfaces.Length;i++)
+            {
+                Counters.SurfaceRows++;var surface=surfaces[i];int body=compiled?executionPlan.Surfaces[i].Body:partBodies[surface.Part],region=compiled?executionPlan.Surfaces[i].Region:bank.Topology.BodyRegions[body];
+                var environment=sampled[region];if(environment.Density==0){Counters.VacuumSurfaceRows++;continue;}
+                var motion=motions[region];var property=properties[region];Vec point=compiled?executionPlan.Surfaces[i].Point:LocalPoint(bank,surface.Part,surface.LocalPoint,body);
+                Vec lever=motion.Orientation.Rotate(point+property.CenterOfMass*-1),relative=motion.Velocity+Vec.Cross(regionOmega[region]+environment.FlowAngularVelocity*-1,lever)+environment.WindVelocity*-1;
+                double speed2=OwnedRuntimeDynamics.Dot(relative,relative);if(speed2==0)continue;
+                double speed=Math.Sqrt(speed2),q=.5*environment.Density*speed2;Vec direction=relative*(1/speed);
+                Vec normal=motion.Orientation.Rotate(compiled?executionPlan.Surfaces[i].Normal:(bank.Members[body].LocalRotation*definition.GetPart(surface.Part).LocalRotation).Rotate(surface.LocalNormal));
+                double incidence=OwnedRuntimeDynamics.Dot(normal,direction);Vec lift=(normal+direction*(-incidence))*(-2*incidence*q*surface.LiftArea),force=direction*(-q*surface.DragArea)+lift;
+                nonGravityForce[region]=nonGravityForce[region]+force;torque[region]=torque[region]+Vec.Cross(lever,force);heatWatts[surface.Part]+=q*surface.DragArea*speed*surface.HeatingFraction;
+                if(compiled){Counters.CompiledSurfaceRows++;Counters.RetainedGeometryRows++;}
+            }
+            for(int r=0;r<regions;r++){OwnedRuntimeDynamics.Require(nonGravityForce[r]);OwnedRuntimeDynamics.Require(torque[r]);}
+            foreach(double watts in heatWatts)OwnedRuntimeEnvironment.Nonnegative(watts);
+            if(observeClock)Counters.AeroTicks+=Stopwatch.GetTimestamp()-begin;
+        }
+        public void CompleteMechanical(OwnedRuntimeStep step,OwnedRuntimeMotion[] terminalMotions,OwnedRuntimeEnvironmentSample[] midpointEnvironments,double[] midpointHeatWatts)
+        {
+            RequireMechanical(step);var bank=step.Bank;int regions=bank.RegionMotion.Length;
+            if(terminalMotions==null||midpointEnvironments==null||midpointHeatWatts==null||terminalMotions.Length!=regions||midpointEnvironments.Length!=regions||midpointHeatWatts.Length!=heat.Length)throw new ArgumentException("Mechanical terminal buffers differ.");
+            for(int r=0;r<regions;r++){OwnedRuntimeWorld.ValidateMotion(terminalMotions[r]);midpointEnvironments[r].Validate();if(midpointEnvironments[r].Epoch>step.ExpectedStamp.Time+step.DeltaTime)throw new InvalidOperationException("Terminal environment is from the future.");}
+            foreach(double watts in midpointHeatWatts)OwnedRuntimeEnvironment.Nonnegative(watts);
+            try
+            {
+                Array.Copy(terminalMotions,bank.RegionMotion,regions);Array.Copy(midpointEnvironments,environments,regions);
+                for(int p=0;p<heat.Length;p++){heat[p]+=midpointHeatWatts[p]*step.DeltaTime;AssemblyModel.Finite(heat[p]);}
+                long begin=observeClock?Stopwatch.GetTimestamp():0;Thermal(step);if(observeClock)Counters.ThermalTicks+=Stopwatch.GetTimestamp()-begin;
+                for(int i=0;i<actuators.Length;i++)if(wheelProviderSlots[i]>=0)bank.ProviderState[wheelProviderSlots[i]]=stagedWheelMomentum[i];
+                step.CompleteMechanicalPublication();
+                Counters.Steps++;Counters.RegionIntegrations+=regions;if(observeClock)Counters.ObservedTicks+=Stopwatch.GetTimestamp()-mechanicalBegin;
+                mechanicalCompleted=true;
+            }
+            catch{AbortMechanical(step);step.Dispose();throw;}
         }
 
         public void Step(OwnedRuntimeStep step, OwnedRuntimeEnvironment environment)
@@ -433,6 +599,7 @@ namespace KspContinuum
             try
             {
                 var bank=step.Bank;int regions=bank.RegionMotion.Length;
+                PrepareExecutionPlan(bank);
                 Array.Clear(forces,0,regions);Array.Clear(torques,0,regions);Array.Clear(heat,0,heat.Length);
                 Array.Clear(oldWheel,0,regions);Array.Clear(newWheel,0,regions);
                 for(int i=0;i<actuators.Length;i++)
@@ -443,8 +610,10 @@ namespace KspContinuum
                     stagedWheelMomentum[i]=wheelMomentum[i];
                 }
                 for(int r=0;r<regions;r++)oldCenters[r]=bank.Properties[r].CenterOfMass;
+                long stage=observeClock?Stopwatch.GetTimestamp():0;
                 Actuate(step,controls);
                 step.RefreshMassProperties();
+                if(observeClock){Counters.ScalarTicks+=Stopwatch.GetTimestamp()-stage;stage=Stopwatch.GetTimestamp();}
                 for(int r=0;r<regions;r++)
                 {
                     Vec displacement=bank.RegionMotion[r].Orientation.Rotate(oldCenters[r]+bank.Properties[r].CenterOfMass*-1);
@@ -454,17 +623,20 @@ namespace KspContinuum
                     environments[r]=sample;forces[r]=forces[r]+sample.Gravity*bank.Properties[r].Mass;
                 }
                 Aerothermal(step);
+                if(observeClock){Counters.AeroTicks+=Stopwatch.GetTimestamp()-stage;stage=Stopwatch.GetTimestamp();}
                 if(externalForces!=null)for(int i=0;i<externalForces.Length;i++)
                 {
                     var command=externalForces[i];int region=bank.Topology.PartRegions[command.Part];
                     AddForce(bank,region,command.WorldPoint,command.WorldForce);torques[region]=torques[region]+command.WorldTorque;
                 }
                 Thermal(step);
+                if(observeClock){Counters.ThermalTicks+=Stopwatch.GetTimestamp()-stage;stage=Stopwatch.GetTimestamp();}
                 for(int r=0;r<regions;r++)
                 {
                     OwnedRuntimeDynamics.StepCoupled(ref bank.RegionMotion[r],bank.Properties[r],forces[r],torques[r],oldWheel[r],newWheel[r],dt);
                     Counters.RegionIntegrations++;
                 }
+                if(observeClock)Counters.RegionIntegrationTicks+=Stopwatch.GetTimestamp()-stage;
                 Counters.Steps++;
                 for(int i=0;i<actuators.Length;i++)if(wheelProviderSlots[i]>=0)bank.ProviderState[wheelProviderSlots[i]]=stagedWheelMomentum[i];
             }
@@ -473,26 +645,29 @@ namespace KspContinuum
         }
 
         void Actuate(OwnedRuntimeStep step,OwnedRuntimeControls controls,bool observe=true)
+        {ActuateBank(step.Bank,step.DeltaTime,controls,observe,false);}
+        void ActuateBank(OwnedRuntimeBank bank,double dt,OwnedRuntimeControls controls,bool observe,bool boundaryOnly)
         {
-            var bank=step.Bank;var input=bank.Input;double dt=step.DeltaTime;
+            var input=bank.Input;
             Vec translation=ControlOrientation.Rotate(new Vec(input.X,input.Y,input.Z)),
                 attitude=ControlOrientation.Rotate(new Vec(input.Pitch,input.Yaw,input.Roll));
             for(int i=0;i<actuators.Length;i++)
             {
                 if(observe)Counters.ActuatorRows++;var a=actuators[i];
-                int body=partBodies[a.Part],region=bank.Topology.BodyRegions[body];
-                Rotation localRotation=bank.Members[body].LocalRotation*definition.GetPart(a.Part).LocalRotation;
-                Vec regionAxis=localRotation.Rotate(a.LocalAxis);
-                if(a.Kind==OwnedRuntimeActuatorKind.ReactionWheel)
+                bool compiled=executionStrategy==OwnedRuntimeExecutionStrategy.Compiled;
+                int body=compiled?executionPlan.Actuators[i].Body:partBodies[a.Part],region=compiled?executionPlan.Actuators[i].Region:bank.Topology.BodyRegions[body];
+                Vec regionAxis=compiled?executionPlan.Actuators[i].Axis:(bank.Members[body].LocalRotation*definition.GetPart(a.Part).LocalRotation).Rotate(a.LocalAxis);
+                if(observe&&compiled){Counters.CompiledActuatorRows++;Counters.RetainedGeometryRows++;}
+                if(!boundaryOnly&&a.Kind==OwnedRuntimeActuatorKind.ReactionWheel)
                     oldWheel[region]=oldWheel[region]+regionAxis*wheelMomentum[i];
                 bool allowed=enabled[i] && (a.Kind==OwnedRuntimeActuatorKind.Engine?controls.EnginesEnabled:
                     a.Kind==OwnedRuntimeActuatorKind.Rcs?controls.RcsEnabled:controls.WheelsEnabled);
-                if(!allowed){if(a.Kind==OwnedRuntimeActuatorKind.ReactionWheel)newWheel[region]=newWheel[region]+regionAxis*wheelMomentum[i];continue;}
+                if(!allowed){if(observe&&compiled)Counters.InactiveActuatorRows++;if(!boundaryOnly&&a.Kind==OwnedRuntimeActuatorKind.ReactionWheel)newWheel[region]=newWheel[region]+regionAxis*wheelMomentum[i];continue;}
                 double request=a.Kind==OwnedRuntimeActuatorKind.Engine?input.Throttle:
                     a.Kind==OwnedRuntimeActuatorKind.Rcs?Math.Max(0,OwnedRuntimeDynamics.Dot(regionAxis,translation)):
                     OwnedRuntimeDynamics.Dot(regionAxis,attitude);
                 request=Math.Max(-1,Math.Min(1,request));
-                if(request==0){if(a.Kind==OwnedRuntimeActuatorKind.ReactionWheel)newWheel[region]=newWheel[region]+regionAxis*wheelMomentum[i];continue;}
+                if(request==0){if(!boundaryOnly&&a.Kind==OwnedRuntimeActuatorKind.ReactionWheel)newWheel[region]=newWheel[region]+regionAxis*wheelMomentum[i];continue;}
                 double magnitude=Math.Abs(request),fuelMass=a.Kind==OwnedRuntimeActuatorKind.ReactionWheel?0:
                     a.MaximumForceOrTorque*magnitude*dt/(a.SpecificImpulseSeconds*StandardGravity);
                 double electric=a.ElectricUnitsPerSecond*magnitude*dt,fraction=1;
@@ -504,7 +679,7 @@ namespace KspContinuum
                 }
                 for(int f=0;f<a.FuelCount;f++)
                 {
-                    double demand=fuelMass*a.FuelMassFraction(f),available=Available(bank,fuelPools[i][f],region);
+                    double demand=fuelMass*a.FuelMassFraction(f),available=Available(bank,compiled?executionPlan.FuelRoutes[i][f]:fuelPools[i][f],region,compiled);
                     if(demand>0)fraction=Math.Min(fraction,available/demand);
                 }
                 if(electric>0)
@@ -514,41 +689,42 @@ namespace KspContinuum
                     fraction=Math.Min(fraction,available/electric);
                 }
                 fraction=Math.Max(0,Math.Min(1,fraction));
-                if(fraction==0){if(a.Kind==OwnedRuntimeActuatorKind.ReactionWheel)newWheel[region]=newWheel[region]+regionAxis*wheelMomentum[i];continue;}
-                for(int f=0;f<a.FuelCount;f++)Withdraw(bank,fuelPools[i][f],region,fuelMass*a.FuelMassFraction(f)*fraction,observe?-1:i);
+                if(fraction==0){if(!boundaryOnly&&a.Kind==OwnedRuntimeActuatorKind.ReactionWheel)newWheel[region]=newWheel[region]+regionAxis*wheelMomentum[i];continue;}
+                for(int f=0;f<a.FuelCount;f++)Withdraw(bank,compiled?executionPlan.FuelRoutes[i][f]:fuelPools[i][f],region,fuelMass*a.FuelMassFraction(f)*fraction,observe?-1:i,compiled);
                 if(electric>0){bank.ResourceQuantity[a.ElectricResource]=Math.Max(0,bank.ResourceQuantity[a.ElectricResource]-electric*fraction);if(!observe&&boundaryInitialResources[a.ElectricResource]>0&&bank.ResourceQuantity[a.ElectricResource]==0)ReachedBoundary(i,a.ElectricResource,"resource-empty");}
                 double delivered=a.MaximumForceOrTorque*request*fraction;
-                Vec axis=bank.RegionMotion[region].Orientation.Rotate(regionAxis);
+                Vec axis=stagingLocal||boundaryOnly?new Vec():bank.RegionMotion[region].Orientation.Rotate(regionAxis);
                 if(a.Kind==OwnedRuntimeActuatorKind.ReactionWheel)
                 {
                     stagedWheelMomentum[i]=Math.Max(-a.WheelMomentumCapacity,Math.Min(a.WheelMomentumCapacity,wheelMomentum[i]-delivered*dt));
                     double target=request>0?-a.WheelMomentumCapacity:a.WheelMomentumCapacity;
                     if(!observe&&wheelMomentum[i]!=target&&stagedWheelMomentum[i]==target)ReachedBoundary(i,-1,"wheel-capacity");
-                    newWheel[region]=newWheel[region]+regionAxis*stagedWheelMomentum[i];
+                    if(!boundaryOnly)newWheel[region]=newWheel[region]+regionAxis*stagedWheelMomentum[i];
                     if(observe)Counters.DeliveredTorqueNewtonMeterSeconds+=Math.Abs(delivered)*dt;
                 }
-                else
+                else if(!boundaryOnly)
                 {
-                    Vec point=LocalPoint(bank,a.Part,a.LocalPoint,body);
-                    AddLocalForce(bank,region,point,axis*delivered);
+                    Vec point=compiled?executionPlan.Actuators[i].Point:LocalPoint(bank,a.Part,a.LocalPoint,body);
+                    if(stagingLocal){Vec localForce=regionAxis*delivered;localActuatorForces[region]=localActuatorForces[region]+localForce;localActuatorTorques[region]=localActuatorTorques[region]+Vec.Cross(point+bank.Properties[region].CenterOfMass*-1,localForce);}
+                    else AddLocalForce(bank,region,point,axis*delivered);
                     if(observe)Counters.DeliveredForceNewtonSeconds+=Math.Abs(delivered)*dt;
                 }
-                double energy=a.HeatWatts*magnitude*fraction*dt;heat[a.Part]+=energy;
+                double energy=boundaryOnly?0:a.HeatWatts*magnitude*fraction*dt;if(!boundaryOnly)heat[a.Part]+=energy;
                 if(observe){Counters.ActuatorHeatJoules+=energy;Counters.PropellantKilograms+=fuelMass*fraction;Counters.ElectricUnits+=electric*fraction;}
             }
         }
 
-        double Available(OwnedRuntimeBank bank,int[] pool,int region)
+        double Available(OwnedRuntimeBank bank,int[] pool,int region,bool compiled=false)
         {
-            double sum=0;for(int i=0;i<pool.Length;i++){int r=pool[i];if(flowEnabled[r] && bank.Topology.PartRegions[resourceParts[r]]==region)
-                sum+=bank.ResourceQuantity[r]*definition.GetResource(r).MassPerUnit;}AssemblyModel.Finite(sum);return sum;
+            double sum=0;for(int i=0;i<pool.Length;i++){int r=pool[i];if(compiled||(flowEnabled[r] && bank.Topology.PartRegions[resourceParts[r]]==region))
+                sum+=bank.ResourceQuantity[r]*(compiled?executionPlan.ResourceMassPerUnit[r]:definition.GetResource(r).MassPerUnit);}AssemblyModel.Finite(sum);return sum;
         }
-        void Withdraw(OwnedRuntimeBank bank,int[] pool,int region,double mass,int boundaryRow=-1)
+        void Withdraw(OwnedRuntimeBank bank,int[] pool,int region,double mass,int boundaryRow=-1,bool compiled=false)
         {
             for(int i=0;i<pool.Length && mass>0;i++)
             {
-                int r=pool[i];if(!flowEnabled[r] || bank.Topology.PartRegions[resourceParts[r]]!=region)continue;
-                double density=definition.GetResource(r).MassPerUnit;
+                int r=pool[i];if(!compiled&&(!flowEnabled[r] || bank.Topology.PartRegions[resourceParts[r]]!=region))continue;
+                double density=compiled?executionPlan.ResourceMassPerUnit[r]:definition.GetResource(r).MassPerUnit;
                 double take=Math.Min(bank.ResourceQuantity[r],mass/density);
                 bank.ResourceQuantity[r]=Math.Max(0,bank.ResourceQuantity[r]-take);mass-=take*density;
                 if(boundaryRow>=0&&boundaryInitialResources[r]>0&&bank.ResourceQuantity[r]==0)ReachedBoundary(boundaryRow,r,"resource-empty");
@@ -558,19 +734,28 @@ namespace KspContinuum
         void Aerothermal(OwnedRuntimeStep step)
         {
             var bank=step.Bank;
+            bool compiled=executionStrategy==OwnedRuntimeExecutionStrategy.Compiled;
+            if(compiled)
+            {
+                bool active=false;
+                for(int r=0;r<bank.RegionMotion.Length;r++)if(executionPlan.SurfaceCounts[r]>0&&environments[r].Density!=0)
+                {regionOmega[r]=OwnedRuntimeDynamics.AngularVelocity(bank.Properties[r],bank.RegionMotion[r].Orientation,bank.RegionMotion[r].AngularMomentum);Counters.RegionMotionContexts++;active=true;}
+                if(!active){Counters.SurfaceRows+=surfaces.Length;Counters.VacuumSurfaceRows+=surfaces.Length;return;}
+            }
             for(int i=0;i<surfaces.Length;i++)
             {
-                Counters.SurfaceRows++;var s=surfaces[i];int body=partBodies[s.Part],region=bank.Topology.BodyRegions[body];
+                Counters.SurfaceRows++;var s=surfaces[i];int body=compiled?executionPlan.Surfaces[i].Body:partBodies[s.Part],region=compiled?executionPlan.Surfaces[i].Region:bank.Topology.BodyRegions[body];
                 var environment=environments[region];
-                var motion=bank.RegionMotion[region];Vec point=LocalPoint(bank,s.Part,s.LocalPoint,body);
+                if(compiled&&environment.Density==0){Counters.VacuumSurfaceRows++;continue;}
+                if(compiled){Counters.CompiledSurfaceRows++;Counters.RetainedGeometryRows++;}
+                var motion=bank.RegionMotion[region];Vec point=compiled?executionPlan.Surfaces[i].Point:LocalPoint(bank,s.Part,s.LocalPoint,body);
                 Vec lever=motion.Orientation.Rotate(point+bank.Properties[region].CenterOfMass*-1);
-                Vec omega=OwnedRuntimeDynamics.AngularVelocity(bank.Properties[region],motion.Orientation,motion.AngularMomentum);
+                Vec omega=compiled?regionOmega[region]:OwnedRuntimeDynamics.AngularVelocity(bank.Properties[region],motion.Orientation,motion.AngularMomentum);
                 Vec relative=motion.Velocity+Vec.Cross(omega+environment.FlowAngularVelocity*-1,lever)+environment.WindVelocity*-1;
                 double speed2=OwnedRuntimeDynamics.Dot(relative,relative);if(speed2==0 || environment.Density==0)continue;
                 double speed=Math.Sqrt(speed2),q=.5*environment.Density*speed2;
                 Vec direction=relative*(1/speed);
-                Rotation local=bank.Members[body].LocalRotation*definition.GetPart(s.Part).LocalRotation;
-                Vec normal=motion.Orientation.Rotate(local.Rotate(s.LocalNormal));
+                Vec normal=motion.Orientation.Rotate(compiled?executionPlan.Surfaces[i].Normal:(bank.Members[body].LocalRotation*definition.GetPart(s.Part).LocalRotation).Rotate(s.LocalNormal));
                 double incidence=OwnedRuntimeDynamics.Dot(normal,direction);
                 Vec lift=(normal+direction*(-incidence))*(-2*incidence*q*s.LiftArea);
                 AddLocalForce(bank,region,point,direction*(-q*s.DragArea)+lift);
@@ -594,9 +779,9 @@ namespace KspContinuum
             state.pendingDuration=step.ExpectedStamp.Time+step.DeltaTime-state.integratedTime;
             AssemblyModel.Positive(state.pendingDuration);
             for(int p=0;p<heat.Length;p++){state.heatJoules[p]+=heat[p];state.segmentHeat[offset+p]=heat[p];AssemblyModel.Finite(state.heatJoules[p]);}
-            foreach(var surface in surfaces)
+            for(int i=0;i<surfaces.Length;i++)
             {
-                int p=surface.Part;var environment=environments[bank.Topology.PartRegions[p]];double dt=step.DeltaTime;
+                var surface=surfaces[i];int p=surface.Part;var environment=environments[executionStrategy==OwnedRuntimeExecutionStrategy.Compiled?executionPlan.Surfaces[i].Region:bank.Topology.PartRegions[p]];double dt=step.DeltaTime;
                 double convection=environment.ConvectiveCoefficient*surface.ThermalArea*dt,radiation=StefanBoltzmann*surface.Emissivity*surface.ThermalArea*dt;
                 double ambient=environment.RadiationTemperature,ambient2=ambient*ambient;
                 state.segmentConvection[offset+p]+=convection;state.segmentConvectionSource[offset+p]+=convection*environment.Temperature;
@@ -613,7 +798,7 @@ namespace KspContinuum
             for(int p=0;p<heat.Length;p++)bank.Temperature[p]+=heat[p]/definition.GetPart(p).HeatCapacity;
             for(int i=0;i<surfaces.Length;i++)
             {
-                var s=surfaces[i];var environment=environments[bank.Topology.PartRegions[s.Part]];double t=bank.Temperature[s.Part],ambient=environment.RadiationTemperature;
+                var s=surfaces[i];var environment=environments[executionStrategy==OwnedRuntimeExecutionStrategy.Compiled?executionPlan.Surfaces[i].Region:bank.Topology.PartRegions[s.Part]];double t=bank.Temperature[s.Part],ambient=environment.RadiationTemperature;
                 double radiative=StefanBoltzmann*s.Emissivity*s.ThermalArea*(t*t*t+t*t*ambient+t*ambient*ambient+ambient*ambient*ambient);
                 double convective=environment.ConvectiveCoefficient*s.ThermalArea,capacity=definition.GetPart(s.Part).HeatCapacity;
                 double denominator=capacity+dt*(radiative+convective);

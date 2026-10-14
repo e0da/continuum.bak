@@ -87,9 +87,20 @@ identified physical frontier.
 The integrated package exercised the actual captured512-part model with adaptive
 intervals reaching.1 seconds, live wheel boundaries, typed impulses, identical
 future-event/debt snapshots, interpolation, failed provisional computation/HMR
-recovery and inspected craft/normals/planet rendering. Old binary v1/v2 files
+recovery and inspected craft/normals/planet rendering. Old binary v1/v2/v3 files
 decoded. Complete costs include trials and cold work; no stock KSP speedup or
 global-error certificate is inferred. Changed HMR images require a fresh Mono
-assembly identity; same-identity changed-byte reload is unsupported. Full-game
+assembly identity; the attested process registry rejects same-identity changed
+bytes before executable load/construction and permits alternate types from the
+same exact image. Full-game
 clock transfer, contact/terrain, arbitrary modules and continuous interpolation
 under long stalls remain separate gates.
+
+`execution reference|compiled` selects the original ordered fold or retained
+dependency plan at an acknowledged cold boundary. `mechanics embedded` selects
+the builtin-only two-wrench operator; `mechanics adaptive` retains full trials.
+`work-timing on|off` controls coarse instrumentation without changing physical
+configuration. Status publishes copied system/bank counters from the worker;
+rendering never reads a live mutable counter object. Checkpoint v4 preserves
+strategy/method, while instrumentation is observation-only and must be enabled
+again after restoring a new world.

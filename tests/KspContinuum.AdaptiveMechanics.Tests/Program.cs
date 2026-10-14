@@ -74,7 +74,7 @@ static class Program
             {var actual=read.GetRegion(0).Properties;Near(actual.Mass,independent.Mass);Near(actual.CenterOfMass,independent.CenterOfMass);Near(actual.Inertia.XX,independent.Inertia.XX);Near(actual.Inertia.XY,independent.Inertia.XY);Near(actual.Inertia.XZ,independent.Inertia.XZ);Near(actual.Inertia.YY,independent.Inertia.YY);Near(actual.Inertia.YZ,independent.Inertia.YZ);Near(actual.Inertia.ZZ,independent.Inertia.ZZ);Near(read.GetResourceQuantity(0),1-.5*f.World.Stamp.Time/(1000*9.80665));Near(read.GetResourceQuantity(1),.5-f.World.Stamp.Time/(1000*9.80665));}
         }
         var checkpoint=f.Host.CaptureCheckpoint(f.Imported,controls,f.Session.EvaluateRegion(0),new OwnedRuntimeStepPlan(.02));
-        byte[] binary=OwnedRuntimeCheckpointBinary.Encode(checkpoint);Need(BitConverter.ToInt32(binary,4)==3,"Adaptive codec is not v3.");var decoded=OwnedRuntimeCheckpointBinary.Decode(binary);Need(decoded.state.mechanical!=null,"Mechanical continuation was omitted.");
+        byte[] binary=OwnedRuntimeCheckpointBinary.Encode(checkpoint);Need(BitConverter.ToInt32(binary,4)==4,"Adaptive codec is not v4.");var decoded=OwnedRuntimeCheckpointBinary.Decode(binary);Need(decoded.state.mechanical!=null,"Mechanical continuation was omitted.");
         OwnedRuntimeRestoredState restored;var host=f.Host.RestoreCheckpoint(decoded,Native,Parts,out restored);var session=OwnedFlightSession.Restore(restored.World,f.Session.Capture(),Native,Parts);
         double next=f.World.SuggestedMechanicalInterval;Near(restored.World.SuggestedMechanicalInterval,next);
         f.Session.AdvanceLocal(f.Host,.02,controls);session.AdvanceLocal(host,.02,controls);
@@ -133,7 +133,7 @@ static class Program
     {
         ConstantForceWheelAndBoundary();MultiBodyResourceResetAndContinuation();RejectionAndOriginalReference();NonzeroClockRoundoffBoundaries();
         foreach(string path in args)
-        {byte[] bytes=File.ReadAllBytes(path);int version=BitConverter.ToInt32(bytes,4);Need(version==1||version==2,"Legacy witness must be retained v1/v2.");var c=bytes[1]==70?OwnedRuntimeCheckpointBinary.DecodeFlight(bytes).host:OwnedRuntimeCheckpointBinary.Decode(bytes);Need(c.state.mechanical==null,"Legacy decode invented adaptive state.");Console.WriteLine("PASS retained legacy binary version "+version+" "+path);}
+        {byte[] bytes=File.ReadAllBytes(path);int version=BitConverter.ToInt32(bytes,4);Need(version>=1&&version<=3,"Legacy witness must be retained v1/v2/v3.");var c=bytes[1]==70?OwnedRuntimeCheckpointBinary.DecodeFlight(bytes).host:OwnedRuntimeCheckpointBinary.Decode(bytes);Need(version==3?c.state.mechanical!=null&&c.state.mechanical.method==0&&c.state.executionStrategy==0:c.state.mechanical==null,"Legacy decode invented a numerical method or execution strategy.");Console.WriteLine("PASS retained legacy binary version "+version+" "+path);}
         Console.WriteLine("PASS adaptive coupled mechanics: independent force/wheel, original limiter, atomic rejection, retained multi-body mass reset, checkpoint continuation, orbital convergence, nonzero-clock ULP boundaries and reference admission");return 0;
     }
 }

@@ -4,7 +4,8 @@ namespace KspContinuum
 {
     [Serializable] public sealed class OwnedRuntimeCheckpointData
     {
-        public string schema="continuum-owned-runtime-checkpoint/v3",definitionId,frameId;
+        public string schema="continuum-owned-runtime-checkpoint/v4",definitionId,frameId;
+        public int executionStrategy;
         public OwnedRuntimeThermalState thermal;
         public OwnedRuntimeMechanicalState mechanical;
         public long definitionRevision,epoch,stateRevision,topologyRevision,frameRevision,systemsRevision;
@@ -98,6 +99,7 @@ namespace KspContinuum
             OwnedRuntimeImport.Need(runtime!=null&&runtime.World!=null&&runtime.Systems!=null&&environment!=null&&plan!=null,"Checkpoint requires a complete runtime context.");controls.Validate();
             var s=runtime.World.CaptureSnapshot();var d=s.Definition;var systems=runtime.Systems;
             var c=new OwnedRuntimeCheckpointData{definitionId=d.Id,definitionRevision=d.Revision,epoch=s.Stamp.Epoch,stateRevision=s.Stamp.StateRevision,topologyRevision=s.Stamp.TopologyRevision,frameRevision=s.Stamp.FrameRevision,time=s.Stamp.Time,frameId=s.Stamp.FrameId,systemsRevision=systems.ConfigurationRevision,source=CopySource(runtime.Source),fixedDelta=plan.FixedDelta,warpRate=plan.WarpRate,
+                executionStrategy=(int)systems.ExecutionStrategy,
                 parts=new OwnedRuntimeCheckpointPart[d.PartCount],bodies=new OwnedRuntimeCheckpointBody[d.BodyCount],resources=new OwnedRuntimeCheckpointResource[d.ResourceCount],providerKeys=new long[d.ProviderStateCount],members=new OwnedRuntimeCheckpointMember[s.BodyMembers.Length],connections=new OwnedRuntimeCheckpointConnection[s.Connections.Length],regionIds=(long[])s.RegionIds.Clone(),motions=new OwnedRuntimeCheckpointMotion[s.RegionMotion.Length],resourceQuantity=Copy(s.ResourceQuantity),temperature=Copy(s.Temperature),providerState=Copy(s.ProviderState),input=Input(s.Input),inputHistory=new OwnedRuntimeCheckpointInput[s.InputHistory.Length],
                 controls=new[]{controls.Throttle,controls.Attitude.X,controls.Attitude.Y,controls.Attitude.Z,controls.Translation.X,controls.Translation.Y,controls.Translation.Z},controlEnabled=new[]{controls.EnginesEnabled,controls.RcsEnabled,controls.WheelsEnabled},actuators=new OwnedRuntimeCheckpointActuator[systems.ActuatorCount],surfaces=new OwnedRuntimeCheckpointSurface[systems.SurfaceCount],thermalLinks=new OwnedRuntimeCheckpointThermalLink[systems.ThermalLinkCount],resourceFlowEnabled=new bool[d.ResourceCount],
                 thermal=s.Thermal.Clone(),mechanical=s.Mechanical.Clone(),controlOrientation=Q(systems.ControlOrientation),environment=new OwnedRuntimeCheckpointEnvironment{sourceId=environment.SourceId,revision=environment.Revision,epoch=environment.Epoch,density=environment.Density,temperature=environment.Temperature,convection=environment.ConvectiveCoefficient,radiation=environment.RadiationTemperature,wind=V(environment.WindVelocity),gravity=V(environment.Gravity)}};
@@ -121,9 +123,10 @@ namespace KspContinuum
         public static OwnedRuntimeRestoredState Restore(OwnedRuntimeCheckpointData c,string expectedNativeSha,string expectedPartSpecsSha)
         {
             OwnedRuntimeImport.Digest(expectedNativeSha);OwnedRuntimeImport.Digest(expectedPartSpecsSha);
-            OwnedRuntimeImport.Need(c!=null&&(c.schema=="continuum-owned-runtime-checkpoint/v1"||c.schema=="continuum-owned-runtime-checkpoint/v2"||c.schema=="continuum-owned-runtime-checkpoint/v3"),"Checkpoint schema differs.");
+            OwnedRuntimeImport.Need(c!=null&&(c.schema=="continuum-owned-runtime-checkpoint/v1"||c.schema=="continuum-owned-runtime-checkpoint/v2"||c.schema=="continuum-owned-runtime-checkpoint/v3"||c.schema=="continuum-owned-runtime-checkpoint/v4"),"Checkpoint schema differs.");
             OwnedRuntimeImport.Need(c.schema=="continuum-owned-runtime-checkpoint/v1"?c.thermal==null:c.thermal!=null,"Checkpoint thermal schema/presence differs.");
-            OwnedRuntimeImport.Need(c.schema=="continuum-owned-runtime-checkpoint/v3"?c.mechanical!=null:c.mechanical==null,"Checkpoint mechanical schema/presence differs.");
+            OwnedRuntimeImport.Need(c.schema=="continuum-owned-runtime-checkpoint/v3"||c.schema=="continuum-owned-runtime-checkpoint/v4"?c.mechanical!=null:c.mechanical==null,"Checkpoint mechanical schema/presence differs.");
+            OwnedRuntimeImport.Need(c.schema=="continuum-owned-runtime-checkpoint/v4"?c.executionStrategy>=0&&c.executionStrategy<=1:c.executionStrategy==0,"Checkpoint execution strategy differs.");
             var source=CopySource(c.source);OwnedRuntimeImport.Need(source.nativeManifestSha256==expectedNativeSha&&source.partSpecsSha256==expectedPartSpecsSha,"Checkpoint frozen source differs.");
             OwnedRuntimeImport.Need(c.parts!=null&&c.parts.Length>0&&c.parts.Length<=65536&&c.bodies!=null&&c.bodies.Length>0&&c.bodies.Length<=c.parts.Length&&c.resources!=null&&c.resources.Length<=1048576&&c.providerKeys!=null&&c.providerKeys.Length<=1048576&&c.members!=null&&c.members.Length==c.bodies.Length&&c.connections!=null&&c.connections.Length<=1048576&&c.motions!=null&&c.motions.Length>0&&c.motions.Length<=c.bodies.Length&&c.regionIds!=null&&c.regionIds.Length==c.motions.Length&&c.inputHistory!=null&&c.inputHistory.Length<=256,"Checkpoint table bounds differ.");
             OwnedRuntimeImport.Need(c.actuators!=null&&c.actuators.Length<=200000&&c.surfaces!=null&&c.surfaces.Length<=200000&&c.thermalLinks!=null&&c.thermalLinks.Length<=200000&&c.resourceFlowEnabled!=null&&c.resourceFlowEnabled.Length==c.resources.Length&&c.controlEnabled!=null&&c.controlEnabled.Length==3&&c.environment!=null,"Checkpoint systems/configuration incomplete.");
@@ -152,7 +155,7 @@ namespace KspContinuum
             }
             var surfaces=new OwnedRuntimeSurfaceSpec[c.surfaces.Length];for(int i=0;i<surfaces.Length;i++){var a=c.surfaces[i];OwnedRuntimeImport.Need(a!=null,"Checkpoint surface absent.");surfaces[i]=OwnedRuntimeSurfaceSpec.RestoreUnitNormal(d.PartSlot(a.partId),V(a.point),V(a.normal),a.dragArea,a.liftArea,a.thermalArea,a.emissivity,a.heatingFraction);}
             var links=new OwnedRuntimeThermalLink[c.thermalLinks.Length];for(int i=0;i<links.Length;i++){var a=c.thermalLinks[i];OwnedRuntimeImport.Need(a!=null,"Checkpoint thermal link absent.");links[i]=new OwnedRuntimeThermalLink(d.PartSlot(a.partA),d.PartSlot(a.partB),a.conductance);}
-            var systems=new OwnedRuntimeSystems(world,actuator,surfaces,links,(bool[])c.resourceFlowEnabled.Clone(),false,wheelSlots,Q(c.controlOrientation));for(int i=0;i<actuator.Length;i++)systems.SetEnabled(i,c.actuators[i].enabled);systems.RestoreConfigurationRevision(c.systemsRevision);
+            var systems=new OwnedRuntimeSystems(world,actuator,surfaces,links,(bool[])c.resourceFlowEnabled.Clone(),false,wheelSlots,Q(c.controlOrientation));for(int i=0;i<actuator.Length;i++)systems.SetEnabled(i,c.actuators[i].enabled);systems.SetExecutionStrategy((OwnedRuntimeExecutionStrategy)c.executionStrategy);systems.RestoreConfigurationRevision(c.systemsRevision);
             var e=c.environment;var environment=new OwnedRuntimeEnvironment(e.sourceId,e.revision,e.epoch,e.density,e.temperature,V(e.wind),V(e.gravity),e.convection,e.radiation);
             var values=Input(c.controls);var controls=new OwnedRuntimeControls{Throttle=values.Throttle,Attitude=new Vec(values.Pitch,values.Yaw,values.Roll),Translation=new Vec(values.X,values.Y,values.Z),EnginesEnabled=c.controlEnabled[0],RcsEnabled=c.controlEnabled[1],WheelsEnabled=c.controlEnabled[2]};
             return new OwnedRuntimeRestoredState{World=world,Systems=systems,Source=source,Controls=controls,Environment=environment,Plan=new OwnedRuntimeStepPlan(c.fixedDelta,c.warpRate)};

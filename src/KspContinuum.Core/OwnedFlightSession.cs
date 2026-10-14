@@ -90,6 +90,36 @@ namespace KspContinuum
             sampledCenters[region]=center;sampledVelocities[region]=motion.Velocity;sampledProperties[region]=properties;
             sampledStamps[region]=stamp;sampled[region]=true;return environment;
         }
+        internal OwnedRuntimeEnvironmentSample SampleNumerical(OwnedRuntimeStamp source,double stageTime,int region,OwnedRuntimeMotion motion,RigidAssemblyProperties properties)
+        {
+            CheckFrame(source);EnsureExtents(source);AssemblyModel.Finite(stageTime);
+            OwnedFlightWorld.Need(source.Matches(Runtime.Stamp)&&stageTime>=source.Time&&stageTime<=source.Time+.1&&region>=0&&region<extents.Length&&properties!=null,"Numerical stage source/domain differs.");
+            OwnedRuntimeWorld.ValidateMotion(motion);Vec center=Center(motion,properties);
+            OwnedFlightWorld.Need(OwnedFlightWorld.Norm(center)>Context.Radius+GuardExtent(region,properties),"Numerical stage reached its finite-size surface guard.");
+            return Context.EvaluateSample(center,Context.Epoch+(stageTime-RuntimeEpoch),stageTime);
+        }
+        internal void ValidateNumericalInterval(OwnedRuntimeStamp source,double delta,OwnedRuntimeMotion[] initial,RigidAssemblyProperties[] initialProperties,
+            OwnedRuntimeMotion[] middle,RigidAssemblyProperties[] middleProperties,OwnedRuntimeMotion[] final,RigidAssemblyProperties[] finalProperties)
+        {
+            CheckFrame(source);EnsureExtents(source);AssemblyModel.Positive(delta);
+            int count=Runtime.RegionCount;
+            OwnedFlightWorld.Need(source.Matches(Runtime.Stamp)&&delta<=.1&&initial!=null&&middle!=null&&final!=null&&initialProperties!=null&&middleProperties!=null&&finalProperties!=null&&initial.Length==count&&middle.Length==count&&final.Length==count&&initialProperties.Length==count&&middleProperties.Length==count&&finalProperties.Length==count,"Numerical guard source/shape differs.");
+            for(int r=0;r<count;r++)
+            {
+                OwnedRuntimeWorld.ValidateMotion(initial[r]);OwnedRuntimeWorld.ValidateMotion(middle[r]);OwnedRuntimeWorld.ValidateMotion(final[r]);
+                double extent=Math.Max(GuardExtent(r,initialProperties[r]),Math.Max(GuardExtent(r,middleProperties[r]),GuardExtent(r,finalProperties[r])));
+                Vec a=Center(initial[r],initialProperties[r]),b=Center(middle[r],middleProperties[r]),c=Center(final[r],finalProperties[r]);
+                NumericalChord(a,b,initial[r].Velocity,middle[r].Velocity,delta*.5,extent);
+                NumericalChord(b,c,middle[r].Velocity,final[r].Velocity,delta*.5,extent);
+            }
+        }
+        void NumericalChord(Vec a,Vec b,Vec velocityA,Vec velocityB,double interval,double extent)
+        {
+            Vec direction=b+a*-1;double square=OwnedFlightWorld.Dot(direction,direction);AssemblyModel.Finite(square);
+            double u=square==0?0:Math.Max(0,Math.Min(1,-OwnedFlightWorld.Dot(a,direction)/square));
+            double margin=OwnedFlightWorld.Norm(velocityB+velocityA*-1)*interval*.125;
+            OwnedFlightWorld.Need(OwnedFlightWorld.Norm(a+direction*u)-margin>Context.Radius+extent,"Numerical interval reaches its finite-size spherical surface guard.");
+        }
         public void ValidateStep(OwnedRuntimeStep step)
         {
             Runtime.CheckStep(step);CheckFrame(step.ExpectedStamp);EnsureExtents(step.ExpectedStamp);

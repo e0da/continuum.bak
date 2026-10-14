@@ -9,7 +9,7 @@ using System.Text.Json;
 using System.Threading;
 using KspContinuum;
 
-static class Program
+static partial class Program
 {
     static readonly JsonSerializerOptions Json=new(){IncludeFields=true,WriteIndented=true};
     sealed class Pin {public string role="",path="",sha256="";public long bytes;}
@@ -240,11 +240,12 @@ static class Program
     }
     static int Main(string[] args)
     {
-        string? output=null,failure=null;bool created=false;var input=new Inputs();var runs=new List<Run>();object? autonomous=null,legacy=null,adaptiveComparison=null;
+        if(args.Length>0&&args[0]=="--compare-execution")return CompareExecutionSnapshots(args);
+        string? output=null,failure=null;bool created=false;var input=new Inputs();var runs=new List<Run>();object? autonomous=null,legacy=null,adaptiveComparison=null,executionMatrix=null;
         try
         {
             Need(args.Length>=10&&args.Length%2==0,"--native ABS --parts ABS --context ABS --aero ABS --output NEW_ABS [--resource-policy strict|acquired-surplus] [--legacy-checkpoint ABS]");
-            var options=new Dictionary<string,string>();for(int i=0;i<args.Length;i+=2)Need(new[]{"--native","--parts","--context","--aero","--output","--resource-policy","--legacy-checkpoint"}.Contains(args[i])&&options.TryAdd(args[i],args[i+1]),"Unknown/duplicate option.");
+            var options=new Dictionary<string,string>();for(int i=0;i<args.Length;i+=2)Need(new[]{"--native","--parts","--context","--aero","--output","--resource-policy","--legacy-checkpoint","--execution-only","--execution-modes"}.Contains(args[i])&&options.TryAdd(args[i],args[i+1]),"Unknown/duplicate option.");
             foreach(string key in new[]{"--native","--parts","--context","--aero","--output"})Need(options.ContainsKey(key)&&Path.IsPathFullyQualified(options[key]),"Absolute required argument missing.");
             output=Path.GetFullPath(options["--output"]);NoLinks(output);Need(!File.Exists(output)&&!Directory.Exists(output),"Fresh output required.");
             foreach(string key in new[]{"--native","--parts","--context","--aero"}){string parent=Path.GetDirectoryName(Path.GetFullPath(options[key]))!;Need(output!=parent&&!output.StartsWith(parent+Path.DirectorySeparatorChar,StringComparison.Ordinal),"Output overlaps inputs.");}
@@ -254,6 +255,11 @@ static class Program
             if(!string.IsNullOrEmpty(input.Native.geometry))
             {MultiscaleSceneFormat.PortablePath(input.Native.geometry);string parent=Path.GetDirectoryName(options["--native"])!;string path=Path.GetFullPath(Path.Combine(parent,input.Native.geometry));NoLinks(path);Need(path.StartsWith(Path.GetFullPath(parent)+Path.DirectorySeparatorChar,StringComparison.Ordinal)&&new FileInfo(path).Length<=1073741824,"Geometry path/size rejected.");string hash=HashFile(path);Need(hash==input.Native.geometrySha256,"Geometry hash differs.");input.Geometry=WholeCraftSceneFormat.ReadGeometry(path);input.Pins.Add(new Pin{role="geometry",path=path,sha256=hash,bytes=new FileInfo(path).Length});}
             Directory.CreateDirectory(output);created=true;
+            bool executionOnly=options.GetValueOrDefault("--execution-only","false")=="true";Need(!options.ContainsKey("--execution-only")||options["--execution-only"]=="true"||options["--execution-only"]=="false","Execution-only accepts true or false.");
+            string executionModes=options.GetValueOrDefault("--execution-modes","all");Need(executionModes=="all"||executionModes=="adaptive","Execution modes accepts all or adaptive.");
+            if(executionOnly)executionMatrix=CompiledExecution(input,output,executionModes=="adaptive");
+            else
+            {
             if(options.TryGetValue("--legacy-checkpoint",out string? legacyPath))legacy=Legacy(legacyPath,input);
             runs.Add(Replay("observed",input,output,true));runs.Add(Replay("suspended",input,output,false));
             Need(runs[0].stateSha256==runs[1].stateSha256&&runs[0].pendingCheckpointSha256==runs[1].pendingCheckpointSha256,"Physical continuation depended on presentation lease cadence.");
@@ -265,10 +271,12 @@ static class Program
                 positionDifferenceMeters=Difference(reference.finalCenter!,adaptiveSuspended.finalCenter!),velocityDifferenceMetersPerSecond=Difference(reference.finalVelocity!,adaptiveSuspended.finalVelocity!),
                 orientationDifferenceRadians=2*Math.Acos(Math.Min(1,Math.Abs(reference.finalOrientation!.Zip(adaptiveSuspended.finalOrientation!,(x,y)=>x*y).Sum()))),
                 candidateMechanical=adaptiveSuspended.mechanical,scope="One acquired-input complete headless transaction per numerical strategy, same semantic controls/events/checkpoint/restore and no presentation reads. Includes preparation, isolated trials, codecs and acknowledgements. Local estimator budgets are not a global trajectory or FPS guarantee; differences are reported, not silently tolerance-qualified."};
-            autonomous=Autonomous(input);Need(input.Pins.All(p=>HashFile(p.path)==p.sha256),"Acquired inputs changed.");
+            autonomous=Autonomous(input);
+            }
+            Need(input.Pins.All(p=>HashFile(p.path)==p.sha256),"Acquired inputs changed.");
         }
         catch(Exception error){failure=error.ToString();}
-        if(created){using var file=new FileStream(Path.Combine(output!,"receipt.json"),FileMode.CreateNew,FileAccess.Write);JsonSerializer.Serialize(file,new{schema="continuum-causal-flight-lab/v1",status=failure==null?"passed":"failed",failure,inputs=input.Pins,runs,autonomous,legacy,adaptiveComparison,clockFrequency=Stopwatch.Frequency,assemblySha256=HashFile(Assembly.GetExecutingAssembly().Location),coreSha256=HashFile(typeof(OwnedFlightWorker).Assembly.Location),scope="Actual acquired craft. Separate worker execution/presentation, bounded physical quanta and causal thermal ledger, pending-energy binary checkpoint continuation, rejected corruption and source-bound schedule replacement. Costs include initialization/acks/checkpoint/scenario; allocations report worker thread only. Not native-render FPS, original KSP behavior or universal multirate parity."},Json);}
+        if(created){using var file=new FileStream(Path.Combine(output!,"receipt.json"),FileMode.CreateNew,FileAccess.Write);JsonSerializer.Serialize(file,new{schema="continuum-causal-flight-lab/v1",status=failure==null?"passed":"failed",failure,inputs=input.Pins,runs,autonomous,legacy,adaptiveComparison,executionMatrix,clockFrequency=Stopwatch.Frequency,assemblySha256=HashFile(Assembly.GetExecutingAssembly().Location),coreSha256=HashFile(typeof(OwnedFlightWorker).Assembly.Location),scope="Actual acquired craft. Separate worker execution/presentation, bounded physical quanta and causal thermal ledger, pending-energy binary checkpoint continuation, rejected corruption and source-bound schedule replacement. Costs include initialization/acks/checkpoint/scenario; allocations report worker thread only. Not native-render FPS, original KSP behavior or universal multirate parity."},Json);}
         if(failure!=null){Console.Error.WriteLine(failure);return 2;}Console.WriteLine("Actual acquired worker continuation and pending thermal state passed.");return 0;
     }
 }

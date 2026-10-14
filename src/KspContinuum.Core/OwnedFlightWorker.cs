@@ -287,7 +287,7 @@ namespace KspContinuum
                     {
                         if(kind==OwnedFlightWorkerInvocation.SameTimeMutation)
                             context.Timeline.CompleteEvent(before,Wall(null),"worker same-time command",deadline);
-                        else if(!context.Timeline.ReadProgress().Stamp.Matches(after))
+                        else if(!context.Timeline.ReadProgress().Stamp.Matches(after)||context.Timeline.ReadProgress().ConfigurationRevision!=context.Host.Systems.ConfigurationRevision||context.Timeline.ReadProgress().CodeGeneration!=context.Host.CodeGeneration)
                             context.Timeline.Synchronize(context.Timeline.ReadProgress().Stamp,Wall(null),"worker cold command");
                     }
                     lock(gate)fault=null;

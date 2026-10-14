@@ -21,6 +21,24 @@ a new path alone is insufficient. Reusing identical bytes to select another
 schedule type in that image is supported. Worker and isolated-trial admissions
 are separate contracts; the executable examples declare both where applicable.
 
+The reload consumer now uses `OwnedRuntimeScheduleImages`: it clones and hashes
+the exact image, reads its full identity through a temporary metadata snapshot,
+then deletes that snapshot before executable admission. A process-wide cold
+registry retains at most 32 images of at most 16 MiB each. Changed bytes under a
+known identity and unknown already-loaded identities reject before schedule type
+construction. Identical known bytes reuse the attested assembly; fresh identities
+can load new generations. The host receives the admitted image digest rather
+than a digest of bytes that Mono may have ignored. Rejected metadata cleanup
+retains the primary exception plus its cleanup failure; cleanup-only failure
+rejects admission explicitly.
+
+This is a reserved single-writer cold loading contract, not a sandbox or assembly
+unloader. Concurrent external assembly loading is outside that contract.
+Successful load retains the image even if later type/host admission fails;
+constructors of admitted images are not transactionally rolled back. Native Mono
+qualification must exercise the changed-byte rejection and fresh-generation
+numerical behavior independently of the portable registry fixtures.
+
 Use the loopback control client with the player's reported port and a new JSON
 path for each response. Replace `FULL_DLL` with the absolute built example DLL:
 

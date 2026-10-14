@@ -194,6 +194,7 @@ namespace KspContinuum
 
     internal sealed class OwnedRuntimeBank
     {
+        internal OwnedRuntimeWork Work;
         internal OwnedRuntimeMotion[] RegionMotion;
         internal RigidAssemblyProperties[] Properties;
         internal RigidAssemblyMember[] Members;
@@ -207,6 +208,7 @@ namespace KspContinuum
         internal RetainedRigidAssemblyProperties[] PropertyOwners;
         internal int HistoryCount, HistoryHead, Readers;
         internal bool SystemsExecuted;
+        internal bool MechanicalPublicationPending;
         internal OwnedRuntimeDefinition Definition;
         internal OwnedRuntimeMechanicalState Mechanical=new OwnedRuntimeMechanicalState();
         internal OwnedRuntimeTopology Topology;
@@ -224,6 +226,9 @@ namespace KspContinuum
         }
         internal void CopyFrom(OwnedRuntimeBank source)
         {
+            if(source.MechanicalPublicationPending)throw new InvalidOperationException("Cannot copy an unfinished mechanical transaction.");
+            MechanicalPublicationPending=false;
+            long begin=Work==null?0:Work.Begin();
             Mechanical.CopyFrom(source.Mechanical);
             if (RegionMotion.Length != source.RegionMotion.Length || Members.Length != source.Members.Length
                 || ResourceQuantity.Length != source.ResourceQuantity.Length || Temperature.Length != source.Temperature.Length
@@ -235,6 +240,7 @@ namespace KspContinuum
             Thermal.CopyFrom(source.Thermal);
             Array.Copy(source.History, History, History.Length); Input = source.Input; HistoryCount = source.HistoryCount; HistoryHead = source.HistoryHead;
             Definition = source.Definition; Topology = source.Topology; Stamp = source.Stamp;
+            if(Work!=null)Work.Copy(RegionMotion.Length,Members.Length,ResourceQuantity.Length,History.Length,begin);
         }
     }
 }

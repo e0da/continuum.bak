@@ -68,14 +68,13 @@ namespace KspContinuum
                 throw new ArgumentException("Thermal zero-duration ledger has pending energy/exposure.");
             if(pendingDuration>0 && (!independent || planId.Length==0))throw new ArgumentException("Pending thermal interval lacks its admitted independent model.");
             if(segmentCount<0||segmentCount>SegmentCapacity||segmentDuration==null||segmentDuration.Length!=SegmentCapacity || (pendingDuration==0)!=(segmentCount==0))throw new ArgumentException("Thermal forcing history bounds differ.");
-            ValidateArray(segmentHeat,parts*SegmentCapacity);ValidateArray(segmentConvection,parts*SegmentCapacity);ValidateArray(segmentConvectionSource,parts*SegmentCapacity);ValidateArray(segmentRadiation,parts*SegmentCapacity);ValidateArray(segmentRadiationSource,parts*SegmentCapacity);
             double duration=0;for(int i=0;i<SegmentCapacity;i++){Nonnegative(segmentDuration[i]);if(i<segmentCount){AssemblyModel.Positive(segmentDuration[i]);duration+=segmentDuration[i];}else if(segmentDuration[i]!=0)throw new ArgumentException("Unused thermal history duration differs.");}
             if(Math.Abs(duration-pendingDuration)>16*2.2204460492503131e-16*Math.Max(1,Math.Abs(integratedTime+pendingDuration)))throw new ArgumentException("Thermal forcing history clock differs.");
             if(causalRevision-integratedCausalRevision!=segmentCount)throw new ArgumentException("Thermal forcing causal revision differs.");
             ValidateLedger(heatJoules,segmentHeat,parts);ValidateLedger(convectionExposure,segmentConvection,parts);ValidateLedger(convectionSource,segmentConvectionSource,parts);ValidateLedger(radiationExposure,segmentRadiation,parts);ValidateLedger(radiationSource,segmentRadiationSource,parts);
         }
         void ValidateLedger(double[] total,double[] history,int parts)
-        {for(int p=0;p<parts;p++){double sum=0;for(int i=0;i<SegmentCapacity;i++){double value=history[i*parts+p];if(i<segmentCount)sum+=value;else if(value!=0)throw new ArgumentException("Unused thermal forcing history differs.");}if(sum!=total[p])throw new ArgumentException("Thermal energy/exposure ledger differs from exact ordered history.");}}
+        {if(history==null||history.Length!=parts*SegmentCapacity)throw new ArgumentException("Thermal array shape differs.");for(int p=0;p<parts;p++){double sum=0;for(int i=0;i<SegmentCapacity;i++){double value=history[i*parts+p];Nonnegative(value);if(i<segmentCount)sum+=value;else if(value!=0)throw new ArgumentException("Unused thermal forcing history differs.");}if(sum!=total[p])throw new ArgumentException("Thermal energy/exposure ledger differs from exact ordered history.");}}
         static void ValidateArray(double[] array,int parts)
         {if(array==null||array.Length!=parts)throw new ArgumentException("Thermal array shape differs.");foreach(double value in array)Nonnegative(value);}
         internal void ValidateClock(double time)

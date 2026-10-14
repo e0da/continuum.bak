@@ -5,41 +5,45 @@ namespace KspContinuum
 {
     // Every future-relevant schedule value must be in the bank. Trials may repeat this schedule.
     public interface IOwnedRuntimeTrialSafeSchedule : IOwnedRuntimeFieldSchedule { }
+    public enum OwnedRuntimeMechanicalMethod { StepDoubling=0, EmbeddedMidpoint=1 }
     public sealed class OwnedRuntimeMechanicalPolicy
     {
         public readonly bool Adaptive;
+        public readonly OwnedRuntimeMechanicalMethod Method;
         public readonly double MinimumInterval,MaximumInterval,PositionTolerance,VelocityTolerance,AngleTolerance,ScaledStateTolerance,InitialInterval;
         public OwnedRuntimeMechanicalPolicy(bool adaptive=false,double minimumInterval=.0001,double maximumInterval=.1,
-            double positionTolerance=1e-4,double velocityTolerance=1e-4,double angleTolerance=1e-6,double scaledStateTolerance=1e-6,double initialInterval=.02)
+            double positionTolerance=1e-4,double velocityTolerance=1e-4,double angleTolerance=1e-6,double scaledStateTolerance=1e-6,double initialInterval=.02,OwnedRuntimeMechanicalMethod method=OwnedRuntimeMechanicalMethod.StepDoubling)
         {
             AssemblyModel.Positive(minimumInterval);AssemblyModel.Positive(maximumInterval);AssemblyModel.Positive(positionTolerance);AssemblyModel.Positive(velocityTolerance);AssemblyModel.Positive(angleTolerance);AssemblyModel.Positive(scaledStateTolerance);AssemblyModel.Positive(initialInterval);
             if(minimumInterval<.0001||maximumInterval>.1||minimumInterval>maximumInterval||initialInterval<minimumInterval||initialInterval>maximumInterval)
                 throw new ArgumentException("Mechanical interval bounds differ.");
-            Adaptive=adaptive;MinimumInterval=minimumInterval;MaximumInterval=maximumInterval;PositionTolerance=positionTolerance;VelocityTolerance=velocityTolerance;AngleTolerance=angleTolerance;ScaledStateTolerance=scaledStateTolerance;InitialInterval=initialInterval;
+            if(method!=OwnedRuntimeMechanicalMethod.StepDoubling&&method!=OwnedRuntimeMechanicalMethod.EmbeddedMidpoint)throw new ArgumentOutOfRangeException("method");
+            Method=method;Adaptive=adaptive;MinimumInterval=minimumInterval;MaximumInterval=maximumInterval;PositionTolerance=positionTolerance;VelocityTolerance=velocityTolerance;AngleTolerance=angleTolerance;ScaledStateTolerance=scaledStateTolerance;InitialInterval=initialInterval;
         }
     }
     [Serializable] public sealed class OwnedRuntimeMechanicalState
     {
         public string schema="continuum-owned-runtime-mechanical-state/v1";
         public bool adaptive;
+        public int method;
         public double minimumInterval=.0001,maximumInterval=.1,positionTolerance=1e-4,velocityTolerance=1e-4,angleTolerance=1e-6,scaledStateTolerance=1e-6,initialInterval=.02,nextInterval=.02,lastAcceptedInterval,lastError;
         public long accepted,rejected,trialExecutions,policyRevision,roundoffCoalescedIntervals;
-        public OwnedRuntimeMechanicalPolicy Policy {get{return new OwnedRuntimeMechanicalPolicy(adaptive,minimumInterval,maximumInterval,positionTolerance,velocityTolerance,angleTolerance,scaledStateTolerance,initialInterval);}}
+        public OwnedRuntimeMechanicalPolicy Policy {get{return new OwnedRuntimeMechanicalPolicy(adaptive,minimumInterval,maximumInterval,positionTolerance,velocityTolerance,angleTolerance,scaledStateTolerance,initialInterval,(OwnedRuntimeMechanicalMethod)method);}}
         internal void Apply(OwnedRuntimeMechanicalPolicy p)
-        {adaptive=p.Adaptive;minimumInterval=p.MinimumInterval;maximumInterval=p.MaximumInterval;positionTolerance=p.PositionTolerance;velocityTolerance=p.VelocityTolerance;angleTolerance=p.AngleTolerance;scaledStateTolerance=p.ScaledStateTolerance;initialInterval=p.InitialInterval;nextInterval=p.InitialInterval;lastError=0;lastAcceptedInterval=0;policyRevision=checked(policyRevision+1);}
+        {method=(int)p.Method;adaptive=p.Adaptive;minimumInterval=p.MinimumInterval;maximumInterval=p.MaximumInterval;positionTolerance=p.PositionTolerance;velocityTolerance=p.VelocityTolerance;angleTolerance=p.AngleTolerance;scaledStateTolerance=p.ScaledStateTolerance;initialInterval=p.InitialInterval;nextInterval=p.InitialInterval;lastError=0;lastAcceptedInterval=0;policyRevision=checked(policyRevision+1);}
         internal void CopyFrom(OwnedRuntimeMechanicalState s)
-        {schema=s.schema;adaptive=s.adaptive;minimumInterval=s.minimumInterval;maximumInterval=s.maximumInterval;positionTolerance=s.positionTolerance;velocityTolerance=s.velocityTolerance;angleTolerance=s.angleTolerance;scaledStateTolerance=s.scaledStateTolerance;initialInterval=s.initialInterval;nextInterval=s.nextInterval;lastAcceptedInterval=s.lastAcceptedInterval;lastError=s.lastError;accepted=s.accepted;rejected=s.rejected;trialExecutions=s.trialExecutions;policyRevision=s.policyRevision;roundoffCoalescedIntervals=s.roundoffCoalescedIntervals;}
+        {schema=s.schema;method=s.method;adaptive=s.adaptive;minimumInterval=s.minimumInterval;maximumInterval=s.maximumInterval;positionTolerance=s.positionTolerance;velocityTolerance=s.velocityTolerance;angleTolerance=s.angleTolerance;scaledStateTolerance=s.scaledStateTolerance;initialInterval=s.initialInterval;nextInterval=s.nextInterval;lastAcceptedInterval=s.lastAcceptedInterval;lastError=s.lastError;accepted=s.accepted;rejected=s.rejected;trialExecutions=s.trialExecutions;policyRevision=s.policyRevision;roundoffCoalescedIntervals=s.roundoffCoalescedIntervals;}
         public OwnedRuntimeMechanicalState Clone(){Validate();var s=new OwnedRuntimeMechanicalState();s.CopyFrom(this);return s;}
         internal void Validate()
         {
-            if(schema!="continuum-owned-runtime-mechanical-state/v1"||accepted<0||rejected<0||trialExecutions<0||policyRevision<0||roundoffCoalescedIntervals<0||roundoffCoalescedIntervals>accepted)throw new ArgumentException("Mechanical continuation metadata differs.");
+            if(schema!="continuum-owned-runtime-mechanical-state/v1"||method<0||method>1||accepted<0||rejected<0||trialExecutions<0||policyRevision<0||roundoffCoalescedIntervals<0||roundoffCoalescedIntervals>accepted)throw new ArgumentException("Mechanical continuation metadata differs.");
             AssemblyModel.Positive(minimumInterval);AssemblyModel.Positive(maximumInterval);AssemblyModel.Positive(positionTolerance);AssemblyModel.Positive(velocityTolerance);AssemblyModel.Positive(angleTolerance);AssemblyModel.Positive(scaledStateTolerance);AssemblyModel.Positive(initialInterval);
             AssemblyModel.Finite(nextInterval);AssemblyModel.Finite(lastAcceptedInterval);AssemblyModel.Finite(lastError);
             if(minimumInterval<.0001||maximumInterval>.1||minimumInterval>maximumInterval||initialInterval<minimumInterval||initialInterval>maximumInterval||nextInterval<minimumInterval||nextInterval>maximumInterval||lastAcceptedInterval<0||lastAcceptedInterval>maximumInterval||lastError<0)throw new ArgumentException("Mechanical controller state differs.");
         }
     }
     [Serializable] public struct OwnedRuntimeAdaptiveObservation
-    {public long Trials,Rejected,Accepted,WorkTicks,ClockFrequency,RoundoffCoalescedIntervals,ActuatorBoundaryClockCeilings;public double LastError,LastInterval,LastBoundaryClockCeilingSeconds;public string LastFailure;}
+    {public long Trials,Rejected,Accepted,WorkTicks,ClockFrequency,RoundoffCoalescedIntervals,ActuatorBoundaryClockCeilings,EmbeddedAttempts,EmbeddedForceSamples;public double LastError,LastInterval,LastBoundaryClockCeilingSeconds;public string LastFailure;}
     public sealed class OwnedRuntimeMechanicalAccuracyException : InvalidOperationException
     {
         public readonly double Interval,NormalizedError;

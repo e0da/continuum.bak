@@ -13,6 +13,8 @@ namespace KspContinuum
         public OwnedRuntimeStamp ExpectedStamp { get; private set; }
         internal void EnsureOpen() { World.CheckStep(this); }
         internal void ClaimSystemsExecution() { World.ClaimSystemsStep(this); }
+        internal void BeginMechanicalPublication(){World.CheckStep(this);if(Bank.MechanicalPublicationPending)throw new InvalidOperationException("Mechanical transaction already open.");Bank.MechanicalPublicationPending=true;}
+        internal void CompleteMechanicalPublication(){World.CheckStep(this);if(!Bank.MechanicalPublicationPending)throw new InvalidOperationException("Mechanical transaction is not open.");Bank.MechanicalPublicationPending=false;}
         internal OwnedRuntimeStep(OwnedRuntimeWorld world, OwnedRuntimeBank bank, long token,
             OwnedRuntimeStamp stamp, double deltaTime)
         { World = world; Bank = bank; Token = token; ExpectedStamp = stamp; DeltaTime = deltaTime; }
@@ -68,6 +70,7 @@ namespace KspContinuum
     public sealed class OwnedRuntimeWorld
     {
         readonly object gate = new object();
+        OwnedRuntimeWork work=new OwnedRuntimeWork();
         OwnedRuntimeBank[] banks;
         OwnedRuntimeBank current, writing;
         long token, activeToken, hostedToken;
@@ -76,6 +79,9 @@ namespace KspContinuum
         bool admitting;
         int admissionThread;
         public double LastTopologyRemovedEnergy { get; private set; }
+        public OwnedRuntimeWork Work {get{lock(gate)return work.Read();}}
+        public void SetWorkObservation(OwnedRuntimeStamp expected,bool enabled)
+        {lock(gate){RequireMutation(expected);work.ObserveClock=enabled;}}
         public OwnedRuntimeDefinition Definition { get { return current.Definition; } }
         public OwnedRuntimeTopology Topology { get { return current.Topology; } }
         public OwnedRuntimeStamp Stamp { get { lock (gate) return current.Stamp; } }
@@ -112,8 +118,8 @@ namespace KspContinuum
             EnsurePropertyOwners(banks[1]); EnsurePropertyOwners(banks[2]);
         }
 
-        static OwnedRuntimeBank[] NewBanks(OwnedRuntimeDefinition definition, OwnedRuntimeTopology topology)
-        { return new[] { new OwnedRuntimeBank(definition, topology), new OwnedRuntimeBank(definition, topology), new OwnedRuntimeBank(definition, topology) }; }
+        OwnedRuntimeBank[] NewBanks(OwnedRuntimeDefinition definition, OwnedRuntimeTopology topology)
+        { return new[] { new OwnedRuntimeBank(definition, topology){Work=work}, new OwnedRuntimeBank(definition, topology){Work=work}, new OwnedRuntimeBank(definition, topology){Work=work} }; }
 
         public OwnedRuntimeStep BeginStep(OwnedRuntimeStamp expected, double deltaTime, OwnedRuntimeInput input)
         { return BeginStepCore(expected, deltaTime, input, false); }
@@ -176,7 +182,9 @@ namespace KspContinuum
                     throw new InvalidOperationException("Only the runtime host may publish its scheduled transaction.");
                 try
                 {
+                    if(writing.MechanicalPublicationPending)throw new InvalidOperationException("Unfinished mechanical transaction cannot publish scalar-only state.");
                     for (int i = 0; i < writing.ResourceQuantity.Length; i++) CheckResourcePublication(writing, i, writing.ResourceQuantity[i]);
+                    Interlocked.Add(ref work.ValidationResourceRows,writing.ResourceQuantity.Length);
                     RefreshMass(writing, true); ValidateBank(writing);
                     double nextTime = current.Stamp.Time + step.DeltaTime; AssemblyModel.Finite(nextTime);
                     if (!(nextTime > current.Stamp.Time)) throw new ArgumentException("Step must advance representable physical time.");
@@ -232,6 +240,7 @@ namespace KspContinuum
             lock(gate)
             {
                 RequireMutation(current.Stamp);var trial=new OwnedRuntimeWorld(current.Definition,current.Topology,current.RegionMotion[0],current.Stamp.Time,current.Stamp.FrameId);
+                trial.work=work;foreach(var bank in trial.banks)bank.Work=work;
                 ResetTrial(trial);if(boundWriterThread!=0)trial.BindWriterThread();return trial;
             }
         }
@@ -242,7 +251,7 @@ namespace KspContinuum
                 RequireWriterThread();trial.RequireMutation(trial.current.Stamp);
                 if(!ReferenceEquals(current.Definition,trial.current.Definition)||!ReferenceEquals(current.Topology,trial.current.Topology))throw new InvalidOperationException("Trial topology/definition must be recompiled.");
                 foreach(var bank in trial.banks)
-                {if(bank.Readers!=0)throw new InvalidOperationException("Private trial bank leaked a reader.");bank.CopyFrom(current);SynchronizePropertyOwners(bank);}
+                {if(bank.Readers!=0)throw new InvalidOperationException("Private trial bank leaked a reader.");bank.CopyFrom(current);}
                 trial.current=trial.banks[0];
             }
         }
@@ -257,12 +266,13 @@ namespace KspContinuum
                 OwnedRuntimeBank candidate=null;foreach(var bank in banks)if(!ReferenceEquals(bank,current)&&bank.Readers==0){candidate=bank;break;}
                 if(candidate==null)throw new OwnedRuntimeReadPressureException("No retained bank is available for adaptive publication.");
                 candidate.CopyFrom(trial.current);for(int i=0;i<candidate.ResourceQuantity.Length;i++)CheckResourcePublication(candidate,i,candidate.ResourceQuantity[i]);
+                Interlocked.Add(ref work.ValidationResourceRows,candidate.ResourceQuantity.Length);
                 Array.Copy(current.History,candidate.History,current.History.Length);candidate.HistoryHead=current.HistoryHead;candidate.HistoryCount=current.HistoryCount;
                 var stamp=new OwnedRuntimeStamp(expected.Epoch,checked(expected.StateRevision+1),expected.TopologyRevision,expected.DefinitionRevision,expected.FrameRevision,trial.current.Stamp.Time,expected.FrameId);
                 candidate.Input=input;candidate.History[candidate.HistoryHead]=new OwnedRuntimeInputRecord {Sequence=stamp.StateRevision,StartedAt=expected.Time,DeltaTime=interval,Input=input};
                 candidate.HistoryHead=(candidate.HistoryHead+1)%candidate.History.Length;if(candidate.HistoryCount<candidate.History.Length)candidate.HistoryCount++;
                 var m=candidate.Mechanical;m.accepted=checked(current.Mechanical.accepted+1);m.rejected=checked(current.Mechanical.rejected+rejected);m.trialExecutions=checked(current.Mechanical.trialExecutions+trials);m.lastAcceptedInterval=interval;m.lastError=error;m.nextInterval=next;
-                candidate.Stamp=stamp;SynchronizePropertyOwners(candidate);ValidateBank(candidate);candidate.Thermal.ValidateClock(stamp.Time);current=candidate;return stamp;
+                candidate.Stamp=stamp;ValidateBank(candidate);candidate.Thermal.ValidateClock(stamp.Time);current=candidate;return stamp;
             }
         }
         internal void EnterAdmission(OwnedRuntimeStamp expected)
@@ -292,6 +302,9 @@ namespace KspContinuum
 
         internal static void RefreshMass(OwnedRuntimeBank bank, bool preserveMaterialMotion)
         {
+            long begin=bank.Work==null?0:bank.Work.Begin();
+            try
+            {
             var definition = bank.Definition;
             Array.Clear(bank.BodyDirty, 0, bank.BodyDirty.Length);
             Array.Clear(bank.RegionDirty, 0, bank.RegionDirty.Length);
@@ -320,6 +333,7 @@ namespace KspContinuum
                 if (bank.Properties[r] == null || bank.RegionDirty[r])
                 {
                     var owner = bank.PropertyOwners[r]; foreach (int b in bank.Topology.RegionBodies[r]) owner.Update(bank.Members[b]);
+                    if(bank.Work!=null)Interlocked.Add(ref bank.Work.ReducerMemberVisits,bank.Topology.RegionBodies[r].Length);
                     RigidAssemblyProperties before = bank.Properties[r], after = owner.Combine();
                     RequireCondition(after);
                     if (before != null && preserveMaterialMotion)
@@ -327,6 +341,8 @@ namespace KspContinuum
                     bank.Properties[r] = after;
                 }
             }
+            }
+            finally{if(bank.Work!=null)bank.Work.Mass(bank.ResourceQuantity.Length,begin);}
         }
         static RigidAssemblyMember WetMember(OwnedRuntimeBank bank, int body)
         {
@@ -390,18 +406,20 @@ namespace KspContinuum
                 bank.PropertyOwners[r] = new RetainedRigidAssemblyProperties(members);
             }
         }
-        static void SynchronizePropertyOwners(OwnedRuntimeBank bank)
-        {EnsurePropertyOwners(bank);for(int r=0;r<bank.Topology.RegionCount;r++)foreach(int b in bank.Topology.RegionBodies[r])bank.PropertyOwners[r].Update(bank.Members[b]);}
         static void RequireCondition(RigidAssemblyProperties properties)
         { if (!(properties.PrincipalInertia.X / properties.PrincipalInertia.Z >= RigidAssemblyProjection.MinimumPrincipalMomentRatio)) throw new ArgumentException("Region inertia is ill-conditioned."); }
         static void ValidateBank(OwnedRuntimeBank bank)
         {
+            long begin=bank.Work==null?0:bank.Work.Begin();try
+            {
             bank.Mechanical.Validate();
             bank.Input.Validate();
             for (int r = 0; r < bank.RegionMotion.Length; r++) { ValidateMotion(bank.RegionMotion[r]); RequireCondition(bank.Properties[r]); }
             foreach (double value in bank.Temperature) AssemblyModel.Positive(value);
             bank.Thermal.Validate(bank.Temperature.Length);
             foreach (double value in bank.ProviderState) AssemblyModel.Finite(value);
+            }
+            finally{if(bank.Work!=null)bank.Work.Validate(0,begin);}
         }
         static RigidAssemblyMember ReId(RigidAssemblyMember member, int id)
         { return new RigidAssemblyMember(id, member.Mass, member.LocalPosition, member.LocalRotation, member.LocalCenterOfMass, member.PrincipalInertia, member.PrincipalRotation); }
