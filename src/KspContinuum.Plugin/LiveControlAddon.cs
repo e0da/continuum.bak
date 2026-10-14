@@ -66,7 +66,7 @@ namespace KspContinuum
             long started = Stopwatch.GetTimestamp();
             LiveControlRequest request = LiveControlRequest.Parse(command);
             LiveControlReply reply = control.Execute(request, Time.frameCount, observedFixedCallbacks,
-                () => Capture(vessel), StartSweep, SweepStatus, RequestQuit);
+                () => Capture(vessel), StartSweep, SweepStatus, RequestQuit, RigidOperation);
             reply.observerNanoseconds = (long)((Stopwatch.GetTimestamp() - started) *
                 (1000000000.0 / Stopwatch.Frequency));
             if (request.operation == LiveControlOperation.SubscribeSweep && reply.status == "ok")
@@ -125,6 +125,22 @@ namespace KspContinuum
             if (state == "waiting-for-orbit" || state == "running") return "experiment-busy";
             quitRequested = true;
             return null;
+        }
+
+        static LiveRigidStatus RigidOperation(LiveControlOperation operation)
+        {
+            string reason = null;
+            if (operation == LiveControlOperation.RigidEnable) reason = PlayableRigidFlightService.SetEnabled(true);
+            else if (operation == LiveControlOperation.RigidDisable) reason = PlayableRigidFlightService.SetEnabled(false);
+            else if (operation == LiveControlOperation.RigidRetry) reason = PlayableRigidFlightService.Retry();
+            else if (operation == LiveControlOperation.RigidWarp4) reason = PlayableRigidFlightService.SetPhysicsWarp(true);
+            else if (operation == LiveControlOperation.RigidNormal) reason = PlayableRigidFlightService.SetPhysicsWarp(false);
+            else if (operation == LiveControlOperation.RigidSave) reason = PlayableRigidFlightService.Quicksave(false);
+            else if (operation == LiveControlOperation.RigidLoad) reason = PlayableRigidFlightService.Quicksave(true);
+            LiveRigidStatus status = PlayableRigidFlightService.Snapshot();
+            if (operation == LiveControlOperation.RigidCapture) reason = PlayableRigidFlightService.CaptureFrames(out status.frameReceiptPath);
+            status.operationError = reason;
+            return status;
         }
 
         static LiveVesselSnapshot Capture(Vessel vessel)

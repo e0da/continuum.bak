@@ -121,7 +121,7 @@ namespace KspContinuum
                             }
                             if (client.Available == 0)
                             {
-                                if (client.Client.Poll(0, SelectMode.SelectRead)) break;
+                                if (client.Client.Poll(0, SelectMode.SelectRead) && client.Available == 0) break;
                                 outboundReady.WaitOne(10);
                                 continue;
                             }

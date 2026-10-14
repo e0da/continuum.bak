@@ -20,9 +20,12 @@ public static class BuildOwnedRuntimeWorkbench
         if(string.IsNullOrEmpty(output)||!File.Exists("Assets/OwnedRuntimeWorkbench.cs"))throw new InvalidOperationException("Owned runtime host/source missing.");
         var rows=new List<Source>();
         foreach(string source in Directory.GetFiles("Assets","*.cs",SearchOption.AllDirectories))rows.Add(new Source {file=source,sha256=Hash(source)});
-        rows.Add(new Source {file="Assets/FixtureOpaque.shader",sha256=Hash("Assets/FixtureOpaque.shader")});
+        foreach(string source in Directory.GetFiles("Assets","*.shader",SearchOption.AllDirectories))rows.Add(new Source {file=source,sha256=Hash(source)});
         rows.Sort((a,b)=>string.CompareOrdinal(a.file,b.file));
-        BuildAeroFieldWorkbench.Build();
+        string previous=Environment.GetEnvironmentVariable("CONTINUUM_MULTISCALE_WORKBENCH_BUILD");
+        Environment.SetEnvironmentVariable("CONTINUUM_MULTISCALE_WORKBENCH_BUILD","1");
+        try {BuildAeroFieldWorkbench.Build();}
+        finally {Environment.SetEnvironmentVariable("CONTINUUM_MULTISCALE_WORKBENCH_BUILD",previous);}
         string player=Path.Combine(output,"Contents/Resources/Data/Managed/Assembly-CSharp.dll");
         File.WriteAllText(output+".owned-build.json",JsonUtility.ToJson(new Receipt {unity=Application.unityVersion,output=output,playerAssemblySha256=Hash(player),sources=rows.ToArray()},true));
     }

@@ -19,6 +19,7 @@ struct Options {
     timeout: Duration,
     sweep: bool,
     quit: bool,
+    rigid: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +33,7 @@ struct Reply {
     snapshot: Option<serde_json::Value>,
     observer_nanoseconds: Option<u64>,
     sweep: Option<SweepStatus>,
+    rigid: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,6 +102,7 @@ fn main() {
 
 fn run(arguments: Vec<String>) -> Result<(), String> {
     let options = parse_options(&arguments)?;
+    if let Some(action) = &options.rigid { return run_rigid(&options, action); }
     if options.quit {
         return run_quit(&options);
     }
@@ -181,6 +184,31 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
     let output = options.output.as_ref().ok_or("missing output path")?;
     write_new(output, &receipt, "receipt")?;
     println!("{}", output.display());
+    Ok(())
+}
+
+fn run_rigid(options: &Options, action: &str) -> Result<(), String> {
+    let mut stream = connect(options)?;
+    let mut reader = BufReader::new(stream.try_clone().map_err(|error| error.to_string())?);
+    let mut observations = VecDeque::new();
+    let hello = exchange(&mut stream, &mut reader, &mut observations, "hello 1.3.0 rigid-hello")?;
+    require_ok(&hello, "rigid-hello", false)?;
+    if !hello.capabilities.as_ref().is_some_and(|capabilities| capabilities.iter().any(|value| value == "playable-rigid-control")) {
+        return Err("server does not support playable rigid control".into());
+    }
+    let identity = hello.identity.ok_or("rigid hello omitted identity")?;
+    let command = format!("rigid-{action} 1.3.0 rigid-command {} {}", identity.session_id, identity.epoch);
+    let reply = exchange(&mut stream, &mut reader, &mut observations, &command)?;
+    require_ok(&reply, "rigid-command", false)?;
+    let status = reply.rigid.ok_or("rigid reply omitted status")?;
+    let receipt = serde_json::json!({"schema":"continuum-rigid-control-observation/v1","operation":action,
+        "sessionId":identity.session_id,"epoch":identity.epoch,"status":status});
+    let text = serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?;
+    if let Some(path) = &options.output {
+        let mut file = OpenOptions::new().write(true).create_new(true).open(path).map_err(|error| error.to_string())?;
+        writeln!(file, "{text}").map_err(|error| error.to_string())?;
+    }
+    println!("{text}");
     Ok(())
 }
 
@@ -418,6 +446,7 @@ fn parse_options(arguments: &[String]) -> Result<Options, String> {
     let mut timeout_ms = 5_000u64;
     let mut sweep = false;
     let mut quit = false;
+    let mut rigid = None;
     let mut index = 0;
     while index < arguments.len() {
         if arguments[index] == "--dry-buoyancy-sweep" {
@@ -437,6 +466,7 @@ fn parse_options(arguments: &[String]) -> Result<Options, String> {
             "--output" => output = Some(PathBuf::from(value)),
             "--ready" => ready = Some(PathBuf::from(value)),
             "--timeout-ms" => timeout_ms = value.parse().map_err(|_| "invalid --timeout-ms")?,
+            "--rigid" if matches!(value.as_str(), "status" | "enable" | "disable" | "retry" | "warp4" | "normal" | "save" | "load" | "capture") => rigid = Some(value.clone()),
             _ => return Err(usage()),
         }
         index += 2;
@@ -447,10 +477,10 @@ fn parse_options(arguments: &[String]) -> Result<Options, String> {
     if timeout_ms == 0 || timeout_ms > 60_000 {
         return Err("--timeout-ms must be between 1 and 60000".into());
     }
-    if sweep && quit {
+    if (usize::from(sweep) + usize::from(quit) + usize::from(rigid.is_some())) > 1 {
         return Err("choose one live command".into());
     }
-    if !sweep && !quit && (output.is_none() || ready.is_none()) {
+    if !sweep && !quit && rigid.is_none() && (output.is_none() || ready.is_none()) {
         return Err(usage());
     }
     if output.is_some() && output == ready {
@@ -464,6 +494,7 @@ fn parse_options(arguments: &[String]) -> Result<Options, String> {
         timeout: Duration::from_millis(timeout_ms),
         sweep,
         quit,
+        rigid,
     })
 }
 
@@ -475,7 +506,7 @@ fn nanos(duration: Duration) -> Result<u64, String> {
 }
 
 fn usage() -> String {
-    "usage: continuum-live-control-client [--address HOST:PORT] [--timeout-ms 1..60000] (--dry-buoyancy-sweep | --quit-when-idle | [--samples 1..10000] --ready READY.json --output RECEIPT.json)".into()
+    "usage: continuum-live-control-client [--address HOST:PORT] [--timeout-ms 1..60000] (--rigid status|enable|disable|retry|warp4|normal|save|load|capture [--output RECEIPT.json] | --dry-buoyancy-sweep | --quit-when-idle | [--samples 1..10000] --ready READY.json --output RECEIPT.json)".into()
 }
 
 #[cfg(test)]
@@ -513,6 +544,7 @@ mod tests {
     #[test]
     fn rejected_sweep_start_does_not_attach_to_an_existing_run() {
         let reply = Reply {
+            rigid: None,
             status: "ok".into(),
             reason: None,
             request_id: Some("sweep-start".into()),
@@ -654,6 +686,7 @@ mod tests {
             timeout: Duration::from_secs(2),
             sweep: true,
             quit: false,
+            rigid: None,
         };
         run_sweep(&options).unwrap();
         server.join().unwrap();
@@ -687,6 +720,7 @@ mod tests {
             timeout: Duration::from_secs(2),
             sweep: true,
             quit: false,
+            rigid: None,
         };
         assert!(
             run_sweep(&options)

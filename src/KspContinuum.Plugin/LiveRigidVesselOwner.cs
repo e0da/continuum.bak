@@ -23,6 +23,8 @@ namespace KspContinuum
         readonly string output;
         readonly Func<bool> capturing;
         readonly bool controlled;
+        readonly bool persistentPlay;
+        bool Retained { get { return controlled || persistentPlay; } }
         readonly Dictionary<Rigidbody, Member> members = new Dictionary<Rigidbody, Member>();
         readonly List<Member> ordered = new List<Member>();
         readonly List<ModuleWheelBase> retractedWheels = new List<ModuleWheelBase>();
@@ -55,6 +57,25 @@ namespace KspContinuum
         float scriptTime = -1, enteredTime;
         RigidAssemblyProperties properties;
         RetainedRigidAssemblyProperties retainedProperties;
+        RetainedRigidIngress gameplayIngress;
+        RetainedRigidPropertySnapshot gameplayProperties;
+        readonly PlayCommand[] gameplayCommands;
+        readonly GameplaySample[] gameplaySamples;
+        Member[] gameplayMembers;
+        Member[] gameplayPublicationRoots;
+        int gameplayCommandCount, gameplayReplayCursor, gameplaySampleCount, gameplaySampleHead, gameplayFrame;
+        float gameplayTime, gameplayDelta;
+        long gameplayBeginTicks;
+        bool gameplayPhysicsPending, handbackRequested, handingBack, receiptWritten, playableIdentityBound;
+        string handbackReason;
+        CelestialBody gameplayBody;
+        double gameplayRadius;
+        bool gameplayMotionDirty = true;
+        Vector3 gameplayVelocity, gameplayAngularVelocity, gameplayWorldCenter;
+        long gameplayLocalPropertyGeneration = 1;
+        readonly RetainedValidationLease gameplayValidation;
+        long gameplayExpectedGeneration;
+        double gameplayLastAuditSimulatedSeconds;
         bool autoSyncTransforms;
         bool retainedPoseReady;
         Vector3 retainedAggregatePosition;
@@ -71,6 +92,20 @@ namespace KspContinuum
         public bool CaptureReady { get { return !controlled || Report.originalBodiesRestored && Report.bridgeReleased && Report.aggregateRetired &&
             Report.postRestorationSimulatedSeconds >= 1.9999 && driver != null && driver.Report.passed; } }
         public bool Invalid { get { return failed || Report.status == "invalid"; } }
+        public bool IsOwned { get { return entered && ReferenceEquals(active, this) && !failed; } }
+        public bool TransitionPending { get { return handbackRequested && !ReadyForReacquisition; } }
+        public string HandbackReason { get { return handbackReason; } }
+        public bool ReadyForReacquisition
+        {
+            get
+            {
+                if (!persistentPlay || !handbackRequested) return false;
+                Report.aggregateRetired = retiredRoot == null && root == null;
+                Report.presentationPivotRetired = retiredPresentationPivot == null && presentationPivot == null;
+                return !entered && Report.originalBodiesRestored && Report.bridgeReleased && gameplayCommandCount == 0 &&
+                    !commonSet && Report.aggregateRetired && Report.presentationPivotRetired;
+            }
+        }
 
         [Serializable] public sealed class Receipt
         {
@@ -134,6 +169,61 @@ namespace KspContinuum
             public int stageFaults;
             public bool stageHooksRemoved;
             public string stageCostScope = "Controlled native ownership only. Three inclusive original method wall envelopes: exact active FI.FixedUpdate, root-only FI.Integrate and actual bound MechJeb AnalyzeParts. Integrate is nested in FI; MechJeb may overlap other declared scopes. Never add inclusive stages together. Entry filtering and finalizer dispatch/timer overhead are not independently removed. Zero calls means no observed execution, not zero cost. Original exceptions remain unchanged.";
+            public string gameplayDiagnosticPolicy, handbackReason, gameplayCommandScope, gameplayCostScope;
+            public string playableSessionId, helperSha256;
+            public long playableEpoch;
+            public int playableAttempt, processId;
+            public bool persistentPlay, retirementRequested, handbackComplete;
+            public long gameplayPhysicsSteps, gameplayRoutedCommands, gameplayZeroCommands, gameplayAccelerationCalls;
+            public long gameplayReplayCommands, gameplayReplayAccelerations, gameplayBoundaryChecks, gameplayForeignGraphChanges, gameplayGuardFailures;
+            public long gameplayCompleteTicks, gameplayIngressScans, gameplayIngressReductions, gameplayIngressReuses, gameplayChangedRows;
+            public double gameplaySimulatedSeconds, gameplayCraftRadius, gameplayMinimumClearance;
+            public int gameplayPeakPendingCommands, gameplayRecentCapacity, gameplayRecentCount, gameplayPendingCommands;
+            public GameplaySample[] gameplayRecent;
+            public string gameplayMotionViewStatus = "not-requested";
+            public string gameplayMotionViewScope;
+            public long gameplayMotionInvalidations, gameplayMotionSnapshots, gameplayMotionNativeFieldReads, gameplayMotionNativeFallbacks;
+            public long gameplayMotionPointReads, gameplayMotionAngularReads, gameplayLocalCenterReads, gameplayLocalCenterNativeReads, gameplayLocalPropertyInvalidations;
+            public long gameplaySasZeroCalls, gameplaySasZeroChanges;
+            public string gameplaySasZeroScope;
+            public int gameplayMotionWitnessNativePointCalls;
+            public double gameplayMotionWitnessMaxNativeError, gameplayMotionWitnessMaxAnalyticError;
+            public MotionViewWitnessRow[] gameplayMotionWitness;
+            public int gameplayAuditIntervalSteps, gameplayAuditLastReason;
+            public string gameplayAuditScope;
+            public long gameplayFullLeaseAudits, gameplayFullLeaseAuditAttempts, gameplayFullLeaseAuditTicks;
+            public long gameplayAuditRequests, gameplayAuditDuplicateRequests, gameplayAuditMaximumStepGap;
+            public long gameplayAuditLastStep = -1, gameplayAuditLastGeneration = -1, gameplayAuditExpectedGeneration, gameplayAuditInvalidations;
+            public long gameplayAuditColdAudits, gameplayAuditCadenceAudits, gameplayAuditInvalidationAudits, gameplayAuditHandbackAudits;
+            public long gameplayCriticalAudits, gameplayCriticalAuditTicks, gameplayFullLeasePoseReadbacks;
+            public double gameplayAuditMaximumSimulatedGapSeconds;
+        }
+        [Serializable] public sealed class MotionViewWitnessRow
+        {
+            public int slot, sourceId;
+            public float[] point, velocity, angularVelocity, worldCenter, managedVelocity, nativeVelocity, nativeLocalCenter, cachedLocalCenter;
+            public double[] analyticVelocity;
+            public double nativeError, nativeBudget, analyticError, analyticBudget;
+            public bool localCenterBitsEqual, passed;
+        }
+        [Serializable] public struct GameplaySample
+        {
+            public long sequence, beginTicks, endTicks;
+            public int frame, commands, commonReceivers;
+            public float fixedTime, dt, warpRate;
+            public double universalTime;
+            public float rootX, rootY, rootZ, rootQx, rootQy, rootQz, rootQw;
+            public float velocityX, velocityY, velocityZ, angularX, angularY, angularZ;
+        }
+        struct PlayCommand
+        {
+            public Rigidbody receiver;
+            public Vector3 value, point;
+            public ForceMode mode;
+            public bool torque, atPoint, integrationAcceleration;
+            public float mass;
+            public Vector3 inertia;
+            public Quaternion principalWorld;
         }
         [Serializable] public sealed class BoundedStageCost
         {
@@ -199,6 +289,8 @@ namespace KspContinuum
             public float NativeMass;
             public Vector3 NativeCenter, NativeInertia;
             public Quaternion NativeInertiaRotation;
+            public Vector3 CachedLocalCenter;
+            public long LocalCenterGeneration;
             public Vector3 PublishedPosition;
             public Quaternion PublishedRotation;
             public bool ForestRoot;
@@ -226,14 +318,36 @@ namespace KspContinuum
         }
 
         public LiveRigidVesselOwner(string output, string runId, Func<bool> capturing)
+            : this(output, runId, capturing, false) { }
+        public LiveRigidVesselOwner(string output, string runId, Func<bool> capturing, bool persistentPlay)
+            : this(output, runId, capturing, persistentPlay, 1) { }
+        public LiveRigidVesselOwner(string output, string runId, Func<bool> capturing, bool persistentPlay, int auditSteps)
         {
+            Need(auditSteps == 1 || persistentPlay && auditSteps == 16, "Only persistent validation cadence one or sixteen is supported.");
             Need(active == null, "Another live rigid owner exists.");
             Need(Path.IsPathRooted(output) && !File.Exists(output) && Directory.Exists(Path.GetDirectoryName(output)), "Fresh absolute private receipt required.");
-            this.output = output; this.capturing = capturing;
+            this.output = output; this.capturing = capturing; this.persistentPlay = persistentPlay;
             Report = new Receipt { runId = runId };
             string scenario = Environment.GetEnvironmentVariable("CONTINUUM_LIVE_RIGID_SCENARIO");
-            Need(string.IsNullOrEmpty(scenario) || scenario == "control-warp", "Unknown live rigid scenario.");
-            controlled = scenario == "control-warp";
+            Need(persistentPlay || string.IsNullOrEmpty(scenario) || scenario == "control-warp", "Unknown live rigid scenario.");
+            controlled = !persistentPlay && scenario == "control-warp";
+            if (persistentPlay)
+            {
+                gameplayValidation = new RetainedValidationLease(auditSteps); Report.gameplayAuditIntervalSteps = auditSteps;
+                gameplayCommands = new PlayCommand[16384]; gameplaySamples = new GameplaySample[64];
+                Report.schema = "continuum-live-rigid-owner/v3"; Report.scenario = "persistent-play"; Report.persistentPlay = true;
+                Report.aggregatePoseFrame = "native-com-principal"; Report.forestStatus = "awaiting-initial-publication";
+                Report.imageEncodingPolicy = "service-owned-no-owner-readback"; Report.gameplayRecentCapacity = gameplaySamples.Length;
+                Report.gameplayDiagnosticPolicy = "Primitive lifetime counters and last 64 completed native steps; no per-command receipt objects, per-step BodyState arrays, driver, injected pulse, image capture or timed handback. Recent samples are a bounded tail, never a complete force tape.";
+                Report.gameplayCommandScope = "Retained command operands until native physics completes. On pre-physics handback restore original receivers, then replay each pending original command and each reached FI common acceleration once. No duplicate original/candidate native force fold.";
+                Report.gameplayCostScope = "Complete completed-step wall envelopes begin in the owned ScriptRunBehaviourFixedUpdate Before hook and end after PhysicsFixedUpdate native advance, publication, periodic ownership check and sample preparation. These include stock script/native work and owner guards; they exclude preceding/following fixed phases and rendering. Lifetime nested owner counters are nonadditive. Recent ring is the last 64 completed envelopes, not a uniform sampled benchmark.";
+                Report.poseReuseScope = "Persistent owner exact unchanged canonical pose reuses retained targets in O(1), omitting per-member proof/readback and synchronization. Changed poses still compute all targets and publish roots with required synchronization. Full same-budget proxy/forest/scale checks use the explicit validation lease; functional native mass ingress is unchanged. Controlled v2 remains exhaustive.";
+                Report.gameplayAuditScope = "Persistent validation lease only. Cold admission, bounded completed-native-step cadence, explicit ownership uncertainty and handback run full alias/forest/native/Transform checks with unchanged 1e-4m/.002deg pose and 1e-5 relative scale budgets. Every step retains aggregate liveness/flags/finite/native-frame, input clock/order/common-acceleration checks, functional native mass/COM/inertia ingress and inactive-wheel guards. Own pose/property/frame updates advance the expected generation without invalidating the lease. Duplicate current-view requests skip; direct transient proxy/Transform/forest writes between full audits may affect stock callbacks or be overwritten before detection, and are not universally certified. Cadence is an explicit observed gameplay variant, not exhaustive writer equivalence or FPS qualification. Full-audit reason counters overlap; attempted costs include failed audits.";
+                Report.scope = "Persistent operator-controlled rigid airborne flight, normal and LOW physics warp. Stock controls, resources, aero and thermal remain authoritative. Fixed current topology and exact selected Stock/MechJeb adapters; no terrain, contacts, deployed wheels, servo mechanisms or arbitrary mods. Unsupported transitions synchronously restore stock before mutation; actual Unity destruction closes later. No FPS or long-mission qualification from source alone.";
+                Report.gameplayMotionViewStatus = "awaiting-admission-witness";
+                Report.gameplayMotionViewScope = "Persistent owner only: one lazy snapshot of actual aggregate native velocity, angular velocity and world COM after dirty native/property/frame boundaries. Point velocity is managed binary32 v + cross(omega, point-COM). Cold six-point native and independent binary64 analytic witnesses use norm error <= 1e-4 + 1e-5*norm(reference). Member local COM retains original native getter on first read of each script/native epoch and after qualified original setters; full native ingress scans remain. Selected Stock/MechJeb write closure and existing writer/pose guards apply; arbitrary mod/native mutation is not qualified.";
+                Report.gameplaySasZeroScope = "Only pinned stock VesselSAS.KillAngularVelocity zero setters: clamp the rigid aggregate angular velocity once per effective change, retaining its COM linear velocity. This is whole-region rigid SAS behavior, not independent constituent spin suppression. Other angular writers remain unsupported and invalidate/restore stock.";
+            }
             if (controlled)
             {
                 Report.schema = "continuum-live-rigid-owner/v2"; Report.scenario = scenario;
@@ -242,13 +356,21 @@ namespace KspContinuum
                 Report.forestStatus = "awaiting-initial-publication";
                 Report.scope = "Twelve simulated seconds of original pilot attitude/RCS input, LOW 4x physics warp and normal return. Fixed topology, no-contact vacuum, original identities and default-scene native aggregate. Rigid projection, zero damping and material velocity preservation at mass/COM changes are declared model choices. Fuel-flow momentum, contact, arbitrary mods, human control feel and FPS remain unqualified.";
             }
-            bridge = new LiveRigidVesselBridge();
+            bridge = new LiveRigidVesselBridge(persistentPlay);
             try
             {
                 Need(bridge.Installed, "Rigid body bridge not installed.");
                 InstallFramePatches(); bridge.SealOwnership(runId); Report.status = "waiting-for-native-boundary";
             }
             catch { Dispose(); throw; }
+        }
+        public void BindPlayableIdentity(string sessionId, long epoch, int attempt)
+        {
+            RequireThread(); Need(persistentPlay && !entered && !admissionAttempted && !playableIdentityBound &&
+                !string.IsNullOrEmpty(sessionId) && epoch >= 0 && attempt > 0, "Playable identity must bind exactly once before admission.");
+            Report.playableSessionId = sessionId; Report.playableEpoch = epoch; Report.playableAttempt = attempt;
+            using (Process process = Process.GetCurrentProcess()) Report.processId = process.Id;
+            Report.helperSha256 = StageAssemblyHash(typeof(LiveRigidVesselOwner).Assembly); playableIdentityBound = true;
         }
 
         public static bool TryGet(Rigidbody receiver, out LiveRigidVesselOwner owner)
@@ -257,22 +379,138 @@ namespace KspContinuum
             return owner != null && receiver != null && owner.members.ContainsKey(receiver);
         }
         public Vector3 ReadVelocity(Rigidbody receiver) { Report.velocityReads++; return ReadPointVelocity(receiver, ReadWorldCenter(receiver)); }
-        public Vector3 ReadAngularVelocity(Rigidbody receiver) { Report.angularReads++; return body.angularVelocity; }
+        public Vector3 ReadAngularVelocity(Rigidbody receiver)
+        {
+            Report.angularReads++;
+            if (!persistentPlay) return body.angularVelocity;
+            RefreshGameplayMotionView(); Report.gameplayMotionAngularReads++; return gameplayAngularVelocity;
+        }
+        public void InvalidateLocalProperties(Rigidbody receiver)
+        {
+            if (!persistentPlay) return;
+            RequireThread();
+            Member member; if (members.TryGetValue(receiver, out member))
+            { member.LocalCenterGeneration = 0; Report.gameplayLocalPropertyInvalidations++; }
+        }
+        public Vector3 ReadLocalCenter(Rigidbody receiver)
+        {
+            if (!persistentPlay) return receiver.centerOfMass;
+            RequireThread();
+            Report.gameplayLocalCenterReads++; Member member = members[receiver];
+            if (member.LocalCenterGeneration != gameplayLocalPropertyGeneration)
+            {
+                member.CachedLocalCenter = receiver.centerOfMass; member.LocalCenterGeneration = gameplayLocalPropertyGeneration;
+                Report.gameplayLocalCenterNativeReads++;
+            }
+            return member.CachedLocalCenter;
+        }
         public Vector3 ReadWorldCenter(Rigidbody receiver)
         {
             Report.centerReads++; Member member = members[receiver];
-            Vector3 position = controlled ? canonicalRootPosition : body.position;
-            Quaternion rotation = controlled ? canonicalRootRotation : Normalized(body.rotation);
-            return position + rotation * (member.Position + member.Rotation * receiver.centerOfMass);
+            Vector3 position = Retained ? canonicalRootPosition : body.position;
+            Quaternion rotation = Retained ? canonicalRootRotation : Normalized(body.rotation);
+            return position + rotation * (member.Position + member.Rotation * (persistentPlay ? ReadLocalCenter(receiver) : receiver.centerOfMass));
         }
-        public Vector3 ReadPointVelocity(Rigidbody receiver, Vector3 point) { Report.pointReads++; return body.GetPointVelocity(point); }
+        public Vector3 ReadPointVelocity(Rigidbody receiver, Vector3 point)
+        {
+            Report.pointReads++;
+            if (!persistentPlay) return body.GetPointVelocity(point);
+            RefreshGameplayMotionView(); Report.gameplayMotionPointReads++;
+            Vector3 value = GameplayPointVelocity(point);
+            if (!Finite(point) || !Finite(value)) { Report.gameplayMotionNativeFallbacks++; return body.GetPointVelocity(point); }
+            return value;
+        }
+        Vector3 GameplayPointVelocity(Vector3 point)
+        { return gameplayVelocity + Vector3.Cross(gameplayAngularVelocity, point - gameplayWorldCenter); }
+        void InvalidateGameplayMotionView()
+        {
+            if (!persistentPlay) return;
+            gameplayMotionDirty = true; Report.gameplayMotionInvalidations++;
+        }
+        void InvalidateGameplayLocalEpoch()
+        { gameplayLocalPropertyGeneration = checked(gameplayLocalPropertyGeneration + 1); }
+        void RefreshGameplayMotionView()
+        {
+            RequireThread();
+            if (!gameplayMotionDirty) return;
+            Vector3 velocity = body.velocity, omega = body.angularVelocity, center = body.worldCenterOfMass;
+            Need(Finite(velocity) && Finite(omega) && Finite(center), "Nonfinite authoritative aggregate motion view.");
+            gameplayVelocity = velocity; gameplayAngularVelocity = omega; gameplayWorldCenter = center;
+            gameplayMotionDirty = false; Report.gameplayMotionSnapshots++; Report.gameplayMotionNativeFieldReads += 3;
+        }
+        void ValidateGameplayMotionView()
+        {
+            try
+            {
+                RefreshGameplayMotionView();
+                Report.gameplayMotionWitness = new MotionViewWitnessRow[6];
+                MotionWitness(0, null, gameplayWorldCenter);
+                MotionWitness(1, gameplayMembers[0].Body, ReadWorldCenter(gameplayMembers[0].Body));
+                Member middle = gameplayMembers[gameplayMembers.Length / 2];
+                MotionWitness(2, middle.Body, ReadWorldCenter(middle.Body));
+                Member last = gameplayMembers[gameplayMembers.Length - 1];
+                MotionWitness(3, last.Body, ReadWorldCenter(last.Body));
+                float arm = (float)Math.Min(1024, Math.Max(1, gameplayRadius));
+                MotionWitness(4, null, gameplayWorldCenter + new Vector3(.37f * arm, -.61f * arm, .89f * arm));
+                MotionWitness(5, null, gameplayWorldCenter + new Vector3(-.83f * arm, .29f * arm, -.47f * arm));
+                Report.gameplayMotionViewStatus = "admitted-six-point-native-analytic-witness";
+            }
+            catch { Report.gameplayMotionViewStatus = "invalid"; throw; }
+        }
+        void MotionWitness(int slot, Rigidbody source, Vector3 point)
+        {
+            Vector3 managed = GameplayPointVelocity(point), native = body.GetPointVelocity(point);
+            Report.gameplayMotionWitnessNativePointCalls++;
+            double dx = (double)point.x - gameplayWorldCenter.x, dy = (double)point.y - gameplayWorldCenter.y, dz = (double)point.z - gameplayWorldCenter.z;
+            Vec analytic = new Vec((double)gameplayVelocity.x + (double)gameplayAngularVelocity.y * dz - (double)gameplayAngularVelocity.z * dy,
+                (double)gameplayVelocity.y + (double)gameplayAngularVelocity.z * dx - (double)gameplayAngularVelocity.x * dz,
+                (double)gameplayVelocity.z + (double)gameplayAngularVelocity.x * dy - (double)gameplayAngularVelocity.y * dx);
+            Vec deltaNative = Subtract(Vector(managed), Vector(native)), deltaAnalytic = Subtract(Vector(managed), analytic);
+            double nativeError = Norm(deltaNative), analyticError = Norm(deltaAnalytic);
+            double nativeBudget = 1e-4 + 1e-5 * Norm(Vector(native)), analyticBudget = 1e-4 + 1e-5 * Norm(analytic);
+            Vector3 nativeCenter = source == null ? Vector3.zero : source.centerOfMass;
+            Vector3 cachedCenter = source == null ? Vector3.zero : ReadLocalCenter(source);
+            bool centerBits = source == null || ExactPose(nativeCenter, cachedCenter);
+            bool passed = Finite(point) && Finite(managed) && Finite(native) && centerBits && nativeError <= nativeBudget && analyticError <= analyticBudget;
+            Report.gameplayMotionWitness[slot] = new MotionViewWitnessRow { slot = slot, sourceId = source == null ? 0 : source.GetInstanceID(),
+                point = Array(point), velocity = Array(gameplayVelocity), angularVelocity = Array(gameplayAngularVelocity), worldCenter = Array(gameplayWorldCenter),
+                managedVelocity = Array(managed), nativeVelocity = Array(native), analyticVelocity = Array(analytic),
+                nativeLocalCenter = source == null ? null : Array(nativeCenter), cachedLocalCenter = source == null ? null : Array(cachedCenter),
+                nativeError = nativeError, nativeBudget = nativeBudget, analyticError = analyticError, analyticBudget = analyticBudget,
+                localCenterBitsEqual = centerBits, passed = passed };
+            Report.gameplayMotionWitnessMaxNativeError = Math.Max(Report.gameplayMotionWitnessMaxNativeError, nativeError);
+            Report.gameplayMotionWitnessMaxAnalyticError = Math.Max(Report.gameplayMotionWitnessMaxAnalyticError, analyticError);
+            Need(passed, "Cached managed point-velocity admission witness differs at slot " + slot + ".");
+        }
+        static double Norm(Vec value) { return Math.Sqrt(value.X * value.X + value.Y * value.Y + value.Z * value.Z); }
         public void WriteVelocity(Rigidbody receiver, Vector3 value)
         { Abort("Unsupported direct constituent velocity writer."); receiver.velocity = value; }
         public void WriteAngularVelocity(Rigidbody receiver, Vector3 value)
         { Abort("Unsupported direct constituent angular velocity writer."); receiver.angularVelocity = value; }
+        public void ApplySasZeroAngularVelocity(Rigidbody receiver, Vector3 value)
+        {
+            if (!persistentPlay || !Same(value, Vector3.zero)) { WriteAngularVelocity(receiver, value); return; }
+            RequireThread(); Report.gameplaySasZeroCalls++;
+            RefreshGameplayMotionView();
+            if (ExactPose(gameplayAngularVelocity, value)) return;
+            InvalidateGameplayMotionView(); body.angularVelocity = value; Report.gameplaySasZeroChanges++;
+        }
 
         public void RecordIntegrationAcceleration(Rigidbody receiver, Vector3 value, ForceMode mode)
         {
+            if (persistentPlay)
+            {
+                RequireThread();
+                if (mode != ForceMode.Acceleration || !Finite(value) || gameplayCommandCount == gameplayCommands.Length || commonSet && !Same(value, commonAcceleration) ||
+                    !accelerationReceivers.Add(receiver.GetInstanceID()))
+                {
+                    GameplayFailure(new InvalidOperationException("Unsupported or duplicate FI common acceleration.")); receiver.AddForce(value, mode); return;
+                }
+                commonAcceleration = value; commonSet = true; Report.gameplayAccelerationCalls++;
+                gameplayCommands[gameplayCommandCount++] = new PlayCommand { receiver = receiver, value = value, mode = mode, integrationAcceleration = true };
+                Report.gameplayPendingCommands = gameplayCommandCount;
+                Report.gameplayPeakPendingCommands = Math.Max(Report.gameplayPeakPendingCommands, gameplayCommandCount); return;
+            }
             RequireThread(); Need(mode == ForceMode.Acceleration, "FI common acceleration mode changed.");
             Need(Finite(value), "Nonfinite common acceleration.");
             if (commonSet) Need(Same(value, commonAcceleration), "FI common acceleration differs between receivers.");
@@ -282,6 +520,7 @@ namespace KspContinuum
         }
         public void Record(Rigidbody receiver, Vector3 value, Vector3 point, ForceMode mode, bool torque, bool atPoint)
         {
+            if (persistentPlay) { RecordGameplay(receiver, value, point, mode, torque, atPoint); return; }
             RequireThread(); Need(Finite(value) && (!atPoint || Finite(point)), "Nonfinite routed command.");
             Need(mode == ForceMode.Force || mode == ForceMode.Impulse || mode == ForceMode.Acceleration || mode == ForceMode.VelocityChange, "Unknown force mode.");
             Report.routedCommands++;
@@ -293,6 +532,7 @@ namespace KspContinuum
 
         public void Before(string phase, int frame, double time)
         {
+            if (persistentPlay) { BeforeGameplay(phase, frame, time); return; }
             if (disposed || failed || !capturing()) return;
             try
             {
@@ -340,6 +580,7 @@ namespace KspContinuum
         }
         public void After(string phase, int frame, double time)
         {
+            if (persistentPlay) { AfterGameplay(phase, frame, time); return; }
             if (disposed || failed || !capturing()) return;
             float elapsed = Time.fixedTime - enteredTime;
             bool captureDue = controlled ? captureIndex < captureTimes.Length && elapsed >= captureTimes[captureIndex] : !screenshotRequested && elapsed > .3f;
@@ -385,6 +626,169 @@ namespace KspContinuum
                 if (Time.fixedTime - enteredTime >= (controlled ? 12f : 1.5f)) { Restore(); Report.status = "restored-awaiting-stock-steps"; }
             }
             catch (Exception error) { Abort(error.ToString()); }
+        }
+        void RecordGameplay(Rigidbody receiver, Vector3 value, Vector3 point, ForceMode mode, bool torque, bool atPoint)
+        {
+            RequireThread();
+            if (!Finite(value) || atPoint && !Finite(point) || mode != ForceMode.Force && mode != ForceMode.Impulse &&
+                mode != ForceMode.Acceleration && mode != ForceMode.VelocityChange || gameplayCommandCount == gameplayCommands.Length)
+            {
+                GameplayFailure(new InvalidOperationException("Unsupported force operand/mode or pending command bound."));
+                Forward(receiver, value, point, mode, torque, atPoint); return;
+            }
+            Report.gameplayRoutedCommands++;
+            bool zero = Same(value, Vector3.zero); if (zero) Report.gameplayZeroCommands++;
+            var command = new PlayCommand { receiver = receiver, value = value, point = atPoint ? point : zero ? Vector3.zero : ReadWorldCenter(receiver),
+                mode = mode, torque = torque, atPoint = atPoint };
+            if (!zero && (mode == ForceMode.Acceleration || mode == ForceMode.VelocityChange))
+            {
+                if (torque) { command.inertia = receiver.inertiaTensor; command.principalWorld = Normalized(receiver.rotation * receiver.inertiaTensorRotation); }
+                else command.mass = receiver.mass;
+            }
+            gameplayCommands[gameplayCommandCount++] = command;
+            Report.gameplayPendingCommands = gameplayCommandCount;
+            Report.gameplayPeakPendingCommands = Math.Max(Report.gameplayPeakPendingCommands, gameplayCommandCount);
+        }
+        static void Forward(Rigidbody receiver, Vector3 value, Vector3 point, ForceMode mode, bool torque, bool atPoint)
+        {
+            if (torque) receiver.AddTorque(value, mode);
+            else if (atPoint) receiver.AddForceAtPosition(value, point, mode);
+            else receiver.AddForce(value, mode);
+        }
+        void BeforeGameplay(string phase, int frame, double time)
+        {
+            if (disposed || handbackRequested || failed) return;
+            try
+            {
+                RequireThread();
+                if (!capturing()) { HandbackBeforeStockTransition("Playable service stopped."); return; }
+                if (phase == ScriptPhase)
+                {
+                    InvalidateGameplayLocalEpoch();
+                    gameplayBeginTicks = Stopwatch.GetTimestamp(); scriptFrame = frame; scriptTime = (float)time;
+                    if (entered) { string reason = GameplayBoundaryReason(); if (reason != null) { HandbackBeforeStockTransition(reason); return; } GameplayCriticalAudit(); }
+                }
+                if (phase != PhysicsPhase || !entered) return;
+                Need(!gameplayPhysicsPending && scriptFrame == frame && scriptTime == (float)time, "Script/native physics ordering changed.");
+                string boundary = GameplayBoundaryReason(); if (boundary != null) { HandbackBeforeStockTransition(boundary); return; }
+                GameplayCriticalAudit(); RefreshProperties(); GameplayFullAudit(false);
+                Need(commonSet && accelerationReceivers.Count == members.Count, "Incomplete native common acceleration coverage.");
+                Vec force = new Vec(), torque = new Vec(), impulse = new Vec(), angularImpulse = new Vec();
+                Vector3 center = body.worldCenterOfMass;
+                for (int i = 0; i < gameplayCommandCount; i++)
+                {
+                    PlayCommand command = gameplayCommands[i]; Vec value = Vector(command.value);
+                    if (command.integrationAcceleration || Same(command.value, Vector3.zero)) continue;
+                    if (command.mode == ForceMode.Acceleration || command.mode == ForceMode.VelocityChange)
+                    {
+                        if (command.torque)
+                        { Rotation axes = Rotate(command.principalWorld); value = axes.Rotate(Vec.Product(Vector(command.inertia), axes.Inverse.Rotate(value))); }
+                        else value *= command.mass;
+                    }
+                    Vec moment = command.torque ? value : Vec.Cross(Subtract(Vector(command.point), Vector(center)), value);
+                    if (command.mode == ForceMode.Impulse || command.mode == ForceMode.VelocityChange)
+                    { if (!command.torque) impulse += value; angularImpulse += moment; }
+                    else { if (!command.torque) force += value; torque += moment; }
+                }
+                Need(Finite(Unity(force)) && Finite(Unity(torque)) && Finite(Unity(impulse)) && Finite(Unity(angularImpulse)), "Aggregate command overflow.");
+                gameplayFrame = frame; gameplayTime = (float)time; gameplayDelta = Time.fixedDeltaTime;
+                gameplayPhysicsPending = true;
+                body.AddForce(commonAcceleration, ForceMode.Acceleration);
+                body.AddForce(Unity(force), ForceMode.Force); body.AddTorque(Unity(torque), ForceMode.Force);
+                body.AddForce(Unity(impulse), ForceMode.Impulse); body.AddTorque(Unity(angularImpulse), ForceMode.Impulse);
+            }
+            catch (Exception error) { GameplayFailure(error); }
+        }
+        void AfterGameplay(string phase, int frame, double time)
+        {
+            if (disposed || handbackRequested || failed || phase != PhysicsPhase) return;
+            try
+            {
+                RequireThread();
+                if (!entered)
+                {
+                    if (!admissionAttempted)
+                    {
+                        string reason = EligibilityReason(FlightGlobals.ActiveVessel);
+                        if (reason != null) { HandbackBeforeStockTransition(reason); return; }
+                        admissionAttempted = true; Admit(); Report.status = "owned";
+                    }
+                    return;
+                }
+                Need(gameplayPhysicsPending && gameplayFrame == frame && gameplayTime == (float)time, "Missing matched native boundary.");
+                int count = gameplayCommandCount, receivers = accelerationReceivers.Count;
+                // The original commands have now advanced native physics; later release must not replay them.
+                ClearGameplayCommands(); gameplayPhysicsPending = false;
+                InvalidateGameplayMotionView(); InvalidateGameplayLocalEpoch();
+                ReadCanonicalPoseAfterPhysics(); Publish(null, "postphysics");
+                Report.gameplayPhysicsSteps++; Report.gameplaySimulatedSeconds += gameplayDelta;
+                Report.physicsSteps = (int)Math.Min(int.MaxValue, Report.gameplayPhysicsSteps);
+                if (Report.gameplayPhysicsSteps % 16 == 0 && !CheckBridge())
+                { Report.gameplayForeignGraphChanges++; GameplayFailure(new InvalidOperationException("Qualified writer graph changed.")); return; }
+                Vector3 velocity = body.velocity, omega = body.angularVelocity;
+                int sampleSlot = gameplaySampleHead;
+                gameplaySamples[sampleSlot] = new GameplaySample { sequence = Report.gameplayPhysicsSteps - 1,
+                    beginTicks = gameplayBeginTicks, frame = frame, fixedTime = (float)time, dt = gameplayDelta,
+                    commands = count, commonReceivers = receivers, warpRate = TimeWarp.CurrentRate, universalTime = Planetarium.GetUniversalTime(),
+                    rootX = canonicalRootPosition.x, rootY = canonicalRootPosition.y, rootZ = canonicalRootPosition.z,
+                    rootQx = canonicalRootRotation.x, rootQy = canonicalRootRotation.y, rootQz = canonicalRootRotation.z, rootQw = canonicalRootRotation.w,
+                    velocityX = velocity.x, velocityY = velocity.y, velocityZ = velocity.z, angularX = omega.x, angularY = omega.y, angularZ = omega.z };
+                gameplaySampleHead = (gameplaySampleHead + 1) % gameplaySamples.Length;
+                gameplaySampleCount = Math.Min(gameplaySamples.Length, gameplaySampleCount + 1); Report.gameplayRecentCount = gameplaySampleCount;
+                Report.status = "owned";
+                long end = Stopwatch.GetTimestamp(); GameplaySample sample = gameplaySamples[sampleSlot]; sample.endTicks = end;
+                gameplaySamples[sampleSlot] = sample; Report.gameplayCompleteTicks += end - gameplayBeginTicks;
+            }
+            catch (Exception error) { GameplayFailure(error); }
+        }
+        void ClearGameplayCommands()
+        {
+            System.Array.Clear(gameplayCommands, 0, gameplayCommandCount); gameplayCommandCount = gameplayReplayCursor = 0;
+            Report.gameplayPendingCommands = 0; accelerationReceivers.Clear(); commonSet = false;
+        }
+        void GameplayFailure(Exception error)
+        {
+            if (Report.detail == null) Report.detail = error.ToString();
+            Report.gameplayGuardFailures++; failed = true; Report.status = "invalid";
+            HandbackBeforeStockTransition("Owner guard: " + error.Message);
+        }
+        public void RequestHandback(string reason) { HandbackBeforeStockTransition(reason); }
+        public void HandbackBeforeStockTransition(string reason)
+        {
+            Need(persistentPlay, "Synchronous gameplay handback requires persistent mode."); RequireThread();
+            if (handbackRequested && Report.handbackComplete) return;
+            Need(!handingBack, "Reentrant rigid handback cannot precede stock mutation.");
+            handingBack = true; handbackRequested = true; handbackReason = reason ?? "Requested stock handback";
+            Report.handbackReason = handbackReason; Report.retirementRequested = true;
+            try
+            {
+                if (entered)
+                {
+                    gameplayValidation.Invalidate();
+                    try { GameplayFullAudit(true); }
+                    catch (Exception error)
+                    { failed = true; Report.gameplayGuardFailures++; Report.status = "invalid"; Report.detail = (Report.detail ?? "") + " Terminal full audit: " + error; }
+                }
+                Restore();
+                Need(Report.originalBodiesRestored, "Original native body restoration incomplete.");
+                for (; gameplayReplayCursor < gameplayCommandCount; gameplayReplayCursor++)
+                {
+                    PlayCommand command = gameplayCommands[gameplayReplayCursor];
+                    Forward(command.receiver, command.value, command.point, command.mode, command.torque, command.atPoint);
+                    if (command.integrationAcceleration) Report.gameplayReplayAccelerations++; else Report.gameplayReplayCommands++;
+                    gameplayCommands[gameplayReplayCursor] = default(PlayCommand);
+                }
+                gameplayCommandCount = gameplayReplayCursor = 0; Report.gameplayPendingCommands = 0;
+                accelerationReceivers.Clear(); commonSet = false; gameplayPhysicsPending = false;
+                ReleaseHooks(); Report.handbackComplete = Report.bridgeReleased;
+                Report.status = failed ? "invalid" : ReadyForReacquisition ? "handed-back" : "handed-back-retirement-pending";
+            }
+            catch (Exception error)
+            {
+                failed = true; Report.status = "invalid"; Report.detail = (Report.detail ?? "") + " Handback: " + error;
+                throw;
+            }
+            finally { handingBack = false; }
         }
         void CaptureView(int index)
         {
@@ -467,6 +871,7 @@ namespace KspContinuum
         void Admit()
         {
             RequireThread(); Need(active == null, "Live authority already assigned.");
+            Need(!persistentPlay || playableIdentityBound, "Persistent owner identity not bound before admission.");
             vessel = FlightGlobals.ActiveVessel; Eligible(); VerifyLoopOrder(PlayerLoop.GetCurrentPlayerLoop());
             Need(bridge.ExactInstalled() && vessel.precalc != null && vessel.precalc.GetType() == typeof(VesselPrecalculate) && StatsComplete != null && StatsComplete.FieldType == typeof(bool), "Reader/bridge graph admission changed.");
             parts = vessel.parts.ToArray(); parents = new int[parts.Length]; aliases = new int[parts.Length];
@@ -507,11 +912,25 @@ namespace KspContinuum
                 foreach (Member member in ordered) Need(retainedProperties.GetId(member.LocalId) == member.LocalId, "Retained property slot differs.");
                 Report.propertyReductionMode = "retained-canonical-two-pass"; Report.publicationMode = "parent-first-transform-batch-one-global-sync";
             }
+            if (persistentPlay)
+            {
+                gameplayMembers = new Member[ordered.Count]; var initial = new RigidAssemblyMember[ordered.Count];
+                foreach (Member member in ordered) { gameplayMembers[member.LocalId] = member; initial[member.LocalId] = member.Properties; }
+                gameplayIngress = new RetainedRigidIngress(initial); gameplayProperties = gameplayIngress.Current;
+                gameplayBody = vessel.mainBody; gameplayRadius = Math.Max(1, vessel.vesselSize.magnitude);
+                foreach (Member member in ordered) gameplayRadius = Math.Max(gameplayRadius, (member.Body.position - position).magnitude + 1);
+                foreach (Part part in parts) foreach (Collider collider in part.transform.GetComponentsInChildren<Collider>(true))
+                    if (collider != null && collider.enabled)
+                        gameplayRadius = Math.Max(gameplayRadius, (collider.bounds.center - position).magnitude + collider.bounds.extents.magnitude);
+                Report.gameplayCraftRadius = gameplayRadius;
+                string reason = GameplayBoundaryReason(); Need(reason == null, reason);
+                Report.propertyReductionMode = "retained-value-ingress-canonical-two-pass"; Report.publicationMode = "retained-presentation-root-one-global-sync";
+            }
             RigidAssemblyProjection projection = RigidAssemblyProjection.Project(motions); properties = projection.Properties;
             root = new GameObject("Continuum live rigid authority"); root.transform.SetPositionAndRotation(position, rotation);
             body = root.AddComponent<Rigidbody>(); body.isKinematic = true; body.useGravity = false; body.detectCollisions = false;
             body.drag = 0; body.angularDrag = 0; body.maxAngularVelocity = 100;
-            if (controlled) { canonicalRootPosition = position; canonicalRootRotation = rotation; }
+            if (Retained) { canonicalRootPosition = position; canonicalRootRotation = rotation; }
             PublishProperties();
             try
             {
@@ -522,12 +941,14 @@ namespace KspContinuum
                 Report.sourceParts = parts.Length; Report.sourceBodies = found.Count; Report.retractedWheelParts = retractedWheels.Count; Report.aggregateId = body.GetInstanceID();
                 Report.removedKineticEnergy = projection.RemovedKineticEnergy; Report.initial = State(body, false); Publish(null, "admission");
                 motionInitialized = true;
+                if (persistentPlay) { ValidateGameplayMotionView(); GameplayFullAudit(false); }
                 if (controlled) { driver = new LiveRigidFlightDriver(vessel, enteredTime); Report.controlDriver = driver.Report; }
             }
             catch { Restore(); throw; }
         }
         void Eligible()
         {
+            if (persistentPlay) { string reason = EligibilityReason(vessel); Need(reason == null, reason); return; }
             Need(vessel != null && FlightGlobals.ActiveVessel == vessel && vessel.loaded && !vessel.packed && !vessel.HoldPhysics &&
                 !FlightDriver.Pause && WarpAdmitted() && vessel.situation == Vessel.Situations.ORBITING &&
                 vessel.mainBody != null && vessel.altitude > vessel.mainBody.atmosphereDepth && vessel.ctrlState.mainThrottle < .01f, "Fixed vacuum lifecycle changed.");
@@ -538,6 +959,46 @@ namespace KspContinuum
             if (normal) return true;
             return controlled && driver != null && TimeWarp.WarpMode == TimeWarp.Modes.LOW && TimeWarp.CurrentRate == 4 &&
                 TimeWarp.CurrentRateIndex == 3 && Time.timeScale == 4 && Math.Abs(Time.fixedDeltaTime - .08f) < 1e-6f;
+        }
+        internal static string EligibilityReason(Vessel candidate)
+        {
+            if (candidate == null || candidate != FlightGlobals.ActiveVessel || !candidate.loaded || candidate.packed || candidate.HoldPhysics || FlightDriver.Pause)
+                return "Active unpacked flight required.";
+            if (candidate.mainBody == null || candidate.rootPart == null || candidate.rootPart.rb == null) return "Current body/root owner unavailable.";
+            if (candidate.Landed || candidate.Splashed || candidate.situation != Vessel.Situations.ORBITING &&
+                candidate.situation != Vessel.Situations.SUB_ORBITAL && candidate.situation != Vessel.Situations.ESCAPING && candidate.situation != Vessel.Situations.FLYING)
+                return "Airborne flight required; stock owns surface/contact regimes.";
+            float rate = TimeWarp.CurrentRate, delta = Time.fixedDeltaTime;
+            if (!(delta > 0 && delta <= .1f) || float.IsNaN(delta) || float.IsInfinity(delta) ||
+                !(rate >= 1 && rate <= 4) || Time.timeScale != rate ||
+                rate != 1 && TimeWarp.WarpMode != TimeWarp.Modes.LOW)
+                return "Normal or bounded LOW physics warp required.";
+            if (double.IsNaN(candidate.altitude) || double.IsInfinity(candidate.altitude) ||
+                double.IsNaN(candidate.radarAltitude) || double.IsInfinity(candidate.radarAltitude) ||
+                double.IsNaN(candidate.srfSpeed) || double.IsInfinity(candidate.srfSpeed)) return "Nonfinite current flight geometry.";
+            double clearance = Math.Min(candidate.altitude, candidate.radarAltitude);
+            if (clearance <= Math.Max(1, candidate.vesselSize.magnitude) + Math.Max(0, candidate.srfSpeed) * delta + 10)
+                return "Craft envelope approaches terrain/sea; stock contact ownership required.";
+            return null;
+        }
+        string GameplayBoundaryReason()
+        {
+            Report.gameplayBoundaryChecks++;
+            string reason = EligibilityReason(vessel); if (reason != null) return reason;
+            if (gameplayBody != null && vessel.mainBody != gameplayBody) return "Celestial-body/frame ownership changed.";
+            double margin = Math.Max(0, vessel.srfSpeed) * Time.fixedDeltaTime + 10;
+            double clearance = Math.Min(vessel.altitude, vessel.radarAltitude) - gameplayRadius - margin;
+            Report.gameplayMinimumClearance = Report.gameplayBoundaryChecks == 1 ? clearance : Math.Min(Report.gameplayMinimumClearance, clearance);
+            if (!(clearance > 0)) return "Whole-craft swept envelope approaches terrain/sea.";
+            Vector3 position = vessel.transform.position;
+            foreach (Vessel other in FlightGlobals.Vessels)
+            {
+                if (other == null || other == vessel || !other.loaded || other.packed) continue;
+                double extent = Math.Max(1, other.vesselSize.magnitude), closing = Math.Max(0, vessel.srfSpeed) + Math.Max(0, other.srfSpeed);
+                if ((other.transform.position - position).magnitude <= gameplayRadius + extent + closing * Time.fixedDeltaTime + 10)
+                    return "Nearby loaded vessel enters conservative contact envelope.";
+            }
+            return null;
         }
         void Audit()
         {
@@ -551,10 +1012,67 @@ namespace KspContinuum
             try { return bridge.ExactInstalled(); }
             finally { Report.bridgeCheckTicks += Stopwatch.GetTimestamp() - start; Report.bridgeCheckCalls++; }
         }
-        void AuditCore()
+        void GameplayCriticalAudit()
         {
-            Eligible(); Need(vessel.parts.Count == parts.Length, "Part count changed.");
-            if (controlled) Need(Physics.autoSyncTransforms == autoSyncTransforms, "Global physics synchronization setting changed.");
+            long start = Stopwatch.GetTimestamp();
+            try
+            {
+                Eligible(); Need(vessel.parts.Count == parts.Length, "Part count changed.");
+                Need(Physics.autoSyncTransforms == autoSyncTransforms, "Global physics synchronization setting changed.");
+                Need(body != null && !body.isKinematic && !body.detectCollisions, "Aggregate ownership changed.");
+                Need(Same(body.centerOfMass, Vector3.zero) && Same(body.inertiaTensorRotation, Quaternion.identity), "Native aggregate COM/principal-axis frame changed.");
+                float mass = body.mass; Vector3 moments = body.inertiaTensor;
+                Need(mass > 0 && !float.IsNaN(mass) && !float.IsInfinity(mass) && Finite(moments) && moments.x > 0 && moments.y > 0 && moments.z > 0,
+                    "Nonfinite/nonpositive aggregate native properties.");
+                RefreshGameplayMotionView();
+                Vector3 expectedPosition = canonicalRootPosition + canonicalRootRotation * Unity(PropertyCenter);
+                Quaternion expectedRotation = Normalized(canonicalRootRotation * Unity(PropertyRotation));
+                double pe = (body.position - expectedPosition).magnitude, re = RotationError(body.rotation, expectedRotation);
+                Report.maxNativeFramePositionError = Math.Max(Report.maxNativeFramePositionError, pe);
+                Report.maxNativeFrameRotationError = Math.Max(Report.maxNativeFrameRotationError, re);
+                Need(pe <= 1e-4 && re <= .002, "Unrouted aggregate native-frame pose writer.");
+                foreach (ModuleWheelBase wheel in retractedWheels) RetractedWheel(wheel);
+            }
+            finally { Report.gameplayCriticalAuditTicks += Stopwatch.GetTimestamp() - start; Report.gameplayCriticalAudits++; }
+        }
+        void GameplayExpectedViewChanged()
+        {
+            gameplayExpectedGeneration = checked(gameplayExpectedGeneration + 1);
+            Report.gameplayAuditExpectedGeneration = gameplayExpectedGeneration;
+        }
+        void GameplayFullAudit(bool handback)
+        {
+            RetainedValidationAudit ticket = gameplayValidation.Consider(Report.gameplayPhysicsSteps, gameplayExpectedGeneration, handback);
+            CopyGameplayAuditLease();
+            if (!ticket.Required) return;
+            long start = Stopwatch.GetTimestamp(); Report.gameplayFullLeaseAuditAttempts++;
+            try
+            {
+                AuditCore(!handback);
+                if (presentationRootAdmitted) foreach (Member member in ordered) ValidatePresentationScale(member);
+                gameplayValidation.Complete(ticket);
+                Report.gameplayAuditMaximumSimulatedGapSeconds = Math.Max(Report.gameplayAuditMaximumSimulatedGapSeconds,
+                    Report.gameplaySimulatedSeconds - gameplayLastAuditSimulatedSeconds);
+                gameplayLastAuditSimulatedSeconds = Report.gameplaySimulatedSeconds;
+                Report.gameplayAuditLastReason = (int)ticket.Reason;
+            }
+            finally { Report.gameplayFullLeaseAuditTicks += Stopwatch.GetTimestamp() - start; CopyGameplayAuditLease(); }
+        }
+        void CopyGameplayAuditLease()
+        {
+            Report.gameplayFullLeaseAudits = gameplayValidation.FullAudits; Report.gameplayAuditRequests = gameplayValidation.Requests;
+            Report.gameplayAuditDuplicateRequests = gameplayValidation.DuplicateRequests; Report.gameplayAuditMaximumStepGap = gameplayValidation.MaximumStepGap;
+            Report.gameplayAuditLastStep = gameplayValidation.LastAuditedStep; Report.gameplayAuditLastGeneration = gameplayValidation.LastAuditedGeneration;
+            Report.gameplayAuditInvalidations = gameplayValidation.InvalidationGeneration;
+            Report.gameplayAuditColdAudits = gameplayValidation.ColdAudits; Report.gameplayAuditCadenceAudits = gameplayValidation.CadenceAudits;
+            Report.gameplayAuditInvalidationAudits = gameplayValidation.InvalidationAudits; Report.gameplayAuditHandbackAudits = gameplayValidation.HandbackAudits;
+        }
+        void AuditCore() { AuditCore(true); }
+        void AuditCore(bool verifyEligibility)
+        {
+            if (verifyEligibility) Eligible();
+            Need(vessel.parts.Count == parts.Length, "Part count changed.");
+            if (Retained) Need(Physics.autoSyncTransforms == autoSyncTransforms, "Global physics synchronization setting changed.");
             if (forestAdmitted) ValidateForest();
             if (driver != null)
             {
@@ -567,11 +1085,11 @@ namespace KspContinuum
                 (parts[i].parent == null ? 0 : parts[i].parent.GetInstanceID()) == parents[i] &&
                 (parts[i].rb == null ? 0 : parts[i].rb.GetInstanceID()) == aliases[i] && parts[i].servoRb == null, "Topology or alias changed.");
             Need(body != null && !body.isKinematic && !body.detectCollisions, "Aggregate ownership changed.");
-            if (controlled)
+            if (Retained)
             {
                 Need(Same(body.centerOfMass, Vector3.zero) && Same(body.inertiaTensorRotation, Quaternion.identity), "Native aggregate COM/principal-axis frame changed.");
-                Vector3 expectedNativePosition = canonicalRootPosition + canonicalRootRotation * Unity(properties.CenterOfMass);
-                Quaternion expectedNativeRotation = Normalized(canonicalRootRotation * Unity(properties.PrincipalRotation));
+                Vector3 expectedNativePosition = canonicalRootPosition + canonicalRootRotation * Unity(PropertyCenter);
+                Quaternion expectedNativeRotation = Normalized(canonicalRootRotation * Unity(PropertyRotation));
                 double positionError = (body.position - expectedNativePosition).magnitude;
                 double rotationError = RotationError(body.rotation, expectedNativeRotation);
                 Report.maxNativeFramePositionError = Math.Max(Report.maxNativeFramePositionError, positionError);
@@ -579,13 +1097,19 @@ namespace KspContinuum
                 Need(positionError <= 1e-4 && rotationError <= .002, "Unrouted aggregate native-frame pose writer.");
             }
             foreach (Member member in ordered) Need(member.Body != null && member.Body.isKinematic && !member.Body.detectCollisions, "Proxy ownership changed.");
-            Vector3 aggregatePosition = controlled ? canonicalRootPosition : body.position;
-            Quaternion aggregateRotation = controlled ? canonicalRootRotation : Normalized(body.rotation);
+            Vector3 aggregatePosition = Retained ? canonicalRootPosition : body.position;
+            Quaternion aggregateRotation = Retained ? canonicalRootRotation : Normalized(body.rotation);
             foreach (Member member in ordered)
             {
                 Vector3 position = aggregatePosition + aggregateRotation * member.Position; Quaternion rotation = Normalized(aggregateRotation * member.Rotation);
                 double positionError = Math.Max((member.Body.transform.position - position).magnitude, (member.Body.position - position).magnitude);
                 double rotationError = Math.Max(RotationError(member.Body.transform.rotation, rotation), RotationError(member.Body.rotation, rotation));
+                if (persistentPlay)
+                {
+                    Report.gameplayFullLeasePoseReadbacks++;
+                    Report.maxProxyPositionError = Math.Max(Report.maxProxyPositionError, positionError);
+                    Report.maxProxyRotationError = Math.Max(Report.maxProxyRotationError, rotationError);
+                }
                 if (!(positionError <= 1e-4 && rotationError <= .002)) Need(false, "Unrouted constituent pose writer: id=" + member.Body.GetInstanceID() +
                     " transformPositionError=" + positionError + " transformRotationError=" + rotationError +
                     " nativePositionError=" + (member.Body.position - position).magnitude);
@@ -603,7 +1127,7 @@ namespace KspContinuum
         }
         void QueuePulse()
         {
-            if (controlled) return;
+            if (Retained) return;
             if (pulseApplied || Time.fixedTime - enteredTime < .2f) return;
             Part target = null; float largestArm = -1;
             foreach (Part candidate in parts)
@@ -628,6 +1152,7 @@ namespace KspContinuum
         }
         void RefreshPropertiesCore()
         {
+            if (persistentPlay) { RefreshGameplayProperties(); return; }
             bool changed = false; propertyScratch.Clear();
             foreach (Member member in ordered)
             {
@@ -657,24 +1182,62 @@ namespace KspContinuum
             Report.maxPropertyRotationShift = Math.Max(Report.maxPropertyRotationShift, RotationError(controlled ? canonicalRootRotation : body.rotation, oldRotation));
             Publish(null, "refresh");
         }
+        double PropertyMass { get { return persistentPlay ? gameplayProperties.Mass : properties.Mass; } }
+        Vec PropertyCenter { get { return persistentPlay ? gameplayProperties.CenterOfMass : properties.CenterOfMass; } }
+        Vec PropertyPrincipal { get { return persistentPlay ? gameplayProperties.PrincipalInertia : properties.PrincipalInertia; } }
+        Rotation PropertyRotation { get { return persistentPlay ? gameplayProperties.PrincipalRotation : properties.PrincipalRotation; } }
+        void RefreshGameplayProperties()
+        {
+            long generation = gameplayProperties.Generation;
+            gameplayIngress.BeginScan();
+            try
+            {
+                foreach (Member member in gameplayMembers)
+                {
+                    Rigidbody source = member.Body;
+                    float mass = source.mass; Vector3 center = source.centerOfMass, inertia = source.inertiaTensor;
+                    Quaternion principal = source.inertiaTensorRotation;
+                    gameplayIngress.Set(member.LocalId, member.LocalId, mass, Vector(member.Position), Rotate(member.Rotation),
+                        Vector(center), Vector(inertia), Rotate(principal));
+                    member.NativeMass = mass; member.NativeCenter = center; member.NativeInertia = inertia; member.NativeInertiaRotation = principal;
+                    member.CachedLocalCenter = center; member.LocalCenterGeneration = gameplayLocalPropertyGeneration;
+                }
+                long start = Stopwatch.GetTimestamp();
+                try { gameplayProperties = gameplayIngress.CompleteScan(); }
+                finally { Report.combineTicks += Stopwatch.GetTimestamp() - start; Report.combineCalls++; }
+            }
+            catch { gameplayIngress.AbortScan(); throw; }
+            Report.gameplayIngressScans = gameplayIngress.Scans; Report.gameplayIngressReductions = gameplayIngress.Reductions;
+            Report.gameplayIngressReuses = gameplayIngress.Reuses; Report.gameplayChangedRows = gameplayIngress.ChangedRows;
+            if (generation == gameplayProperties.Generation) return;
+            Report.propertyRebuilds++;
+            GameplayExpectedViewChanged();
+            Vector3 oldCenter = body.worldCenterOfMass, velocity = body.velocity, omega = body.angularVelocity;
+            Vector3 oldPosition = canonicalRootPosition; Quaternion oldRotation = canonicalRootRotation;
+            PublishProperties(); body.velocity = velocity + Vector3.Cross(omega, body.worldCenterOfMass - oldCenter); body.angularVelocity = omega;
+            Report.maxPropertyPositionShift = Math.Max(Report.maxPropertyPositionShift, (canonicalRootPosition - oldPosition).magnitude);
+            Report.maxPropertyRotationShift = Math.Max(Report.maxPropertyRotationShift, RotationError(canonicalRootRotation, oldRotation));
+            Publish(null, "refresh");
+        }
         void PublishProperties()
         {
-            body.mass = (float)properties.Mass;
-            body.centerOfMass = controlled ? Vector3.zero : Unity(properties.CenterOfMass);
-            body.inertiaTensor = Unity(properties.PrincipalInertia);
-            body.inertiaTensorRotation = controlled ? Quaternion.identity : Unity(properties.PrincipalRotation);
-            if (controlled)
+            InvalidateGameplayMotionView();
+            body.mass = (float)PropertyMass;
+            body.centerOfMass = Retained ? Vector3.zero : Unity(PropertyCenter);
+            body.inertiaTensor = Unity(PropertyPrincipal);
+            body.inertiaTensorRotation = Retained ? Quaternion.identity : Unity(PropertyRotation);
+            if (Retained)
             {
-                body.position = canonicalRootPosition + canonicalRootRotation * Unity(properties.CenterOfMass);
-                body.rotation = Normalized(canonicalRootRotation * Unity(properties.PrincipalRotation));
+                body.position = canonicalRootPosition + canonicalRootRotation * Unity(PropertyCenter);
+                body.rotation = Normalized(canonicalRootRotation * Unity(PropertyRotation));
                 Need(Same(body.centerOfMass, Vector3.zero) && Same(body.inertiaTensorRotation, Quaternion.identity), "Native COM/principal properties were not published.");
             }
             Need(float.IsNaN(body.mass) == false && float.IsInfinity(body.mass) == false && body.mass > 0, "Native mass admission failed.");
         }
         void ReadCanonicalPoseAfterPhysics()
         {
-            canonicalRootRotation = Normalized(Normalized(body.rotation) * Quaternion.Inverse(Unity(properties.PrincipalRotation)));
-            canonicalRootPosition = body.position - canonicalRootRotation * Unity(properties.CenterOfMass);
+            canonicalRootRotation = Normalized(Normalized(body.rotation) * Quaternion.Inverse(Unity(PropertyRotation)));
+            canonicalRootPosition = body.position - canonicalRootRotation * Unity(PropertyCenter);
             Need(Finite(canonicalRootPosition), "Native principal-frame readback produced nonfinite canonical root.");
         }
         void Publish(Step step, string reason)
@@ -685,9 +1248,9 @@ namespace KspContinuum
         }
         void PublishCore(Step step, string reason)
         {
-            Vector3 aggregatePosition = controlled ? canonicalRootPosition : body.position;
-            Quaternion aggregateRotation = controlled ? canonicalRootRotation : Normalized(body.rotation);
-            if (controlled)
+            Vector3 aggregatePosition = Retained ? canonicalRootPosition : body.position;
+            Quaternion aggregateRotation = Retained ? canonicalRootRotation : Normalized(body.rotation);
+            if (Retained)
             {
                 Report.poseRequestReason = reason;
                 if (reason == "refresh") Report.poseRefreshRequests++;
@@ -696,10 +1259,10 @@ namespace KspContinuum
                 else if (reason == "admission") Report.poseAdmissionRequests++;
                 else Need(false, "Unknown retained pose publication reason.");
                 Need(Physics.autoSyncTransforms == autoSyncTransforms, "Global physics synchronization setting changed during publication.");
-                if (forestAdmitted) ValidateForest();
+                if (forestAdmitted && !persistentPlay) ValidateForest();
                 if (retainedPoseReady && ExactPose(aggregatePosition, retainedAggregatePosition) && ExactPose(aggregateRotation, retainedAggregateRotation))
                 {
-                    foreach (Member member in ordered) ValidatePublished(member, step);
+                    if (!persistentPlay) foreach (Member member in ordered) ValidatePublished(member, step);
                     Report.poseReuses++;
                     if (reason == "refresh") Report.poseRefreshReuses++;
                     else if (reason == "postphysics") Report.posePostPhysicsReuses++;
@@ -708,6 +1271,10 @@ namespace KspContinuum
                     return;
                 }
             }
+            if (persistentPlay && forestPrepared)
+            {
+                PublishGameplayPose(aggregatePosition, aggregateRotation, reason); return;
+            }
             foreach (Member member in ordered)
             {
                 long start = Stopwatch.GetTimestamp();
@@ -715,17 +1282,17 @@ namespace KspContinuum
                 member.PublishedPosition = position; member.PublishedRotation = rotation;
                 Report.publishPlanTicks += Stopwatch.GetTimestamp() - start;
                 start = Stopwatch.GetTimestamp();
-                bool write = !controlled || !forestAdmitted || !presentationRootAdmitted && member.ForestRoot;
+                bool write = !Retained || !forestAdmitted || !presentationRootAdmitted && member.ForestRoot;
                 if (write)
                 {
                     member.Body.transform.SetPositionAndRotation(position, rotation);
-                    if (controlled) Report.forestWriteCalls++;
+                    if (Retained) Report.forestWriteCalls++;
                 }
-                if (!controlled) { member.Body.position = position; member.Body.rotation = rotation; }
+                if (!Retained) { member.Body.position = position; member.Body.rotation = rotation; }
                 Report.publishWriteTicks += Stopwatch.GetTimestamp() - start;
-                if (!controlled) ValidatePublished(member, step);
+                if (!Retained) ValidatePublished(member, step);
             }
-            if (controlled)
+            if (Retained)
             {
                 if (presentationRootAdmitted)
                 {
@@ -737,12 +1304,48 @@ namespace KspContinuum
                 long start = Stopwatch.GetTimestamp();
                 try { Need(Physics.autoSyncTransforms == autoSyncTransforms, "Global physics synchronization setting changed during publication."); Physics.SyncTransforms(); }
                 finally { Report.publishSyncTicks += Stopwatch.GetTimestamp() - start; Report.publishSyncCalls++; }
-                foreach (Member member in ordered) ValidatePublished(member, step);
+                if (!persistentPlay || !forestPrepared) foreach (Member member in ordered) ValidatePublished(member, step);
                 if (forestAdmitted) Report.forestMaterializations++;
-                if (!forestPrepared) PrepareForest();
+                if (!forestPrepared)
+                {
+                    PrepareForest();
+                    if (persistentPlay) gameplayPublicationRoots = (forestAdmitted ? ordered.Where(member => member.ForestRoot) : ordered).ToArray();
+                }
                 retainedAggregatePosition = aggregatePosition; retainedAggregateRotation = aggregateRotation; retainedPoseReady = true;
                 Report.poseMaterializations++; Report.poseGeneration++; Report.poseMaterializationReason = reason;
+                if (persistentPlay) GameplayExpectedViewChanged();
             }
+        }
+        void PublishGameplayPose(Vector3 position, Quaternion rotation, string reason)
+        {
+            long start = Stopwatch.GetTimestamp();
+            try
+            {
+                if (presentationRootAdmitted)
+                {
+                    Need(presentationPivot != null, "Owned presentation root was destroyed.");
+                    presentationPivot.transform.SetPositionAndRotation(position, rotation);
+                    Report.forestWriteCalls++; Report.presentationPivotWriteCalls++;
+                }
+                else
+                {
+                    Member[] roots = gameplayPublicationRoots;
+                    foreach (Member member in roots)
+                    {
+                        Need(member.Body != null, "Owned publication root was destroyed.");
+                        member.Body.transform.SetPositionAndRotation(position + rotation * member.Position, Normalized(rotation * member.Rotation));
+                        Report.forestWriteCalls++;
+                    }
+                }
+            }
+            finally { Report.publishWriteTicks += Stopwatch.GetTimestamp() - start; }
+            start = Stopwatch.GetTimestamp();
+            try { Need(Physics.autoSyncTransforms == autoSyncTransforms, "Global physics synchronization setting changed during publication."); Physics.SyncTransforms(); }
+            finally { Report.publishSyncTicks += Stopwatch.GetTimestamp() - start; Report.publishSyncCalls++; }
+            if (forestAdmitted) Report.forestMaterializations++;
+            retainedAggregatePosition = position; retainedAggregateRotation = rotation; retainedPoseReady = true;
+            Report.poseMaterializations++; Report.poseGeneration++; Report.poseMaterializationReason = reason;
+            GameplayExpectedViewChanged();
         }
         static bool ExactPose(float a, float b)
         { return new PoseFloatBits { value = a }.bits == new PoseFloatBits { value = b }.bits; }
@@ -814,7 +1417,7 @@ namespace KspContinuum
         { forestAdmitted = false; Report.forestStatus = "eager-fallback"; Report.forestFallbackReason = reason; }
         void PreparePresentationRoot()
         {
-            Need(controlled && ordered.All(member => member.Body.transform.parent == null), "Presentation root requires the cold flat parentless body layout.");
+            Need(Retained && ordered.All(member => member.Body.transform.parent == null), "Presentation root requires the cold flat parentless body layout.");
             if (ordered.Any(member => !Finite(member.Body.transform.localScale) || member.Body.transform.localScale.x <= 0 || member.Body.transform.localScale.y <= 0 || member.Body.transform.localScale.z <= 0))
             { ForestFallback("nonpositive-or-nonfinite-presentation-leaf-scale"); return; }
             Report.forestMode = "owned-presentation-root";
@@ -1008,7 +1611,7 @@ namespace KspContinuum
         {
             AddHook(AccessTools.DeclaredMethod(typeof(VesselPrecalculate), "CalculatePhysicsStats", Type.EmptyTypes), nameof(StatsPrefix));
             if (controlled) InstallStages();
-            else AddHook(AccessTools.DeclaredMethod(typeof(FlightIntegrator), "Integrate", new[] { typeof(Part) }), nameof(PulsePrefix));
+            else if (!persistentPlay) AddHook(AccessTools.DeclaredMethod(typeof(FlightIntegrator), "Integrate", new[] { typeof(Part) }), nameof(PulsePrefix));
             foreach (string name in new[] { "ChangeWorldVelocity", "SetWorldVelocity", "OffsetVelocity" }) AddFrame(typeof(Vessel), name, new[] { typeof(Vector3d) });
             AddFrame(typeof(Vessel), "SetPosition", new[] { typeof(Vector3d), typeof(bool) });
             AddFrame(typeof(Vessel), "SetRotation", new[] { typeof(Quaternion), typeof(bool) });
@@ -1170,7 +1773,11 @@ namespace KspContinuum
             Part part = __instance as Part;
             if (part != null)
             {
-                if (part.vessel == owner.vessel) owner.Abort("Part lifecycle transition: " + __originalMethod.Name);
+                if (part.vessel == owner.vessel)
+                {
+                    if (owner.persistentPlay) owner.HandbackBeforeStockTransition("Part lifecycle transition: " + __originalMethod.Name);
+                    else owner.Abort("Part lifecycle transition: " + __originalMethod.Name);
+                }
                 return true;
             }
             if (!ReferenceEquals(__instance, owner.vessel)) return true;
@@ -1178,13 +1785,21 @@ namespace KspContinuum
             {
                 string name = __originalMethod.Name;
                 if (name == "SetRotation" || (name == "SetPosition" && (bool)__args[1]))
-                { owner.Abort("Unsupported pristine/rotation transaction."); return true; }
+                {
+                    if (owner.persistentPlay) owner.HandbackBeforeStockTransition("Stock pristine/rotation transaction.");
+                    else owner.Abort("Unsupported pristine/rotation transaction.");
+                    return true;
+                }
                 Vector3d value = (Vector3d)__args[0]; Need(Finite((Vector3)value), "Nonfinite frame transaction.");
                 if (name == "SetPosition")
                 {
                     Vector3 offset = (Vector3)(value - (Vector3d)owner.vessel.transform.position);
+                    owner.InvalidateGameplayMotionView();
                     owner.body.position += offset;
-                    if (owner.controlled) owner.canonicalRootPosition += offset;
+                    if (owner.Retained) owner.canonicalRootPosition += offset;
+                    if (owner.persistentPlay)
+                        for (int i = 0; i < owner.gameplayCommandCount; i++)
+                        { PlayCommand command = owner.gameplayCommands[i]; command.point += offset; owner.gameplayCommands[i] = command; }
                     foreach (Command command in owner.commands)
                     {
                         command.point = Array(Unity(Vector(command.point)) + offset);
@@ -1193,6 +1808,7 @@ namespace KspContinuum
                     }
                     owner.Publish(null, "frame"); owner.Report.frameTranslations++; return false;
                 }
+                owner.InvalidateGameplayMotionView();
                 if (name == "SetWorldVelocity") owner.body.velocity = value;
                 else owner.body.velocity += (Vector3)value;
                 if (name == "ChangeWorldVelocity") owner.vessel.krakensbaneAcc += value * (1.0 / TimeWarp.fixedDeltaTime);
@@ -1202,12 +1818,14 @@ namespace KspContinuum
         }
         void Abort(string detail)
         {
+            if (persistentPlay) { GameplayFailure(new InvalidOperationException(detail)); return; }
             if (Report.detail == null) Report.detail = detail;
             Report.status = "invalid"; failed = true;
             Restore();
         }
         void Restore()
         {
+            InvalidateGameplayMotionView();
             if (ReferenceEquals(active, this)) active = null;
             if (ordered.Count == 0) { Report.originalBodiesRestored = body == null && root == null; return; }
             var faults = new List<string>();
@@ -1237,8 +1855,8 @@ namespace KspContinuum
                     try
                     {
                         BodyState state = Report.restoredAggregate;
-                        Quaternion rotation = controlled ? canonicalRootRotation : Normalized(new Quaternion(state.rotation[0], state.rotation[1], state.rotation[2], state.rotation[3]));
-                        Vector3 position = (controlled ? canonicalRootPosition : Unity(Vector(state.position))) + rotation * member.Position;
+                        Quaternion rotation = Retained ? canonicalRootRotation : Normalized(new Quaternion(state.rotation[0], state.rotation[1], state.rotation[2], state.rotation[3]));
+                        Vector3 position = (Retained ? canonicalRootPosition : Unity(Vector(state.position))) + rotation * member.Position;
                         Quaternion orientation = Normalized(rotation * member.Rotation);
                         Vector3 center = position + orientation * member.Body.centerOfMass;
                         omega = Unity(Vector(state.angularVelocity)); velocity = Unity(Vector(state.velocity)) + Vector3.Cross(omega, center - Unity(Vector(state.center)));
@@ -1283,9 +1901,15 @@ namespace KspContinuum
             if (controlled && Report.stageCosts != null)
                 foreach (BoundedStageCost row in Report.stageCosts)
                     if (row.installed && (!ExactStageGraph(row.slot) || StageHash(stageMethods[row.slot].GetMethodBody().GetILAsByteArray()) != row.ilSha256)) Report.stageFaults++;
-            if (bridge.Installed) Need(bridge.ExactInstalled(), "Bridge graph changed before cleanup.");
+            if (bridge.Installed)
+            {
+                bool exact = bridge.ExactInstalled();
+                if (persistentPlay && !exact)
+                { Report.gameplayForeignGraphChanges++; Report.gameplayGuardFailures++; failed = true; Report.status = "invalid"; Report.detail = (Report.detail ?? "") + " Writer graph changed before owned cleanup."; }
+                else Need(exact, "Bridge graph changed before cleanup.");
+            }
             if (frameMethods.Count > 0) framePatches.UnpatchAll(FrameOwner);
-            frameInstalled = false; bridge.Dispose(); Report.bridgeReleased = bridge.CleanupStatus == "removed";
+            frameInstalled = false; bridge.Dispose(); Report.bridgeReleased = bridge.CleanupStatus == "removed" || persistentPlay && bridge.CleanupStatus == "removed-with-errors";
             foreach (MethodBase method in frameMethods) if (Harmony.GetPatchInfo(method)?.Owners.Contains(FrameOwner) == true) Report.bridgeReleased = false;
             if (controlled && Report.stageCosts != null)
             {
@@ -1304,6 +1928,7 @@ namespace KspContinuum
         }
         public void Dispose()
         {
+            if (persistentPlay) { DisposeGameplay(false); return; }
             if (disposed) return;
             try
             {
@@ -1338,6 +1963,41 @@ namespace KspContinuum
             if (Report.status != "invalid") Report.status = Report.passed ? "passed" : "incomplete";
             File.WriteAllText(output, ReportJson.Encode(Report));
             disposed = Report.bridgeReleased && (ordered.Count == 0 || Report.originalBodiesRestored);
+        }
+        // A scene exit may provide no later frame for Unity's deferred Destroy readback.
+        public void FinishInterruptedRetirement()
+        { Need(persistentPlay, "Interrupted gameplay retirement requires persistent mode."); DisposeGameplay(true); }
+        void DisposeGameplay(bool interrupted)
+        {
+            if (disposed || receiptWritten) return;
+            RequireThread();
+            try { if (!handbackRequested || !Report.handbackComplete) HandbackBeforeStockTransition("Service disposal."); }
+            catch (Exception error) { failed = true; Report.status = "invalid"; Report.detail = (Report.detail ?? "") + " Dispose: " + error; }
+            bool retired = ReadyForReacquisition;
+            if (!retired && !interrupted) return;
+            Report.bridgeSites = bridge.SourceCallsites;
+            Report.bridgeSealStatus = bridge.OwnershipSealStatus; Report.bridgeSealDetail = bridge.OwnershipSealDetail;
+            Report.bridgeSealTicks = bridge.OwnershipSealTicks; Report.rawPatchStateChecks = bridge.RawPatchStateChecks;
+            Report.rawPatchStateComparedBytes = bridge.RawPatchStateComparedBytes;
+            Report.sealedPatchMethods = bridge.SealedPatchMethods; Report.sealedPatchBytes = bridge.SealedPatchBytes;
+            Report.autoSyncTransformsUnchanged = !admissionAttempted || Physics.autoSyncTransforms == autoSyncTransforms;
+            Report.gameplayRecent = new GameplaySample[gameplaySampleCount];
+            int first = (gameplaySampleHead - gameplaySampleCount + gameplaySamples.Length) % gameplaySamples.Length;
+            for (int i = 0; i < gameplaySampleCount; i++) Report.gameplayRecent[i] = gameplaySamples[(first + i) % gameplaySamples.Length];
+            Report.steps = null; Report.screenshots = null;
+            Report.cleanupStatus = retired && !frameInstalled ? "restored-original-ownership" : "retirement-requested-incomplete";
+            bool motionViewQualified = Report.gameplayMotionViewStatus == "admitted-six-point-native-analytic-witness" &&
+                Report.gameplayMotionWitness != null && Report.gameplayMotionWitness.Length == 6 && Report.gameplayMotionWitnessNativePointCalls == 6 &&
+                Report.gameplayMotionWitness.All(row => row != null && row.passed) && Report.gameplayMotionNativeFallbacks == 0;
+            bool leaseQualified = gameplayValidation.HasAudit && Report.gameplayAuditColdAudits > 0 && Report.gameplayAuditHandbackAudits > 0 &&
+                Report.gameplayAuditMaximumStepGap <= Report.gameplayAuditIntervalSteps && Report.gameplayAuditLastStep == Report.gameplayPhysicsSteps &&
+                Report.gameplayAuditLastGeneration == Report.gameplayAuditExpectedGeneration && Report.gameplayFullLeasePoseReadbacks >= Report.gameplayFullLeaseAudits * Report.sourceBodies;
+            Report.passed = !failed && motionViewQualified && leaseQualified && Report.gameplayGuardFailures == 0 && Report.gameplayForeignGraphChanges == 0 && Report.gameplayPhysicsSteps > 0 && retired && Report.handbackComplete && Report.autoSyncTransformsUnchanged &&
+                Report.maxProxyPositionError <= 1e-4 && Report.maxProxyRotationError <= .002;
+            if (!failed) Report.status = Report.passed ? "handed-back" : retired && Report.handbackComplete && Report.gameplayPhysicsSteps == 0 ? "handed-back-unobserved" : "incomplete";
+            using (var stream = new FileStream(output, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var writer = new StreamWriter(stream)) writer.Write(ReportJson.Encode(Report));
+            receiptWritten = true; disposed = retired;
         }
         BodyState State(Rigidbody source, bool proxy)
         {

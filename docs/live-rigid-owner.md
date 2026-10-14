@@ -1,5 +1,116 @@
 # Live rigid vessel ownership
 
+The operator service now has a separate persistent owner path. It is selected
+explicitly through the four-argument `LiveRigidVesselOwner(..., persistentPlay:
+true)` constructor; the existing three-argument constructor retains v1/v2
+diagnostics. The service owns enabling, pausing, transitions, reacquisition and
+presentation. `CONTINUUM_PLAYABLE_RIGID` names its existing private receipt
+directory. This path does not create `LiveRigidFlightDriver`, inject a pulse,
+force throttle idle, impose a simulated-duration cutoff or capture owner PNGs.
+Real stock input, loaded MechJeb controls, resource flow, aero and thermal
+providers continue executing. Only the qualified rigid motion/read/publication
+boundary changes.
+
+Persistent admission supports active, unpacked, airborne orbital, suborbital,
+escaping and atmospheric flight at normal or LOW physics warp up to 4x, with
+the actual finite native step in `(0, 0.1]` seconds. Throttle is permitted.
+Surface/contact states, deployed wheels, servos, changed celestial-body frames,
+topology and unsupported writers remain stock-owned. A cold whole-craft envelope
+includes source body positions, enabled collider bounds and stock craft size.
+Before script and native work, clearance checks add a current speed/step margin
+against stock sea/terrain altitude and nearby loaded-vessel envelopes. These are
+conservative handback guards, not a terrain/collision implementation or proof of
+arbitrary contact prediction. The exact assembly/IL/provider boundary remains
+the selected stock and MechJeb graph; it is not an arbitrary-mod adapter.
+
+`IsOwned` reports actual admitted native authority, not merely constructor
+success. `BindPlayableIdentity(sessionId, epoch, attempt)` binds once before
+admission and records the actual process and helper hash cold. The public
+`HandbackBeforeStockTransition(reason)` is synchronous: it restores original
+parents/scales/poses, native flags and constituent point velocities, then
+forwards every still-pending source force/torque and reached common acceleration
+to the original receiver in original call order. A fixed 16,384-entry value slab
+retains actual receiver, mode and world-point operands until native advancement
+finishes. Zero operands are also retained for handback; aggregate arithmetic may
+omit them. Commands are consumed only after the matched native step. There is
+no second original/candidate force fold or attempt to roll back native physics.
+
+Declared eligibility and lifecycle handbacks are ordinary transitions. Caught
+order, numerical, coverage, unexpected writer and sealed-graph failures latch an
+invalid epoch even when restoration succeeds; clean fallback cannot promote
+such an epoch into proof. Unsupported state encountered before mutation lets
+the original stock transition proceed only after logical handback completes.
+Failed restoration stops that transition. Cleanup removes only owned hooks.
+
+Unity object retirement is asynchronous. `ReadyForReacquisition` stays false
+while initially waiting for native admission and until an explicit handback has
+restored bodies, drained pending operands, removed owned hooks and observed the
+aggregate and presentation root actually gone. The service retains a retiring
+owner across that frame. Ordinary `Dispose` writes its fresh final receipt only
+after closure; `FinishInterruptedRetirement` can preserve an explicitly
+incomplete receipt when scene destruction or quit supplies no further frame.
+No early receipt is overwritten later. A safe zero-step cancellation is
+`handed-back-unobserved`, with `passed=false` and no native coverage.
+
+The v3 receipt uses primitive lifetime counters and a last-64-completed-step
+ring. It allocates no per-command `Command`/`BodyState` receipt objects or
+unbounded step arrays. Mass ingress reads the same current native mass/COM/
+principal inputs into `RetainedRigidIngress` value storage, including changed
+rows; its accepted snapshot drives native properties directly without hot
+`ToProperties` conversion. Source units remain KSP native tonnes and tonne-m².
+The canonical craft frame, COM/principal mapping, retained Transform forest,
+original proxy/readback budgets and exact writer checks stay active. The ring
+is a tail rather than a complete force tape. Its wall envelope begins before
+the script phase and ends after native physics, publication, periodic ownership
+checks and sample preparation; preceding/following fixed phases and rendering
+are outside. Lifetime nested counters remain nonadditive.
+
+The pending gameplay gates are actual operator controls and throttle in vacuum
+and airborne atmosphere, normal/LOW4 motion, resource/thermal continuation,
+ordered pending-force handback, save/staging/switch/rails restoration and safe
+reacquisition. Independent source/native pose, common-acceleration and cleanup
+proofs retain their frozen budgets. A complete uncapped stock-vs-owned cost
+observation is separate from functionality; this source path alone claims no
+FPS gain. The diagnostic procedures below keep their existing scope.
+
+Persistent publication now has an explicit validation lease. The four-argument
+constructor selects one completed native step; a fifth `auditSteps` argument
+selects exactly `1` or `16`. The service freezes that selection for the epoch.
+Every script/native boundary still checks aggregate liveness, native flags,
+finite motion/properties, its canonical-to-native frame and current clock;
+native ingress still acquires all source mass, COM and inertia inputs. Original
+inactive-wheel, force-mode/order and complete common-acceleration guards remain.
+This revision does not skip or coalesce functional mass acquisition.
+
+Cold admission, cadence, ownership invalidation and terminal handback run the
+full alias, proxy pose, forest and scale checks at the original budgets. Successful
+audits alone advance the lease. An overdue gap or failed audit invalidates the
+epoch; cleanup still attempts restoration. Handback explicitly invalidates once
+and audits the current completed step before restore, including after an expected
+eligibility/warp transition. Terminal eligibility is excluded from that ownership
+check so an ordinary transition does not become a protocol fault. Duplicate
+requests for the same view and lease revision skip. Authoritative pose/property
+updates advance the expected generation without invalidating production cadence.
+
+Unchanged canonical pose requests are constant-time: they retain existing targets
+without per-member readback or synchronization. Changed poses write the admitted
+presentation pivot or cold-compiled forest roots and synchronize once. Independent
+member targets are recomputed from canonical/local geometry in the full audits;
+they are not reallocated or replanned on every pivot publication. Unsupported
+forests retain the original parent-first eager writer list. v1/v2 retain exhaustive
+publication/readback and their original diagnostics.
+
+The receipt binds `gameplayAuditIntervalSteps`, `gameplayFullLeaseAudits`,
+`gameplayAuditMaximumStepGap`, last audited/expected generations and current
+terminal step. It also records overlapping cold/cadence/invalidation/handback
+reason counters, full attempts/costs, critical-check costs, pose readbacks and the
+maximum actual accumulated simulated-time gap. `gameplayAuditScope` states the
+limit: a direct transient proxy/Transform/forest write can affect stock callbacks
+or be overwritten between full observations. Cadence is not universal writer
+equivalence. Native behavior and complete stock-versus-owned cost still require
+the changed integrated observation; source-level removal of proof work is not an
+FPS result.
+
 The diagnostic rigid owner advances an assembled craft as one native Rigidbody in KSP's existing physics scene. Original Part and Rigidbody identities remain present as collision-disabled kinematic proxies. This is the first live integration of the rigid-primary model; stock callbacks, resource updates and rendering continue running.
 
 Select `--flight-live-rigid-owner ABS_FRESH_RECEIPT.json` in a resolved research-lab launch. It requires a pinned part count, normal time, vacuum, quiet controls and more than two simulated seconds of capture. It rejects other physics owners, attribution/capture treatments, docking/reload probes and ordinary live-play mode. The output directory must exist and the receipt must be new. The plugin also admits actual lifecycle, topology and PlayerLoop ordering at runtime.

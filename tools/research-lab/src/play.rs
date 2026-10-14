@@ -276,6 +276,38 @@ mod tests {
             .unwrap()
             .get("livePlay")
             .is_none());
+        let launch = ResolvedLaunch::parse(&BTreeMap::new()).unwrap();
+        let value = serde_json::to_value(launch).unwrap();
+        assert!(value.get("playableRigid").is_none());
+        assert!(value.get("rigidAuditSteps").is_none());
+        assert!(value.get("controlPort").is_none());
+    }
+    #[test]
+    fn playable_rigid_requires_live_mode_and_keeps_capture_exclusive() {
+        let mut options = options();
+        options.insert("--playable-rigid".into(), "true".into());
+        options.insert("--control-port".into(), "47771".into());
+        let launch = ResolvedLaunch::parse(&options).unwrap();
+        assert!(launch.playable_rigid && launch.control_port == Some(47771));
+        assert_eq!(launch.rigid_audit_steps, Some(16));
+        options.insert("--rigid-audit-steps".into(), "2".into());
+        assert!(ResolvedLaunch::parse(&options).is_err());
+        options.insert("--rigid-audit-steps".into(), "1".into());
+        let exhaustive = ResolvedLaunch::parse(&options).unwrap();
+        assert_eq!(exhaustive.rigid_audit_steps, Some(1));
+        let mut legacy = serde_json::to_value(exhaustive).unwrap();
+        legacy.as_object_mut().unwrap().remove("rigidAuditSteps");
+        let legacy: ResolvedLaunch = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.rigid_audit_steps, None);
+        legacy.validate().unwrap();
+        options.remove("--live-play");
+        assert!(ResolvedLaunch::parse(&options).is_err());
+        options.insert("--live-play".into(), "true".into());
+        options.insert("--flight-seconds".into(), "30".into());
+        assert!(ResolvedLaunch::parse(&options).is_err());
+        options.remove("--flight-seconds");
+        options.insert("--control-port".into(), "0".into());
+        assert!(ResolvedLaunch::parse(&options).is_err());
     }
     #[test]
     fn operator_writes_do_not_relax_binary_integrity() {

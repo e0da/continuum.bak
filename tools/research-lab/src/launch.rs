@@ -87,6 +87,8 @@ pub struct Startup {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Diagnostics {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub loop_thread_cpu: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aero_step_context: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -184,6 +186,12 @@ pub struct ResolvedLaunch {
     pub schema: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub live_play: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub playable_rigid: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rigid_audit_steps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control_port: Option<u16>,
     pub timeout_seconds: u64,
     pub graphics_api: GraphicsApi,
     pub startup: Startup,
@@ -206,6 +214,9 @@ impl ResolvedLaunch {
         let launch = Self {
             schema: "continuum-resolved-launch/v1".into(),
             live_play: boolean("--live-play")?,
+            playable_rigid: boolean("--playable-rigid")?,
+            rigid_audit_steps: options.get("--rigid-audit-steps").map(|value| value.parse::<u32>()).transpose().map_err(|error| error.to_string())?.or_else(|| boolean("--playable-rigid").ok().filter(|value| *value).map(|_| 16)),
+            control_port: options.get("--control-port").map(|value| value.parse::<u16>()).transpose().map_err(|error| error.to_string())?,
             timeout_seconds: options
                 .get("--timeout-seconds")
                 .map(|v| v.parse::<u64>())
@@ -263,6 +274,7 @@ impl ResolvedLaunch {
                 work_scheduler: boolean("--startup-work-scheduler")?,
             },
             diagnostics: Diagnostics {
+                loop_thread_cpu: boolean("--flight-thread-cpu")?,
                 aero_step_context: options.get("--flight-aero-step-context").cloned(),
                 aero_drag_transaction: boolean("--flight-aero-drag-transaction")?,
                 fixed_step_owner_attribution: boolean("--flight-fixed-step-owner-attribution")?,
@@ -309,6 +321,10 @@ impl ResolvedLaunch {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.diagnostics.loop_thread_cpu && !self.playable_rigid { return Err("thread CPU attribution requires the playable flight service".into()); }
+        if self.playable_rigid && !self.live_play { return Err("playable rigid requires ordinary live play".into()); }
+        if self.rigid_audit_steps.is_some() && (!self.playable_rigid || !matches!(self.rigid_audit_steps, Some(1 | 16))) { return Err("rigid-audit-steps requires playable rigid and must be 1 or 16".into()); }
+        if self.control_port == Some(0) { return Err("control-port must be 1..65535".into()); }
         let d=&self.diagnostics;
         if let Some(scenario) = d.live_rigid_scenario.as_deref() {
             if scenario != "control-warp" || d.live_rigid_owner.is_none() {
@@ -844,6 +860,23 @@ mod tests {
         input.remove("--flight-callback-attribution");
         assert!(ResolvedLaunch::parse(&input).is_ok());
         input.insert("--flight-convection-replacement".into(), "verify".into());
+        assert!(ResolvedLaunch::parse(&input).is_err());
+    }
+    #[test]
+    fn thread_cpu_selection_is_explicit_and_replayable() {
+        let mut input = BTreeMap::from([
+            ("--live-play".into(), "true".into()),
+            ("--playable-rigid".into(), "true".into()),
+            ("--flight-save".into(), "lab".into()),
+            ("--flight-checkpoint".into(), "checkpoint".into()),
+        ]);
+        let ordinary = ResolvedLaunch::parse(&input).unwrap().identity_json().unwrap();
+        let ordinary_value: serde_json::Value = serde_json::from_str(&ordinary).unwrap();
+        assert!(ordinary_value["diagnostics"].get("loopThreadCpu").is_none());
+        input.insert("--flight-thread-cpu".into(), "true".into());
+        let selected = ResolvedLaunch::parse(&input).unwrap().identity_json().unwrap();
+        assert!(ResolvedLaunch::parse_from_json(&selected).unwrap().diagnostics.loop_thread_cpu);
+        input.remove("--playable-rigid");
         assert!(ResolvedLaunch::parse(&input).is_err());
     }
     #[test]

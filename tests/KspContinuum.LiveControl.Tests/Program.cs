@@ -152,7 +152,29 @@ static class Program
         LiveControlReply hello = Execute(control, "hello 1.0.0 hello1", 20, 3, Capture);
         Check(hello.status == "ok" && hello.identity.epoch == 1 && hello.snapshot == null &&
             hello.requestId == "hello1" && hello.protocolVersion == "1.0.0", "hello identity");
-        Check(hello.capabilities.Length == 5 && captures == 0, "live control capabilities");
+        Check(Array.IndexOf(hello.capabilities, "playable-rigid-control") >= 0 && captures == 0, "live control capabilities");
+        int rigidCalls = 0;
+        LiveRigidStatus Rigid(LiveControlOperation operation)
+        {
+            rigidCalls++;
+            return new LiveRigidStatus { state = "owned", enabled = true, owned = true, parts = 512, bodies = 426,
+                sessionId = Session, vesselId = Vessel, epoch = 2, physicsSteps = 9000, renderFrames = 10000,
+                framesPerSecond = 80, simulationRate = 1, mass = 64, throttle = .5f };
+        }
+        LiveControlReply rigid = control.Execute(LiveControlRequest.Parse("rigid-enable 1.3.0 rigid1 " + Session + " 1"),
+            20, 3, Capture, rigidOperation: Rigid);
+        Check(rigid.status == "ok" && rigid.rigid.owned && rigidCalls == 1 && captures == 0, "typed rigid request reaches owner only");
+        using (var json = JsonDocument.Parse(ReportJson.Encode(rigid)))
+            Check(json.RootElement.GetProperty("rigid").GetProperty("physicsSteps").GetInt64() == 9000, "rigid native status serialization");
+        Check(control.Execute(LiveControlRequest.Parse("rigid-disable 1.3.0 stale " + Session + " 2"), 20, 3, Capture,
+            rigidOperation: Rigid).reason == "stale-identity" && rigidCalls == 1, "stale rigid command has no ownership effect");
+        Check(control.Execute(LiveControlRequest.Parse("rigid-retry 1.2.0 old " + Session + " 1"), 20, 3, Capture,
+            rigidOperation: Rigid).reason == "invalid-request" && rigidCalls == 1, "rigid effects require new protocol");
+        Check(control.Execute(LiveControlRequest.Parse("rigid-status 1.3.0 absent " + Session + " 1"), 20, 3, Capture).status == "unavailable", "missing rigid service is explicit");
+        Check(control.Execute(LiveControlRequest.Parse("rigid-retry 1.3.0 retiring " + Session + " 1"), 20, 3, Capture,
+            rigidOperation: _ => new LiveRigidStatus { state = "waiting-stock", operationError = "handback-required-before-retry" }).status == "rejected", "unsuccessful rigid mutation cannot acknowledge success");
+        Check(control.Execute(LiveControlRequest.Parse("rigid-status 1.3.0 invalid " + Session + " 1"), 20, 3, Capture,
+            rigidOperation: _ => new LiveRigidStatus { state = "owned", simulationRate = double.NaN }).reason == "invalid-rigid-status", "invalid performance observation is rejected");
         LiveSweepStatus StartSweep() => new LiveSweepStatus { state = "running", window = "stock-01", windowIndex = 0 };
         LiveSweepStatus SweepStatus() => new LiveSweepStatus { state = "complete", directory = "/runtime/report", window = "full-publication-02", windowIndex = 5 };
         LiveControlReply started = control.Execute(LiveControlRequest.Parse("sweep-start 1.1.0 sweep1 " + Session + " 1 dry-buoyancy"),

@@ -20,6 +20,8 @@ namespace KspContinuum
         }
         readonly Scope[] scopes;
         readonly IPlayerLoopBracketObserver observer;
+        readonly MacThreadWorkTiming threadWork;
+        public MacThreadWorkTiming.ReportData MainThreadWork { get { return threadWork == null ? null : threadWork.Snapshot(); } }
         PlayerLoopSystem original;
         bool active, installed, disposed, valid = true, started;
         public LoopTimingReport Report { get; private set; }
@@ -27,17 +29,22 @@ namespace KspContinuum
         public PlayerLoopTiming(IPlayerLoopBracketObserver observer = null)
         {
             this.observer = observer;
+            if (Environment.GetEnvironmentVariable("CONTINUUM_LOOP_THREAD_CPU") == "1") threadWork = new MacThreadWorkTiming();
             Report = new LoopTimingReport { status = "unavailable", integrityStatus = "not-installed", cleanupStatus = "not-installed",
                 clockFrequency = Stopwatch.Frequency, timerReadFloorTicks = long.MaxValue };
-            Report.measurementScope = "Elapsed wall time around unchanged PlayerLoop subtrees. FixedUpdate, PreLateUpdate and PostLateUpdate parents overlap their children and must not be summed with them. Rendering/presentation brackets include main-thread work and any blocking waits; they do not measure GPU execution duration.";
+            Report.measurementScope = "Elapsed wall time around unchanged PlayerLoop subtrees. Update, FixedUpdate, PreLateUpdate and PostLateUpdate parents overlap their children and must not be summed with them. Rendering/presentation brackets include main-thread work and any blocking waits; they do not measure GPU execution duration. Initialization alone requires exactly one native frameCount advance and stores the expected ending frame; other scopes require unchanged frameCount.";
             for (int i = 0; i < 128; i++) { long before = Stopwatch.GetTimestamp(); Report.timerReadFloorTicks = Math.Min(Report.timerReadFloorTicks, Stopwatch.GetTimestamp() - before); }
             scopes = new[] {
+                MakeScope(null, typeof(UnityEngine.PlayerLoop.Initialization), "frame-turnover", "separate-frame-phase-exact-counter-advance-one", 1),
                 MakeScope(null, typeof(UnityEngine.PlayerLoop.EarlyUpdate), "frame", "separate-frame-phase"),
                 MakeScope(null, typeof(UnityEngine.PlayerLoop.PreUpdate), "frame", "separate-frame-phase"),
                 MakeScope(null, typeof(FixedLoop), "fixed", "contains-fixed-children"),
                 MakeScope(typeof(FixedLoop), typeof(FixedLoop.PhysicsFixedUpdate), "fixed", "contained-by-fixed"),
                 MakeScope(typeof(FixedLoop), typeof(FixedLoop.ScriptRunBehaviourFixedUpdate), "fixed", "contained-by-fixed"),
+                MakeScope(null, typeof(UpdateLoop), "frame", "contains-update-children-do-not-sum-with-children"),
                 MakeScope(typeof(UpdateLoop), typeof(UpdateLoop.ScriptRunBehaviourUpdate), "frame", "separate-frame-phase"),
+                MakeScope(typeof(UpdateLoop), typeof(UpdateLoop.ScriptRunDelayedDynamicFrameRate), "frame", "contained-by-update"),
+                MakeScope(typeof(UpdateLoop), typeof(UpdateLoop.ScriptRunDelayedTasks), "frame", "contained-by-update"),
                 MakeScope(null, typeof(LateLoop), "frame", "contains-pre-late-children-do-not-sum-with-children"),
                 MakeScope(typeof(LateLoop), typeof(LateLoop.ScriptRunBehaviourLateUpdate), "frame", "contained-by-pre-late"),
                 MakeScope(null, typeof(RenderLoop), "frame", "contains-post-late-children-do-not-sum-with-children"),
@@ -49,7 +56,7 @@ namespace KspContinuum
             };
         }
 
-        Scope MakeScope(Type parentType, Type type, string timeDomain, string overlap)
+        Scope MakeScope(Type parentType, Type type, string timeDomain, string overlap, int expectedCounterAdvance = 0)
         {
             var scope = new Scope { Name = type.FullName, ParentType = parentType, Type = type, TimeDomain = timeDomain,
                 Overlap = overlap, Buffer = new LoopTimingBuffer(type.FullName, 4096, Stopwatch.Frequency) };
@@ -57,11 +64,13 @@ namespace KspContinuum
                 double time = timeDomain == "fixed" ? UnityEngine.Time.fixedTime : UnityEngine.Time.time;
                 double delta = timeDomain == "fixed" ? UnityEngine.Time.fixedDeltaTime : UnityEngine.Time.deltaTime;
                 if (observer != null) observer.Before(scope.Name, UnityEngine.Time.frameCount, time);
-                scope.Buffer.Begin(Stopwatch.GetTimestamp(), UnityEngine.Time.frameCount, time, delta);
+                scope.Buffer.Begin(Stopwatch.GetTimestamp(), checked(UnityEngine.Time.frameCount + expectedCounterAdvance), time, delta);
+                if (threadWork != null && ThreadWorkScope(scope.Type)) threadWork.Before(scope.Name, UnityEngine.Time.frameCount);
             } catch (Exception error) { if (observer != null) observer.Fault(scope.Name, error); scope.Buffer.Fault(); Invalidate("Timing callback failed."); } };
-            scope.After = () => { if (!active) return; try { scope.Buffer.End(Stopwatch.GetTimestamp(), UnityEngine.Time.frameCount); if (observer != null) observer.After(scope.Name, UnityEngine.Time.frameCount, timeDomain == "fixed" ? UnityEngine.Time.fixedTime : UnityEngine.Time.time); } catch (Exception error) { if (observer != null) observer.Fault(scope.Name, error); scope.Buffer.Fault(); Invalidate("Timing callback failed."); } };
+            scope.After = () => { if (!active) return; try { if (threadWork != null && ThreadWorkScope(scope.Type)) threadWork.After(scope.Name, UnityEngine.Time.frameCount); scope.Buffer.End(Stopwatch.GetTimestamp(), UnityEngine.Time.frameCount); if (observer != null) observer.After(scope.Name, UnityEngine.Time.frameCount, timeDomain == "fixed" ? UnityEngine.Time.fixedTime : UnityEngine.Time.time); } catch (Exception error) { if (observer != null) observer.Fault(scope.Name, error); scope.Buffer.Fault(); Invalidate("Timing callback failed."); } };
             return scope;
         }
+        static bool ThreadWorkScope(Type type) { return type == typeof(UpdateLoop) || type == typeof(UpdateLoop.ScriptRunDelayedDynamicFrameRate) || type == typeof(FixedLoop) || type == typeof(RenderLoop); }
 
         public void Start()
         {
@@ -137,6 +146,7 @@ namespace KspContinuum
         public void Dispose()
         {
             if (disposed) return; Audit(); active = false; disposed = true;
+            if (threadWork != null) threadWork.Dispose();
             if (installed)
             {
                 try

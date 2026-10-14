@@ -73,6 +73,7 @@ The diagram describes the target, not a claim that every owner exists today.
 |---|---|
 | Definitions and assets | Content-addressed cooked data, dependency closures and capability-specific construction; retain decoded/compiled data across runs where useful. |
 | World, vessel and part state | Stable identities, double-precision local/world frames, explicit revisions and domain writers. Authored parts retain identity without requiring one physical body per part. |
+| Time and scheduling | One committed simulation clock, retained input/event history and explicit progress debt. Numerical steps, passive propagation, provider deadlines and presentation cadence have separate policies. |
 | Topology | Compile structure, rigid regions, resource routes, thermal/aero relationships, provider bindings and render instances; rebuild affected plans on stage/dock/break/mechanism events. |
 | Part systems | Coarse scheduled passes over retained numeric columns, dependency-aware reductions and explicit compatibility calls; avoid a job, message or native crossing per part. |
 | Forces and motion | Accumulate declared forces/moments into physical regions; rigid assembled craft is primary, articulated mechanisms/contact are explicit, compliant wobble is optional. |
@@ -91,6 +92,80 @@ belongs outside inner loops. CPU, SIMD, native workers and GPU residency are
 placements for those plans; compare complete acquisition-to-consumption cost.
 Existing synthetic GPU or arithmetic timings do not establish a game routing
 threshold. A small rigid craft need not run on the GPU to be cheap.
+
+## Time authority and integration order
+
+Replace complete responsibilities while continuously redesigning their shared
+model. A complete game rewrite is not a prerequisite for useful integration.
+Individual optimized methods are donors; time authority, vessel simulation,
+asset residency and presentation are the units that must have coherent owners.
+
+The owned flight timeline routes wall-time demand into the existing atomic
+simulation host. Only committed physical state advances its clock. Work budgets
+retain unfinished demand and its ordered controls; pause stops new demand
+without erasing it. Warp requests more simulated progress rather than enlarging
+the local numerical step. Guarded passive Kepler propagation is a separate
+admitted operation with explicit frozen passive state and event barriers. This
+does not grant arbitrary modules permission to skip their evolution.
+
+Rendering reads committed state independently. Presentation interpolation,
+resolution and effects do not become integration inputs. The current consumer
+uses committed poses; smooth interpolation remains implementation work. The
+configured local quantum is a numerical contract, not an inherited requirement
+that every future system run at 50 Hz. Specialized systems can later use their
+own error bounds, dependencies and deadlines inside a complete transaction.
+
+The target execution host has an independent simulation worker. Unity Update
+acquires presentation state and submits ordered controls; it does not pump
+physical progress. The current workbench still pumps from Update, so its exact
+presentation-partition proof is not independent throughput qualification. Moving
+the pump alone is unsafe: Session environment sampling mutates physics guard
+scratch, while origin and universal time are currently read separately from the
+retained world bank. Publish one stamped flight descriptor and make presentation
+sampling read-only as part of the transfer.
+
+Use one physical time coordinate with bank-owned domain integration times,
+pending transfers, input revisions and validity horizons. A domain's cadence
+comes from its error bound, events and dependency requirements. Mechanical
+control/resource/mass/force integration stays coupled until its mathematical
+dependencies are deliberately changed. Thermal work is an initial multirate
+candidate because the present model does not feed temperature into force or
+mass: retain accumulated heat and its exact interval, then integrate thermal
+components independently with energy checks. Future temperature-dependent
+failure/material/provider behavior changes that independence.
+
+Topology, resource routes and geometry use compiled plans invalidated by relevant
+changes. Predictions consume immutable snapshots. Use coarse tasks over compact
+data rather than a message or future per part. ECS remains a representation
+option; it does not define causal validity or numerical scheduling. The next
+coherent implementation combines worker ownership, atomic presentation metadata,
+checkpointed causal state and thermal/mechanical scheduling.
+
+Live KSP still owns its game clock and stock callback dispatch. Its Planetarium
+advances universal time separately from Unity physics; TimeWarp changes both
+sets of clocks. A live timing cutover therefore must own universal time, input
+latching, providers/resources/thermal evolution, forces/motion, events,
+rails transitions and frame publication together. Wrapping those callbacks in
+a faster timer does not establish that ownership. Until that adapter exists,
+the playable rigid service replaces motion inside KSP's current schedule while
+the owned runtime provides the new timing implementation and fast research loop.
+
+Choose the next transfer using actual computation, waiting and dependency costs.
+A long frame scope can include pacing or synchronization rather than expensive
+simulation. Complete frame accounting and CPU/GPU attribution must remain
+separate. Functionally useful replacements remain available when their FPS
+effect is hidden by another limit; measured regressions guide routing and further
+redesign rather than erasing the implementation.
+
+At a frame cap, FPS is a censored observation. Report subsystem computation,
+waiting, achieved simulation rate, complete frame distributions and remaining
+headroom separately. A fixed physics cadence is not itself a render cap. Verify
+actual VSync, frame limit, time scale, physical timestep and capture settings at
+both endpoints and within the measured window. Uncapped presentation can still
+wait on rendering, jobs or operating-system scheduling. CPU-versus-wall brackets
+identify waiting; they do not independently identify GPU execution or a managed
+caller. A useful compute reduction can remain integrated while its full-frame
+effect is masked.
 
 ## Reconstruction and hosts
 

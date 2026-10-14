@@ -22,7 +22,9 @@ namespace KspContinuum
         static readonly MethodInfo Integrate=AccessTools.DeclaredMethod(typeof(FlightIntegrator),"Integrate",new[]{typeof(Part)});
         static readonly MethodInfo Transpiler=AccessTools.DeclaredMethod(typeof(LiveRigidVesselBridge),"Transform");
         static readonly Dictionary<MethodInfo,MethodInfo> Routes=MakeRoutes();
+        static readonly Dictionary<MethodInfo,MethodInfo> PlayableRoutes=MakePlayableRoutes();
         readonly Harmony harmony=new Harmony(PatchOwner);
+        readonly bool playable;
         readonly int thread=Thread.CurrentThread.ManagedThreadId;
         readonly Dictionary<MethodBase,Plan> plans=new Dictionary<MethodBase,Plan>();
         readonly Dictionary<MethodBase,FrameHooks> frames=new Dictionary<MethodBase,FrameHooks>();
@@ -70,6 +72,19 @@ namespace KspContinuum
             Add(result,"AddForceAtPosition","PointForce",new[]{typeof(Vector3),typeof(Vector3)});Add(result,"AddForceAtPosition","PointForceMode",new[]{typeof(Vector3),typeof(Vector3),typeof(ForceMode)});
             return result;
         }
+        static Dictionary<MethodInfo,MethodInfo> MakePlayableRoutes()
+        {
+            var result = new Dictionary<MethodInfo, MethodInfo>();
+            Add(result, "get_centerOfMass", "LocalCenter", Type.EmptyTypes);
+            Add(result, "set_centerOfMass", "SetLocalCenter", new[] { typeof(Vector3) });
+            Add(result, "set_mass", "SetMass", new[] { typeof(float) });
+            Add(result, "set_inertiaTensor", "SetInertia", new[] { typeof(Vector3) });
+            Add(result, "set_inertiaTensorRotation", "SetInertiaRotation", new[] { typeof(Quaternion) });
+            Add(result, "ResetCenterOfMass", "ResetLocalCenter", Type.EmptyTypes);
+            Add(result, "ResetInertiaTensor", "ResetInertia", Type.EmptyTypes);
+            return result;
+        }
+        IEnumerable<MethodInfo> ActiveApis { get { return playable ? Routes.Keys.Concat(PlayableRoutes.Keys) : Routes.Keys; } }
         static void Add(Dictionary<MethodInfo,MethodInfo> routes,string api,string wrapper,Type[] args)
         {
             MethodInfo original=AccessTools.DeclaredMethod(typeof(Rigidbody),api,args), replacement=AccessTools.DeclaredMethod(typeof(LiveRigidVesselBridge),wrapper);
@@ -81,6 +96,13 @@ namespace KspContinuum
         {
             if(called==null)return null;
             MethodInfo wrapper=null;foreach(var pair in Routes)if(Same(pair.Key,called)){wrapper=pair.Value;break;}
+            if (active != null && active.playable)
+            {
+                if (wrapper == null) foreach (var pair in PlayableRoutes) if (Same(pair.Key, called)) { wrapper = pair.Value; break; }
+                if (wrapper != null && wrapper.Name == "SetAngularVelocity" && caller.Module.ModuleVersionId == new Guid("10657063-2fc3-43a7-84fa-d39e75e877bf") &&
+                    caller.MetadataToken == 100704559 && caller.DeclaringType.FullName == "VesselAutopilot+VesselSAS" && caller.Name == "KillAngularVelocity")
+                    return AccessTools.DeclaredMethod(typeof(LiveRigidVesselBridge), "SasKillAngularVelocity");
+            }
             if(wrapper!=null&&wrapper.Name=="ForceModeCall"&&Same(caller,Integrate))return AccessTools.DeclaredMethod(typeof(LiveRigidVesselBridge),"IntegrationAcceleration");
             return wrapper;
         }
@@ -89,8 +111,9 @@ namespace KspContinuum
             if(called==null||called.DeclaringType!=typeof(Rigidbody))return false;
             return called.Name.StartsWith("set_",StringComparison.Ordinal)||called.Name.StartsWith("Add",StringComparison.Ordinal)||called.Name=="MovePosition"||called.Name=="MoveRotation"||called.Name=="Sleep"||called.Name=="WakeUp"||called.Name.StartsWith("Reset",StringComparison.Ordinal);
         }
-        public LiveRigidVesselBridge()
+        public LiveRigidVesselBridge(bool playable = false)
         {
+            this.playable = playable;
             Need(active==null,"Live rigid callsite bridge already owned.");active=this;
             try
             {
@@ -118,16 +141,16 @@ namespace KspContinuum
                         if(Same(method,Integrate))Need(accelerations==2&&calls.Count==5&&calls.Count(x=>x.EndsWith(" -> Force",StringComparison.Ordinal))==1&&calls.Count(x=>x.EndsWith(" -> Torque",StringComparison.Ordinal))==1&&calls.Count(x=>x.EndsWith(" -> PointForce",StringComparison.Ordinal))==1,"Pinned Integrate own/servo acceleration and queued-force callsite shape differs.");
                         if(calls.Count==0&&others.Count==0)continue;
                         var row=new CallsiteRow {assembly=assembly.GetName().Name,assemblySha256=sha,assemblyMvid=method.Module.ModuleVersionId.ToString("D"),declaringType=type.FullName,method=method.Name,metadataToken=method.MetadataToken,ilSha256=Hash(body.GetILAsByteArray()),instructionCount=code.Length,expectedReplacements=calls.Count,replacedCalls=calls.ToArray(),unroutedCalls=others.ToArray()};rows.Add(row);
-                        if(calls.Count>0){Need(plans.Count<MaxSelected,"Live rigid selected method bound exceeded.");Need(Harmony.GetPatchInfo(method)?.Owners.Any()!=true,"Live rigid callsite already patched: "+method);plans.Add(method,new Plan {method=method,row=row,expected=calls.Count,il=row.ilSha256,ilBytes=(byte[])body.GetILAsByteArray().Clone(),calls=row.replacedCalls});}
+                        if(calls.Count>0){Need(plans.Count<MaxSelected,"Live rigid selected method bound exceeded.");Need(UnpatchedOrLifecycleOnly(method),"Live rigid callsite already patched: "+method);plans.Add(method,new Plan {method=method,row=row,expected=calls.Count,il=row.ilSha256,ilBytes=(byte[])body.GetILAsByteArray().Clone(),calls=row.replacedCalls});}
                     }
                     Need(FileHash(assembly.Location)==sha,"Live rigid original assembly file changed during scan.");
                 }
                 SourceCallsites=rows.ToArray();Need(plans.ContainsKey(Integrate)&&plans.Count>0,"Pinned Integrate was not selected.");
-                foreach(MethodInfo api in Routes.Keys)Need(Harmony.GetPatchInfo(api)?.Owners.Any()!=true,"Live rigid native facade already hooked: "+api);
+                foreach(MethodInfo api in ActiveApis)Need(Harmony.GetPatchInfo(api)?.Owners.Any()!=true,"Live rigid native facade already hooked: "+api);
                 installing=true;
                 foreach(Plan plan in plans.Values.OrderBy(p=>p.method.Module.ModuleVersionId).ThenBy(p=>p.method.MetadataToken))
                 {
-                    Need(Harmony.GetPatchInfo(plan.method)?.Owners.Any()!=true,"Live rigid caller owner appeared before install.");attempted.Add(plan.method);
+                    Need(UnpatchedOrLifecycleOnly(plan.method),"Live rigid caller owner appeared before install.");attempted.Add(plan.method);
                     harmony.Patch(plan.method,transpiler:new HarmonyMethod(Transpiler){priority=Priority.Normal});
                     Need(plan.row.shapeAdmissions==1&&Owned(plan.method),"Live rigid install owner/shape proof failed: "+plan.method);plan.row.patched=true;PatchedMethods++;PatchedSites+=plan.expected;
                 }
@@ -139,12 +162,27 @@ namespace KspContinuum
                 throw new InvalidOperationException("Live rigid bridge admission/install failed; cleanup="+CleanupStatus+": "+error.Message,error);
             }
         }
+        bool LifecyclePatch(MethodBase method, Patch patch)
+        {
+            return playable && PlayableRigidFlightService.IsLifecycleMethod(method) &&
+                patch.owner == PlayableRigidFlightService.LifecycleOwner &&
+                Same(patch.PatchMethod, AccessTools.DeclaredMethod(typeof(PlayableRigidFlightService), "BeforeStockTransition")) &&
+                patch.priority == Priority.Normal && patch.before.Length == 0 && patch.after.Length == 0;
+        }
+        bool UnpatchedOrLifecycleOnly(MethodBase method)
+        {
+            Patches graph = Harmony.GetPatchInfo(method);
+            if (graph == null || !graph.Owners.Any()) return true;
+            return graph.Prefixes.Count == 1 && graph.Prefixes.All(patch => LifecyclePatch(method, patch)) &&
+                graph.Postfixes.Count == 0 && graph.Transpilers.Count == 0 && graph.Finalizers.Count == 0;
+        }
         bool Owned(MethodBase method)
         {
             var p=Harmony.GetPatchInfo(method);FrameHooks f;frames.TryGetValue(method,out f);
-            return p!=null&&p.Owners.All(o=>o==PatchOwner||f!=null&&o==f.owner)&&p.Postfixes.Count==0&&p.Transpilers.Count==1&&p.Transpilers[0].owner==PatchOwner&&p.Transpilers[0].priority==Priority.Normal&&p.Transpilers[0].before.Length==0&&p.Transpilers[0].after.Length==0&&Same(p.Transpilers[0].PatchMethod,Transpiler)&&
-                p.Prefixes.Count<=(f!=null&&f.prefix!=null?1:0)&&p.Finalizers.Count<=(f!=null&&f.finalizer!=null?1:0)&&
-                p.Prefixes.All(x=>f!=null&&x.owner==f.owner&&Same(x.PatchMethod,f.prefix)&&x.priority==Priority.Normal&&x.before.Length==0&&x.after.Length==0)&&p.Finalizers.All(x=>f!=null&&x.owner==f.owner&&Same(x.PatchMethod,f.finalizer)&&x.priority==Priority.Normal&&x.before.Length==0&&x.after.Length==0);
+            int lifecycle = playable && PlayableRigidFlightService.IsLifecycleMethod(method) ? 1 : 0;
+            return p!=null&&p.Owners.All(o=>o==PatchOwner||f!=null&&o==f.owner||lifecycle == 1&&o==PlayableRigidFlightService.LifecycleOwner)&&p.Postfixes.Count==0&&p.Transpilers.Count==1&&p.Transpilers[0].owner==PatchOwner&&p.Transpilers[0].priority==Priority.Normal&&p.Transpilers[0].before.Length==0&&p.Transpilers[0].after.Length==0&&Same(p.Transpilers[0].PatchMethod,Transpiler)&&
+                p.Prefixes.Count<=(f!=null&&f.prefix!=null?1:0)+lifecycle&&p.Prefixes.Count(x=>LifecyclePatch(method,x))==lifecycle&&p.Finalizers.Count<=(f!=null&&f.finalizer!=null?1:0)&&
+                p.Prefixes.All(x=>LifecyclePatch(method,x)||f!=null&&x.owner==f.owner&&Same(x.PatchMethod,f.prefix)&&x.priority==Priority.Normal&&x.before.Length==0&&x.after.Length==0)&&p.Finalizers.All(x=>f!=null&&x.owner==f.owner&&Same(x.PatchMethod,f.finalizer)&&x.priority==Priority.Normal&&x.before.Length==0&&x.after.Length==0);
         }
         public bool DeclareFrameHooks(MethodBase target,string ownerId,MethodInfo prefix,MethodInfo finalizer)
         {
@@ -168,7 +206,7 @@ namespace KspContinuum
         }
         bool ExactInstalledFull()
         {
-            foreach(MethodInfo api in Routes.Keys)if(Harmony.GetPatchInfo(api)?.Owners.Any()==true)return false;
+            foreach(MethodInfo api in ActiveApis)if(Harmony.GetPatchInfo(api)?.Owners.Any()==true)return false;
             foreach(Plan plan in plans.Values)if(!Owned(plan.method)||Hash(plan.method.GetMethodBody().GetILAsByteArray())!=plan.il)return false;
             if(ownershipSealed)foreach(MethodBase method in frames.Keys)if(!HasExactFrameHooks(method))return false;
             return true;
@@ -182,9 +220,9 @@ namespace KspContinuum
                 Need(ExactInstalledFull(),"Live rigid final ownership/IL qualification failed.");
                 foreach(MethodBase method in frames.Keys)Need(HasExactFrameHooks(method),"Declared live rigid frame hooks are not fully installed: "+method);
             };
-            HarmonyPatchStateCertificate.RunRequestedWitness(runId,plans.Keys.Concat<MethodBase>(Routes.Keys),qualify);
+            HarmonyPatchStateCertificate.RunRequestedWitness(runId,plans.Keys.Concat<MethodBase>(ActiveApis),qualify);
             string unsupported;
-            if(HarmonyPatchStateCertificate.TrySeal(plans.Keys.Concat<MethodBase>(Routes.Keys),qualify,out ownershipCertificate,out unsupported))OwnershipSealStatus="raw-state-sealed";
+            if(HarmonyPatchStateCertificate.TrySeal(plans.Keys.Concat<MethodBase>(ActiveApis),qualify,out ownershipCertificate,out unsupported))OwnershipSealStatus="raw-state-sealed";
             else {qualify();OwnershipSealStatus="full-graph-fallback";OwnershipSealDetail=unsupported;}
             ownershipSealed=true;OwnershipSealTicks=Stopwatch.GetTimestamp()-begin;
         }
@@ -193,12 +231,12 @@ namespace KspContinuum
             FrameHooks frame;
             if (!plans.ContainsKey(target) || !frames.TryGetValue(target, out frame) || !Owned(target)) return false;
             Patches graph = Harmony.GetPatchInfo(target);
-            return graph.Prefixes.Count == (frame.prefix == null ? 0 : 1) && graph.Finalizers.Count == (frame.finalizer == null ? 0 : 1);
+            return graph.Prefixes.Count == (frame.prefix == null ? 0 : 1) + (playable && PlayableRigidFlightService.IsLifecycleMethod(target) ? 1 : 0) && graph.Finalizers.Count == (frame.finalizer == null ? 0 : 1);
         }
         static IEnumerable<CodeInstruction> Transform(IEnumerable<CodeInstruction> input,MethodBase __originalMethod)
         {
             var owner=active;Plan plan=null;Need(owner!=null&&owner.plans.TryGetValue(__originalMethod,out plan),"Unknown live rigid transform owner/method.");
-            Need(owner.installing||owner.cleaning||owner.frames.ContainsKey(__originalMethod)&&owner.Owned(__originalMethod),"Unexpected live rigid caller recomposition.");
+            Need(owner.installing||owner.cleaning||(owner.frames.ContainsKey(__originalMethod)||owner.playable&&PlayableRigidFlightService.IsLifecycleMethod(__originalMethod))&&owner.Owned(__originalMethod),"Unexpected live rigid caller recomposition.");
             Need(Hash(__originalMethod.GetMethodBody().GetILAsByteArray())==plan.il,"Live rigid original caller IL changed.");
             var code=input.Select(c=>new CodeInstruction(c)).ToArray();var calls=new List<string>();
             foreach(CodeInstruction c in code)
@@ -233,6 +271,15 @@ namespace KspContinuum
         static bool IsKinematic(Rigidbody body) {LiveRigidVesselOwner owner;return Find(body,out owner)?false:body.isKinematic;}
         static void SetVelocity(Rigidbody body,Vector3 value) {LiveRigidVesselOwner owner;if(Find(body,out owner))owner.WriteVelocity(body,value);else body.velocity=value;}
         static void SetAngularVelocity(Rigidbody body,Vector3 value) {LiveRigidVesselOwner owner;if(Find(body,out owner))owner.WriteAngularVelocity(body,value);else body.angularVelocity=value;}
+        static void SasKillAngularVelocity(Rigidbody body,Vector3 value) { LiveRigidVesselOwner owner; if (Find(body, out owner)) owner.ApplySasZeroAngularVelocity(body, value); else body.angularVelocity = value; }
+        static Vector3 LocalCenter(Rigidbody body) { LiveRigidVesselOwner owner; return Find(body, out owner) ? owner.ReadLocalCenter(body) : body.centerOfMass; }
+        static void LocalPropertiesChanged(Rigidbody body) { LiveRigidVesselOwner owner; if (Find(body, out owner)) owner.InvalidateLocalProperties(body); }
+        static void SetLocalCenter(Rigidbody body,Vector3 value) { body.centerOfMass = value; LocalPropertiesChanged(body); }
+        static void SetMass(Rigidbody body,float value) { body.mass = value; LocalPropertiesChanged(body); }
+        static void SetInertia(Rigidbody body,Vector3 value) { body.inertiaTensor = value; LocalPropertiesChanged(body); }
+        static void SetInertiaRotation(Rigidbody body,Quaternion value) { body.inertiaTensorRotation = value; LocalPropertiesChanged(body); }
+        static void ResetLocalCenter(Rigidbody body) { body.ResetCenterOfMass(); LocalPropertiesChanged(body); }
+        static void ResetInertia(Rigidbody body) { body.ResetInertiaTensor(); LocalPropertiesChanged(body); }
         static void Force(Rigidbody body,Vector3 value) {LiveRigidVesselOwner owner;if(Find(body,out owner))owner.Record(body,value,Vector3.zero,ForceMode.Force,false,false);else body.AddForce(value);}
         static void ForceModeCall(Rigidbody body,Vector3 value,ForceMode mode) {LiveRigidVesselOwner owner;if(Find(body,out owner))owner.Record(body,value,Vector3.zero,mode,false,false);else body.AddForce(value,mode);}
         static void IntegrationAcceleration(Rigidbody body,Vector3 value,ForceMode mode) {LiveRigidVesselOwner owner;if(Find(body,out owner))owner.RecordIntegrationAcceleration(body,value,mode);else body.AddForce(value,mode);}

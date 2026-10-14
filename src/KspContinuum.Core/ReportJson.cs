@@ -74,6 +74,13 @@ namespace KspContinuum
                  type.FullName == "KspContinuum.LiveRigidVesselOwner+BodyState" ||
                  type.FullName == "KspContinuum.LiveRigidVesselOwner+RestoredRow" ||
                  type.FullName == "KspContinuum.LiveRigidVesselOwner+Step" ||
+                 type.FullName == "KspContinuum.LiveRigidVesselOwner+GameplaySample" ||
+                 type.FullName == "KspContinuum.LiveRigidVesselOwner+MotionViewWitnessRow" ||
+                 type.FullName == "KspContinuum.PlayableRigidFlightService+Receipt" ||
+                 type.FullName == "KspContinuum.PlayableRigidFlightService+LifecycleSource" ||
+                 type.FullName == "KspContinuum.PlayableRigidFlightService+FrameInterval" ||
+                 type.FullName == "KspContinuum.MacThreadWorkTiming+ReportData" ||
+                 type.FullName == "KspContinuum.MacThreadWorkTiming+Row" ||
                  type.FullName == "KspContinuum.LiveRigidVesselOwner+Command" ||
                  type.FullName == "KspContinuum.LiveRigidFlightDriver+Receipt" ||
                  type.FullName == "KspContinuum.LiveRigidFlightDriver+ElectricDraw" ||
@@ -248,6 +255,7 @@ namespace KspContinuum
                 type != typeof(StructuralVesselCaptureContextReport) &&
                 type != typeof(LiveControlIdentity) && type != typeof(LiveVesselSnapshot) &&
                 type != typeof(LiveSweepStatus) &&
+                type != typeof(LiveRigidStatus) &&
                 type != typeof(LiveControlReply) &&
                 type != typeof(NativeBoundaryMonoReport) && type != typeof(NativeBoundaryMonoRow) &&
                 type != typeof(MultiscaleSceneManifest) && type != typeof(ScientificAnchorSet) && type != typeof(ScientificAnchorData) && type != typeof(ResidentMaterialManifest) && type != typeof(ResidentTextureAsset) &&

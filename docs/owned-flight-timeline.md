@@ -1,0 +1,35 @@
+# Owned flight timeline
+
+`OwnedFlightTimeline` owns requested and committed simulation time around the existing `OwnedFlightSession` and `OwnedRuntimeHost`. It has no Unity time dependency. Presentation acquires the latest committed runtime bank; calling the timeline more frequently does not request extra physical time.
+
+Wall time is supplied by one monotonic caller clock. A running policy maps an absolute wall anchor to a simulation horizon: `requested = anchorTime + (wallNow - anchorWall) * warp`. Warp changes the amount of work requested, never the numerical integration step. `MaximumLocalStepSeconds` is an explicit configurable numerical contract, initially `.02` and bounded by the current systems limit `.1`; it is not an inherited global 50 Hz requirement.
+
+The owner retains `requested - committed` debt. A pump stops after its commit count or elapsed work budget and reports the remainder. Budgets are checked between atomic commits, so one complete physical transaction may exceed a wall budget. The owner neither drops late time nor marks uncomputed motion as completed. Pause stops both accrual and automatic consumption while preserving debt. Manual `Step` may consume a paused partial quantum or grant one bounded new quantum.
+
+Open held-input segments retain sub-quantum debt instead of integrating a different fractional render tail on every presentation callback. A genuine input change closes its prior segment; its exact boundary, a hard event deadline, or an explicit manual step can shorten a physical quantum. Unchanged held policies coalesce. The bounded 128-entry FIFO rejects new demand on overflow while preserving all previously accepted demand. Drain at the last accepted wall timestamp before retrying the rejected request.
+
+This FIFO is an explicit historical input policy. Controls accepted while simulation is behind apply after the older owed controls. It is suitable for deterministic recording and replay; it can delay live input during sustained overload. A future low-latency policy must explicitly define supersession and cannot silently erase history. The current consumer uses this declared policy.
+
+## Interface and ownership
+
+Construct with an actual host/session, initial wall timestamp, maximum local step and source ID. `Configure` requires the current physical stamp and timeline input revision; it sets controls, warp, pause, passive coast permission/freeze declaration, and the next universal-time deadline. State, code generation, schedule hash, system configuration revision, context hash and input revision are exposed in progress. Physical or code changes outside the owner stop execution until an explicit source-bound acknowledgement.
+
+`Pump(wallNow, maximumCommits, wallBudgetSeconds)` returns per-call and lifetime local/coast commits, requested/committed clocks, debt, queue count, deadline/budget state and complete work ticks. Invalid caller numbers or regressing wall clocks reject before mutation. The owner is single-threaded and non-reentrant. A cold-assigned `ControlResolver` can calculate feedback once per local commit from the current committed state. Its caller must retain immutable policy configuration; mutable render state is not an admitted replay input. A resolver disables passive coasting because future feedback cannot be assumed quiet.
+
+`CoastTo` and automatic coasting use the existing session admission: explicit frozen passive resources/thermal state, quiet controls, no provider/chassis angular momentum, supported host schedule, vacuum and intermediate surface/atmosphere/event guards. Preparation is checked against the representable requested horizon and deadline before atomic publication. Rejection falls through to bounded local integration. This is not general full-world time warp and does not invent stock module eligibility. Repeated coasts can change epoch/history counts and numerical roundoff with observation partition; local held-input quantum sequences are presentation independent, while coast results retain the existing orbital numerical gates.
+
+## Events, faults and persistence
+
+The timeline never overshoots a retained deadline. At a reached event, pause, execute the actual same-time atomic event against its current physical stamp, then call `CompleteEvent(previousStamp, wallNow, reason, nextDeadline)`. It preserves queued controls and future debt. The same method admits a declared same-time code recovery boundary, rebinding the current schedule/configuration identity.
+
+A failed physical transaction leaves its prior committed bank intact, retains requested debt, and latches a fault while pausing new accrual. An explicit same-time repair plus `CompleteEvent` can recover without deleting the queue. Source changes that advanced time cannot use this acknowledgement. Successful earlier commits in a multi-commit pump remain authoritative.
+
+`Synchronize` acknowledges a cold placement/rebase/restore only while paused and debt-free, with a matching prior stamp and no backward time. Replacing the host/session requires a new timeline at that explicit boundary. This version does not serialize the pending input queue: saving/restoring an owned timeline or replacing its host is therefore gated on paused debt-free state. A sub-quantum remainder can be drained through explicit manual `Step`. HMR at unchanged physical time can retain the queue through `CompleteEvent`; it must not reconstruct a fresh timeline and discard debt.
+
+## Scope and checks
+
+The focused executable checks real resource-consuming local transactions under different presentation partitions, a semantic control boundary below the quantum, zero budgets/pause/warp debt, queue overflow and invalid callers, failure after systems computation with rollback and recovery, same-time event acknowledgement with older queued controls, and an analytic circular orbit through the original passive coast admission.
+
+Run `dotnet run --project tests/KspContinuum.OwnedFlightTimeline.Tests/KspContinuum.OwnedFlightTimeline.Tests.csproj -c Release` from the repository. Source delivery does not claim this command has passed until the integration owner executes it.
+
+This is the actual portable owned-world scheduler. Whole KSP cutover still must replace Planetarium universal-time advancement, TimeWarp clock writes, fixed/rendered callback ownership, force/event transactions and publication together. Leaving those stock clock owners active while only changing Unity cadence would create two time authorities. Terrain/contact, arbitrary stock/mod callbacks and general passive thermal/resource evolution remain outside the existing owned-flight model.

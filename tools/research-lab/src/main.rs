@@ -48,6 +48,9 @@ fn run() -> Result<()> {
         "update-callback-summary" => &["--report", "--pid", "--output"],
         "ordered-body-aero-summary" => &["--report", "--recording", "--pid", "--output"],
         "zero-native-force-summary" => &["--report", "--pid", "--output"],
+        "rigid-window" => &["--report", "--closure", "--start", "--end", "--output"],
+        "rigid-proof" => &["--run", "--pid", "--helper-sha256", "--audit-steps", "--output"],
+        "rigid-thread-work" => &["--report", "--output"],
         "prepare" => &["--output", "--variant"],
         "index" => &["--assembly", "--ilspy", "--output", "--project"],
         "recompose" => &[
@@ -82,7 +85,11 @@ fn run() -> Result<()> {
             "--flight-expected-parts",
             "--flight-convection-capture",
             "--live-play",
+            "--playable-rigid",
+            "--rigid-audit-steps",
+            "--control-port",
             "--flight-integrator-update-attribution",
+            "--flight-thread-cpu",
             "--instance",
             "--reservation",
             "--output",
@@ -188,6 +195,33 @@ fn run() -> Result<()> {
     };
     let output = Path::new(get("--output")?);
     match operation.as_str() {
+        "rigid-proof" => {
+            let pid=get("--pid")?.parse::<u32>().map_err(|error|error.to_string())?;
+            let cadence=get("--audit-steps")?.parse::<u32>().map_err(|error|error.to_string())?;
+            continuum_research_lab::playable_rigid::retain(output,get("--run")?,pid,get("--helper-sha256")?,cadence)?;
+        }
+        "rigid-thread-work" => {
+            let path = Path::new(get("--report")?);
+            let digest = hash(path)?;
+            let report: Value = read(path)?;
+            let mut result = continuum_research_lab::playable_rigid::thread_work_summary(&report)?;
+            if hash(path)? != digest { return Err("thread work source changed during analysis".into()); }
+            result["input"] = json!({"path":path,"sha256":digest});
+            write_new(output, &result)?;
+        }
+        "rigid-window" => {
+            let report_path = Path::new(get("--report")?);
+            let start_path = Path::new(get("--start")?);
+            let end_path = Path::new(get("--end")?);
+            let report: Value = read(report_path)?;
+            let start: Value = read(start_path)?;
+            let end: Value = read(end_path)?;
+            let closure=options.get("--closure").map(|path|read::<Value>(Path::new(path))).transpose()?;
+            let mut result = continuum_research_lab::playable_rigid::window_bound(&report, &start, &end, closure.as_ref())?;
+            result["inputs"] = json!({"report":{"path":report_path,"sha256":hash(report_path)?},"start":{"path":start_path,"sha256":hash(start_path)?},"end":{"path":end_path,"sha256":hash(end_path)?}});
+            if let Some(path)=options.get("--closure") { result["inputs"]["closure"]=json!({"path":path,"sha256":hash(Path::new(path))?}); }
+            write_new(output, &result)?;
+        }
         "update-callback-summary" => {
             let path = Path::new(get("--report")?);
             let digest = hash(path)?;
@@ -864,6 +898,10 @@ fn smoke(
         .env("CONTINUUM_NATIVE_ASSEMBLY_SCENE",selection.diagnostics.native_assembly_scene.as_deref().unwrap_or(Path::new("")))
         .env("CONTINUUM_LIVE_RIGID_OWNER",selection.diagnostics.live_rigid_owner.as_deref().unwrap_or(Path::new("")))
         .env("CONTINUUM_LIVE_RIGID_SCENARIO",selection.diagnostics.live_rigid_scenario.as_deref().unwrap_or(""))
+        .env("CONTINUUM_PLAYABLE_RIGID", if selection.playable_rigid { output.as_os_str() } else { std::ffi::OsStr::new("") })
+        .env("CONTINUUM_PLAYABLE_RIGID_AUDIT_STEPS", selection.rigid_audit_steps.unwrap_or(1).to_string())
+        .env("CONTINUUM_LOOP_THREAD_CPU", if selection.diagnostics.loop_thread_cpu { "1" } else { "" })
+        .args(selection.control_port.map(|port| format!("--continuum-control-port={port}")))
         .env("CONTINUUM_ZERO_NATIVE_FORCE_PRUNING",selection.diagnostics.zero_native_force_pruning.as_deref().unwrap_or(""))
         .env("CONTINUUM_SCIENTIFIC_ATTACHMENT_NODES",selection.diagnostics.scientific_attachment_nodes.as_deref().unwrap_or(""))
         .env("CONTINUUM_TRAIL_EMITTER_RECORDING",selection.diagnostics.trail_emitter.as_ref().map(|s|s.recording.as_path()).unwrap_or(Path::new("")))
@@ -1610,7 +1648,17 @@ fn smoke(
         (None, None)
     };
     let (live_evidence, live_error) = if selection.live_play {
-        match continuum_research_lab::play::retain(output, &run_id, child.id()) {
+        let retained = continuum_research_lab::play::retain(output, &run_id, child.id()).and_then(|mut proof| {
+            if selection.playable_rigid {
+                let helper_sha = hash(&instance.join("GameData/KspContinuum/Plugins/KspContinuum.dll"))?;
+                proof["playableRigid"] = continuum_research_lab::playable_rigid::retain(output, &run_id, child.id(), &helper_sha, selection.rigid_audit_steps.unwrap_or(1))?;
+                if selection.diagnostics.loop_thread_cpu {
+                    proof["mainThreadWork"] = continuum_research_lab::playable_rigid::thread_work_summary(&proof["playableRigid"])?;
+                }
+            }
+            Ok(proof)
+        });
+        match retained {
             Ok(evidence) => (Some(evidence), None),
             Err(error) => (None, Some(error)),
         }

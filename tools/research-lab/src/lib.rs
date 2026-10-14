@@ -18,6 +18,7 @@ pub mod lighting;
 pub mod live_revalidation;
 pub mod owned_report;
 pub mod play;
+pub mod playable_rigid;
 pub mod profile;
 pub mod process_capture;
 pub mod reference_program;
