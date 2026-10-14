@@ -10,6 +10,7 @@ public sealed class OwnedFlightOverlay : IDisposable
         public string schema="continuum-owned-flight-overlay/v1",depthPolicy="unoccluded scientific overlay; not depth evidence",parent,trajectoryStatus;
         public long regionId;public int trajectoryPoints,trajectoryStride,drawnSegments,gridLines;
         public double spacingMeters,overlayNear,overlayFar;
+        public double displayUniversalTime,physicalUniversalTime,displayDelaySeconds;public bool interpolated;
         public bool grid,sourceStateMatches;
         public string validity="Prediction state/context only checked here; host owns schedule/implementation validity";
     }
@@ -23,9 +24,10 @@ public sealed class OwnedFlightOverlay : IDisposable
     static ScientificVector3 Sub(ScientificVector3 a,ScientificVector3 b){return new ScientificVector3(a.x-b.x,a.y-b.y,a.z-b.z);}
     static ScientificVector3 Scale(ScientificVector3 p,double s){return new ScientificVector3(p.x*s,p.y*s,p.z*s);}
     static double Dot(ScientificVector3 a,ScientificVector3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
-    public void Draw(Camera camera,Vec cameraOriginBodyMeters,OwnedFlightPresentationLease frame,OwnedFlightPredictionResult prediction,bool grid,string parent="root")
+    public void Draw(Camera camera,Vec cameraOriginBodyMeters,OwnedFlightPresentationLease frame,OwnedFlightDisplayFrame display,OwnedFlightPredictionResult prediction,bool grid,string parent="root")
     {
-        if(disposed)throw new ObjectDisposedException("OwnedFlightOverlay");if(camera==null||frame==null)return;
+        if(disposed)throw new ObjectDisposedException("OwnedFlightOverlay");if(camera==null||frame==null||display==null)return;
+        if(!display.PhysicalStamp.Matches(frame.Read.Stamp))throw new ArgumentException("Overlay display and physical bank differ.");
         if(parent!="root"&&parent!="com")throw new ArgumentException("Overlay parent must be root or com.");
         if(Event.current!=null&&Event.current.type!=EventType.Repaint)return;
         if(pixel==null){pixel=new Texture2D(1,1,TextureFormat.RGBA32,false,true);pixel.SetPixel(0,0,Color.white);pixel.Apply(false,true);label=new GUIStyle(GUI.skin.label){fontSize=13};label.normal.textColor=Color.white;}
@@ -33,7 +35,7 @@ public sealed class OwnedFlightOverlay : IDisposable
         double cameraRadius=Math.Sqrt(cameraOriginBodyMeters.X*cameraOriginBodyMeters.X+cameraOriginBodyMeters.Y*cameraOriginBodyMeters.Y+cameraOriginBodyMeters.Z*cameraOriginBodyMeters.Z);
         Status.overlayNear=Math.Max(.001,camera.nearClipPlane);Status.overlayFar=Math.Max(camera.farClipPlane,cameraRadius+frame.Context.Radius*4);
         var view=new ScientificView(Point(cameraOriginBodyMeters),new ScientificVector3(right.x,right.y,right.z),new ScientificVector3(up.x,up.y,up.z),new ScientificVector3(forward.x,forward.y,forward.z),camera.pixelWidth,camera.pixelHeight,camera.orthographic?ScientificProjectionKind.Orthographic:ScientificProjectionKind.Perspective,camera.fieldOfView,camera.orthographicSize*2,Status.overlayNear,Status.overlayFar);
-        Status.drawnSegments=Status.gridLines=0;Status.grid=grid;Status.parent=parent;
+        Status.drawnSegments=Status.gridLines=0;Status.grid=grid;Status.parent=parent;Status.displayUniversalTime=display.UniversalTime;Status.physicalUniversalTime=frame.UniversalTime;Status.displayDelaySeconds=display.DelaySeconds;Status.interpolated=display.Interpolated;
         Color prior=GUI.color;Matrix4x4 matrix=GUI.matrix;
         try
         {
@@ -52,9 +54,9 @@ public sealed class OwnedFlightOverlay : IDisposable
             {
                 var read=frame.Read;
                 {
-                    var region=read.GetRegion(0);Status.regionId=region.Id;var motion=region.Motion;
-                    Vec focus=frame.Origin+motion.RootPosition;if(parent=="com")focus+=motion.Orientation.Rotate(region.Properties.CenterOfMass);
-                    ScientificVector3 origin=Point(focus),u=Point(motion.Orientation.Rotate(new Vec(1,0,0))),v=Point(motion.Orientation.Rotate(new Vec(0,1,0))),axis=Point(motion.Orientation.Rotate(new Vec(0,0,1)));
+                    var region=read.GetRegion(0);Status.regionId=region.Id;var visual=display.GetRegion(0);
+                    Vec focus=parent=="com"?visual.CenterPositionBodyMeters:visual.RootPositionBodyMeters;
+                    ScientificVector3 origin=Point(focus),u=Point(visual.Orientation.Rotate(new Vec(1,0,0))),v=Point(visual.Orientation.Rotate(new Vec(0,1,0))),axis=Point(visual.Orientation.Rotate(new Vec(0,0,1)));
                     double depth=Dot(Sub(origin,view.origin),view.forward);if(depth>0)
                     {
                         double metresPer100Pixels=100/view.PixelsPerMeter(depth),spacing=1;
@@ -65,7 +67,7 @@ public sealed class OwnedFlightOverlay : IDisposable
                         GUI.color=new Color(.3f,.9f,1,.7f);for(int ring=0;ring<2;ring++)
                         {double radius=spacing*(ring==0?1:10);var previous=Add(origin,Scale(u,radius));for(int i=1;i<=RingSegments;i++){var next=Add(origin,Add(Scale(u,radius*cosine[i]),Scale(v,radius*sine[i])));Line(previous,next,view,1);previous=next;}Text(Add(origin,Scale(u,radius)),view,radius.ToString("G4",CultureInfo.InvariantCulture)+" m");}
                         GUI.color=Color.red;Line(origin,Add(origin,Scale(u,spacing*2)),view,2);GUI.color=Color.green;Line(origin,Add(origin,Scale(v,spacing*2)),view,2);GUI.color=Color.blue;Line(origin,Add(origin,Scale(axis,spacing*2)),view,2);
-                        GUI.color=Color.white;Text(origin,view,parent+" / ship frame / region "+region.Id+"; grid "+spacing.ToString("G4",CultureInfo.InvariantCulture)+" m");
+                        GUI.color=Color.white;Text(origin,view,parent+" / displayed ship frame / region "+region.Id+"; grid "+spacing.ToString("G4",CultureInfo.InvariantCulture)+" m; visual lag "+display.DelaySeconds.ToString("F3",CultureInfo.InvariantCulture)+" s");
                     }
                 }
             }

@@ -13,6 +13,14 @@ compiled Core runtime. Referencing a separate net8 Core DLL or the original KSP
 assembly gives a different or absent ABI. The assembly reference is not copied
 to the example output. Building neither installs nor reloads anything.
 
+For each changed executable image in an already running Mono player, use a fresh
+assembly identity, for example `-p:AssemblyName=KspContinuum.Schedule.Generation2`.
+Mono can retain a previously loaded assembly with the same identity even when
+the file bytes change. Reusing that identity for changed code is unsupported;
+a new path alone is insufficient. Reusing identical bytes to select another
+schedule type in that image is supported. Worker and isolated-trial admissions
+are separate contracts; the executable examples declare both where applicable.
+
 Use the loopback control client with the player's reported port and a new JSON
 path for each response. Replace `FULL_DLL` with the absolute built example DLL:
 

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Security.Cryptography;
 using System.Threading;
+using System.Diagnostics;
 
 namespace KspContinuum
 {
@@ -22,7 +23,7 @@ namespace KspContinuum
     // Admission requires an original schedule whose implementation may run without Unity APIs.
     public interface IOwnedRuntimeWorkerSchedule : IOwnedRuntimeSchedule { }
 
-    public sealed class OwnedRuntimeBuiltinSchedule : IOwnedRuntimePassiveKeplerSchedule, IOwnedRuntimeWorkerSchedule
+    public sealed class OwnedRuntimeBuiltinSchedule : IOwnedRuntimePassiveKeplerSchedule, IOwnedRuntimeWorkerSchedule, IOwnedRuntimeTrialSafeSchedule
     {
         public string Schema { get { return "continuum-owned-runtime-schedule/v1"; } }
         public string StateSchema { get { return "world-bank-state-only/v1"; } }
@@ -47,12 +48,16 @@ namespace KspContinuum
         string implementation;
         bool advancing;
         int workerThread;
+        OwnedRuntimeAdaptive adaptive;
+        OwnedRuntimeAdaptiveObservation adaptiveObservation;
+        public OwnedRuntimeAdaptiveObservation AdaptiveObservation {get{lock(gate)return adaptiveObservation;}}
         public readonly OwnedRuntimeWorld World;
         public readonly OwnedRuntimeSystems Systems;
         public string ScheduleSourceSha256 { get; private set; }
         public string ScheduleImplementation { get { return implementation; } }
         public long CodeGeneration { get; private set; }
         public bool SupportsPassiveKeplerCoast {get {lock(gate)return schedule is IOwnedRuntimePassiveKeplerSchedule;}}
+        public bool SupportsAdaptiveMechanical {get{lock(gate)return schedule is IOwnedRuntimeTrialSafeSchedule;}}
         public int WorkerThreadId { get { return Volatile.Read(ref workerThread); } }
         public OwnedRuntimeHost(OwnedRuntimeWorld world,OwnedRuntimeSystems systems)
         {
@@ -87,6 +92,8 @@ namespace KspContinuum
                 RequireWorkerThread();
                 if(advancing||data==null||data.schema!="continuum-owned-runtime-host-checkpoint/v1"||data.implementation!=implementation||data.sourceSha256!=ScheduleSourceSha256||data.codeGeneration!=CodeGeneration)
                     throw new InvalidOperationException("Checkpoint requires its exact loaded executable schedule generation.");
+                if(data.state!=null&&data.state.mechanical!=null&&data.state.mechanical.adaptive&&!(schedule is IOwnedRuntimeTrialSafeSchedule))
+                    throw new InvalidOperationException("Adaptive checkpoint requires its isolated-trial-safe schedule.");
                 state=OwnedRuntimeCheckpoint.Restore(data.state,nativeSha,partSha);
                 var restored=new OwnedRuntimeHost(state.World,state.Systems);
                 restored.schedule=schedule;restored.implementation=implementation;restored.ScheduleSourceSha256=ScheduleSourceSha256;restored.CodeGeneration=CodeGeneration;
@@ -98,6 +105,45 @@ namespace KspContinuum
         {return AdvanceCore(delta,input,environment,null,controls);}
         public OwnedRuntimeStamp Advance(double delta,OwnedRuntimeInput input,IOwnedRuntimeEnvironmentField field,OwnedRuntimeControls controls)
         {if(field==null)throw new ArgumentNullException("field");return AdvanceCore(delta,input,null,field,controls);}
+        internal OwnedRuntimeHost CreateTrialHost(OwnedRuntimeWorld world,OwnedRuntimeSystems systems)
+        {
+            var h=new OwnedRuntimeHost(world,systems);h.schedule=schedule;h.implementation=implementation;h.ScheduleSourceSha256=ScheduleSourceSha256;h.CodeGeneration=CodeGeneration;
+            if(workerThread!=0)h.BindWorkerThread();return h;
+        }
+        public OwnedRuntimeStamp AdvanceAdaptive(double deltaUpper,OwnedRuntimeInput input,OwnedFlightSession session,OwnedRuntimeControls controls)
+        {
+            if(session==null||!ReferenceEquals(session.Runtime,World))throw new ArgumentException("Adaptive session owner differs.");input.Validate();controls.Validate();AssemblyModel.Positive(deltaUpper);
+            lock(gate)
+            {
+                RequireWorkerThread();if(advancing)throw new InvalidOperationException("Adaptive schedule cannot reenter.");
+                if(!World.AdaptiveMechanicalEnabled)return AdvanceCore(deltaUpper,input,null,session,controls);
+                long begin=Stopwatch.GetTimestamp();bool entered=false,admitted=false;
+                try
+                {
+                    if(!(schedule is IOwnedRuntimeTrialSafeSchedule))throw new InvalidOperationException("Schedule has no repeated isolated-trial contract.");
+                    var frontier=World.Stamp;double semanticEnd=frontier.Time+deltaUpper;AssemblyModel.Finite(semanticEnd);
+                    if(!(semanticEnd>frontier.Time))throw new ArgumentException("Adaptive upper interval does not advance representable physical time.");
+                    var boundary=Systems.FindActuatorBoundary(frontier,controls,Math.Min(deltaUpper,World.MaximumMechanicalInterval));
+                    if(!boundary.Supported)throw new InvalidOperationException("Actuator boundary is unsupported: "+boundary.Reason);
+                    if(boundary.Reached)
+                    {
+                        double end=frontier.Time+boundary.DeltaSeconds;
+                        if(!(end>frontier.Time))end=OwnedRuntimeAdaptive.NextTime(frontier.Time);
+                        else if(end-frontier.Time<boundary.DeltaSeconds)end=OwnedRuntimeAdaptive.NextTime(end);
+                        if(end>semanticEnd)end=semanticEnd;
+                        double bounded=Math.Min(deltaUpper,end-frontier.Time);
+                        if(bounded>boundary.DeltaSeconds)
+                        {adaptiveObservation.ActuatorBoundaryClockCeilings++;adaptiveObservation.LastBoundaryClockCeilingSeconds=bounded-boundary.DeltaSeconds;}
+                        deltaUpper=bounded;
+                    }
+                    if(adaptive==null||!adaptive.Matches(this))adaptive=new OwnedRuntimeAdaptive(this);
+                    var expected=World.Stamp;advancing=true;
+                    Systems.EnterExecution();entered=true;World.EnterAdmission(expected);admitted=true;
+                    return adaptive.Advance(this,deltaUpper,input,session,controls,ref adaptiveObservation);
+                }
+                finally{try{if(admitted)World.ExitAdmission();}finally{try{if(entered)Systems.ExitExecution();}finally{advancing=false;adaptiveObservation.WorkTicks+=Stopwatch.GetTimestamp()-begin;adaptiveObservation.ClockFrequency=Stopwatch.Frequency;}}}
+            }
+        }
         OwnedRuntimeStamp AdvanceCore(double delta,OwnedRuntimeInput input,OwnedRuntimeEnvironment environment,IOwnedRuntimeEnvironmentField field,OwnedRuntimeControls controls)
         {
             lock(gate)
@@ -133,6 +179,7 @@ namespace KspContinuum
                 RequireWorkerThread();
                 if(advancing||!World.Stamp.Matches(expected))throw new InvalidOperationException("Schedule reload epoch is stale.");
                 if(workerThread!=0 && !(replacement is IOwnedRuntimeWorkerSchedule))throw new InvalidOperationException("Schedule has no worker execution admission.");
+                if(World.AdaptiveMechanicalEnabled&&!(replacement is IOwnedRuntimeTrialSafeSchedule))throw new InvalidOperationException("Adaptive mechanics requires an isolated-trial-safe schedule.");
                 string nextImplementation=null;bool entered=false;World.EnterAdmission(expected);
                 try
                 {

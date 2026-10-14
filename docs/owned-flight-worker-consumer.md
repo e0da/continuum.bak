@@ -66,3 +66,30 @@ Textured craft detail, a normals view and the scaled planet were inspected.
 The portable observed/suspended executions had identical complete checkpoints.
 Adaptive mechanical integration, whole-game clock transfer, terrain/contact,
 broader stock/mod providers and faithful stock rendering remain open.
+
+The next source package adds `mechanics adaptive|fixed [MAXIMUM_INTERVAL]` at a
+paused, debt-free, event-free boundary. Repeated trials require the executable's
+explicit trial-safe contract. `event impulse RUNTIME_TIME REGION_ID PX PY PZ`
+queues center-applied SI momentum at an exact owned runtime frontier, separately
+from the older manual coast node. Status includes event counts and controller
+trials/accepted intervals/error estimates. Pending events cannot silently be
+discarded by ordinary cold mutation or HMR.
+
+Manual checkpoints include execution/event state and may capture retained debt
+or a latched fault at an acknowledged pause. Physical-only pilot saves and owner
+replacement still require zero debt. Existing feedback-pilot saves
+remain explicitly physical/pilot-only with no pending events, restoring their
+resolver from admitted pilot configuration. All candidate restore authorities
+are staged before worker execution-state validation. `interpolation on|off` and
+`interpolation delay SECONDS` affect displayed poses only, with a separately
+identified physical frontier.
+
+The integrated package exercised the actual captured512-part model with adaptive
+intervals reaching.1 seconds, live wheel boundaries, typed impulses, identical
+future-event/debt snapshots, interpolation, failed provisional computation/HMR
+recovery and inspected craft/normals/planet rendering. Old binary v1/v2 files
+decoded. Complete costs include trials and cold work; no stock KSP speedup or
+global-error certificate is inferred. Changed HMR images require a fresh Mono
+assembly identity; same-identity changed-byte reload is unsupported. Full-game
+clock transfer, contact/terrain, arbitrary modules and continuous interpolation
+under long stalls remain separate gates.

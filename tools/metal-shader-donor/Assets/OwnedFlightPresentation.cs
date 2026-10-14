@@ -17,7 +17,7 @@ public sealed class OwnedFlightPresentation : IDisposable
         public string[] shaderFamilies;
         public int width,height,worldWidth,worldHeight,frames,stateTextureId,stateUploads,dynamicUploads,commandBuilds,lastSubmissionCalls;
         public long matrixUpdates,matrixTicks,renderTicks,clockFrequency=System.Diagnostics.Stopwatch.Frequency,dynamicUploadBytes;
-        public double universalTime,worldTime;public long worldEpoch;
+        public double universalTime,physicalUniversalTime,worldTime,displayDelaySeconds;public long worldEpoch,displayRevision;public bool interpolated;
         public double[] renderOriginBodyMeters=new double[3],cameraOriginBodyMeters=new double[3];
         public float craftNear,craftFar,bodyNear,bodyFar,worldScale=1;public bool orthographic;public float verticalSpanMeters,fov;
     }
@@ -38,6 +38,10 @@ public sealed class OwnedFlightPresentation : IDisposable
     readonly Light sunlight;
     readonly double[] doubles;
     readonly Matrix4x4[] matrices;
+    readonly int[] rowBodies;
+    readonly Rotation[] regionDelta;
+    readonly Vec[] actualRoots,displayRoots;
+    long matrixDisplayRevision=-1;
     readonly Matrix4x4 sourceBodyMatrix;
     readonly Rotation sourceBodyRotation;
     readonly AmbientMode priorAmbientMode;
@@ -78,6 +82,8 @@ public sealed class OwnedFlightPresentation : IDisposable
             craft=new WholeCraftRuntime(wholePath,diagnosticShader);Need(craft.ManifestSha256==Scene.wholeCraftSha256&&(craft.LayerMask&(1<<29))==0,"Owned craft overlaps reserved body layer or changed source.");
             var wholeGeometry=WholeCraftSceneFormat.ReadGeometry(Under(Path.GetDirectoryName(wholePath),craft.Manifest.geometry));bindings=new OwnedFlightPresentationBindings(imported,Scene,craft.Manifest,wholeGeometry);
             craft.SetRenderMode("retained-grouped");craft.SetGeometryDebug("off");doubles=new double[bindings.DrawCount*16];matrices=new Matrix4x4[bindings.DrawCount];
+            rowBodies=new int[bindings.DrawCount];var definition=imported.World.Definition;for(int i=0;i<rowBodies.Length;i++)rowBodies[i]=definition.BodySlot(definition.GetPart(definition.PartSlot(craft.Manifest.draws[i].partId)).BodyId);
+            regionDelta=new Rotation[definition.BodyCount];actualRoots=new Vec[definition.BodyCount];displayRoots=new Vec[definition.BodyCount];
             string geometryPath=Under(root,Scene.bodyGeometry);Need(Hash(geometryPath)==Scene.bodyGeometrySha256,"Owned body geometry hash differs.");var geometry=ResidentMaterialFormat.ReadGeometry(geometryPath);Need(geometry.meshes.Length==1,"Owned body geometry requires one captured mesh.");var g=geometry.meshes[0];int count=g.positions.Length/3;var p=new Vector3[count];var n=new Vector3[count];var uv=new Vector2[count];
             Need(g.normals.Length==g.positions.Length&&g.uv.Length==count*2,"Body normals/UV missing; faithful input cannot be fabricated.");for(int i=0;i<count;i++){p[i]=new Vector3(g.positions[i*3],g.positions[i*3+1],g.positions[i*3+2]);n[i]=new Vector3(g.normals[i*3],g.normals[i*3+1],g.normals[i*3+2]);uv[i]=new Vector2(g.uv[i*2],g.uv[i*2+1]);}
             body=new Mesh{indexFormat=IndexFormat.UInt32,vertices=p,normals=n,uv=uv,triangles=g.indices};body.RecalculateBounds();
@@ -119,24 +125,30 @@ public sealed class OwnedFlightPresentation : IDisposable
     }
     static void Configure(Camera source,Camera target,RenderTexture color,int mask,bool depth)
     {target.CopyFrom(source);target.enabled=false;target.transform.SetPositionAndRotation(Vector3.zero,source.transform.rotation);target.targetTexture=color;target.renderingPath=RenderingPath.Forward;target.cullingMask=mask;target.clearFlags=CameraClearFlags.SolidColor;target.backgroundColor=Color.clear;target.allowHDR=false;target.allowMSAA=false;target.depthTextureMode=depth?DepthTextureMode.Depth:DepthTextureMode.None;target.rect=new Rect(0,0,1,1);target.ResetProjectionMatrix();}
-    public void Render(Camera view,Vec cameraBodyOriginMeters,RenderTexture destination,OwnedFlightPresentationLease frame)
+    public void Render(Camera view,Vec cameraBodyOriginMeters,RenderTexture destination,OwnedFlightPresentationLease frame,OwnedFlightDisplayFrame display)
     {
-        Need(!disposed&&view!=null&&frame!=null&&frame.Context.SourceSha256==Status.contextSha256,"Owned visual render owner/source unavailable.");long start=System.Diagnostics.Stopwatch.GetTimestamp();var previous=RenderTexture.active;
+        Need(!disposed&&view!=null&&frame!=null&&display!=null&&display.PhysicalStamp.Matches(frame.Read.Stamp)&&display.ContextSha256==frame.Context.SourceSha256&&frame.Context.SourceSha256==Status.contextSha256,"Owned visual render owner/source unavailable.");long start=System.Diagnostics.Stopwatch.GetTimestamp();var previous=RenderTexture.active;
         try
         {
             int width=destination==null?view.pixelWidth:destination.width,height=destination==null?view.pixelHeight:destination.height;Need(width>0&&height>0&&width<=8192&&height<=8192&&(long)width*height<=16777216,"Owned visual viewport exceeds bounds.");int w=Math.Max(1,(int)Math.Ceiling(width*Status.worldScale)),h=Math.Max(1,(int)Math.Ceiling(height*Status.worldScale));Resize(w,h);
             Configure(view,craftCamera,craftTargets.Color,craft.LayerMask,false);Configure(view,bodyCamera,bodyTargets.Color,1<<29,true);
             var read=frame.Read;
             {
-                Vec origin=frame.Origin+read.GetRegion(0).Motion.RootPosition;
-                if(!matrixSet||!matrixStamp.Matches(read.Stamp)||!Same(lastWorldOrigin,frame.Origin))
+                Need(display.RegionCount==read.RegionCount,"Display region shape differs.");Vec origin=display.GetRegion(0).RootPositionBodyMeters;
+                if(!matrixSet||!matrixStamp.Matches(read.Stamp)||!Same(lastWorldOrigin,frame.Origin)||matrixDisplayRevision!=display.Revision)
                 {
-                    long t=System.Diagnostics.Stopwatch.GetTimestamp();bindings.Fill(read,frame.Origin,origin,doubles);for(int i=0;i<matrices.Length;i++)for(int r=0;r<4;r++)for(int c=0;c<4;c++)matrices[i][r,c]=(float)doubles[i*16+r*4+c];craft.ApplyPresentationMatrices(matrices);matrixOrigin=origin;lastWorldOrigin=frame.Origin;matrixStamp=read.Stamp;matrixSet=true;Status.matrixUpdates++;Status.matrixTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-t;
+                    long t=System.Diagnostics.Stopwatch.GetTimestamp();bindings.Fill(read,frame.Origin,origin,doubles);
+                    for(int r=0;r<read.RegionCount;r++){var actual=read.GetRegion(r);var visual=display.GetRegion(r);Need(actual.Id==visual.Id,"Display region identity differs.");regionDelta[r]=visual.Orientation*actual.Motion.Orientation.Inverse;actualRoots[r]=Sub(frame.Origin+actual.Motion.RootPosition,origin);displayRoots[r]=Sub(visual.RootPositionBodyMeters,origin);}
+                    for(int i=0;i<matrices.Length;i++)
+                    {
+                        int r=read.Topology.RegionOfBody(rowBodies[i]);for(int c=0;c<4;c++){var p=new Vec(doubles[i*16+c],doubles[i*16+4+c],doubles[i*16+8+c]);p=c==3?displayRoots[r]+regionDelta[r].Rotate(Sub(p,actualRoots[r])):regionDelta[r].Rotate(p);Vector3 value=F(p);matrices[i][0,c]=value.x;matrices[i][1,c]=value.y;matrices[i][2,c]=value.z;matrices[i][3,c]=(float)doubles[i*16+12+c];}
+                    }
+                    craft.ApplyPresentationMatrices(matrices);matrixOrigin=origin;lastWorldOrigin=frame.Origin;matrixStamp=read.Stamp;matrixDisplayRevision=display.Revision;matrixSet=true;Status.matrixUpdates++;Status.matrixTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-t;
                 }
                 craft.SetPresentationAnchor(F(Sub(matrixOrigin,cameraBodyOriginMeters)));Status.worldEpoch=read.Stamp.Epoch;Status.worldTime=read.Stamp.Time;
             }
             var bounds=craft.Bounds;float radius=Math.Max(.01f,bounds.extents.magnitude),distance=bounds.center.magnitude;craftCamera.nearClipPlane=Math.Max(.001f,(distance-radius)*.5f);craftCamera.farClipPlane=Math.Max(craftCamera.nearClipPlane*2,distance+radius*2);
-            double utc=frame.UniversalTime;Rotation rotation=frame.Context.BodyRotationAt(utc)*sourceBodyRotation.Inverse;var bodyMatrix=Matrix4x4.Rotate(new Quaternion((float)rotation.X,(float)rotation.Y,(float)rotation.Z,(float)rotation.W))*sourceBodyMatrix;
+            double utc=display.UniversalTime;Status.physicalUniversalTime=frame.UniversalTime;Status.displayDelaySeconds=display.DelaySeconds;Status.displayRevision=display.Revision;Status.interpolated=display.Interpolated;Rotation rotation=frame.Context.BodyRotationAt(utc)*sourceBodyRotation.Inverse;var bodyMatrix=Matrix4x4.Rotate(new Quaternion((float)rotation.X,(float)rotation.Y,(float)rotation.Z,(float)rotation.W))*sourceBodyMatrix;
             Vec offset=rotation.Rotate(new Vec(Scene.bodyLocalToMeters[3],Scene.bodyLocalToMeters[7],Scene.bodyLocalToMeters[11]));Vector3 position=F(Sub(offset,cameraBodyOriginMeters));bodyMatrix.m03=position.x;bodyMatrix.m13=position.y;bodyMatrix.m23=position.z;
             double bodyDistance=Math.Sqrt(cameraBodyOriginMeters.X*cameraBodyOriginMeters.X+cameraBodyOriginMeters.Y*cameraBodyOriginMeters.Y+cameraBodyOriginMeters.Z*cameraBodyOriginMeters.Z);bodyCamera.nearClipPlane=(float)Math.Max(1,(bodyDistance-Scene.bodyRadiusMeters)*.5);bodyCamera.farClipPlane=(float)Math.Max(bodyCamera.nearClipPlane*2,bodyDistance+Scene.bodyRadiusMeters*2);
             bool bodyDiagnostic=Status.view.StartsWith("body-")&&!Status.view.EndsWith("depth")&&Status.view!="body-color";Graphics.DrawMesh(body,bodyMatrix,bodyDiagnostic?bodyDebug:bodyMaterial,29,bodyCamera,0,null,ShadowCastingMode.Off,false);bodyCamera.Render();craft.Submit(craftCamera);

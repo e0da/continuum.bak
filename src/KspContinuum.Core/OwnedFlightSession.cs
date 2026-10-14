@@ -116,7 +116,16 @@ namespace KspContinuum
         {
             if(host==null||!ReferenceEquals(host.World,Runtime))throw new ArgumentException("Owned flight host differs.");controls.Validate();
             var input=new OwnedRuntimeInput(controls.Throttle,controls.Attitude.X,controls.Attitude.Y,controls.Attitude.Z,controls.Translation.X,controls.Translation.Y,controls.Translation.Z);
-            ClearSamples();try {var stamp=host.Advance(delta,input,this,controls);Mode="local";return stamp;}finally{ClearSamples();}
+            ClearSamples();try {var stamp=Runtime.AdaptiveMechanicalEnabled?host.AdvanceAdaptive(delta,input,this,controls):host.Advance(delta,input,this,controls);Mode="local";return stamp;}finally{ClearSamples();}
+        }
+        internal OwnedFlightSession CreateTrialSession(OwnedRuntimeWorld trial)
+        {return new OwnedFlightSession(trial,Context,origin,RuntimeEpoch);}
+        internal void AdvanceTrial(OwnedRuntimeHost host,double delta,OwnedRuntimeInput input,OwnedRuntimeControls controls)
+        {ClearSamples();try{host.Advance(delta,input,this,controls);Mode="local";}finally{ClearSamples();}}
+        internal void SyncTrial(OwnedFlightSession source)
+        {
+            if(!ReferenceEquals(Context,source.Context)||RuntimeEpoch!=source.RuntimeEpoch)throw new InvalidOperationException("Trial session source changed.");
+            origin=source.origin;frameRevision=source.Runtime.Stamp.FrameRevision;Mode=source.Mode;ClearSamples();
         }
 
         public OwnedRuntimeStamp Rebase(OwnedRuntimeStamp expected,Vec newOrigin)

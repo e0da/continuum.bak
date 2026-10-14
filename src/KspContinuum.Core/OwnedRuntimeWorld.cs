@@ -83,6 +83,13 @@ namespace KspContinuum
         public int BodyCount { get { return Definition.BodyCount; } }
         public int ResourceCount { get { return Definition.ResourceCount; } }
         public int RegionCount { get { return Topology.RegionCount; } }
+        public bool AdaptiveMechanicalEnabled {get{lock(gate)return current.Mechanical.adaptive;}}
+        public double SuggestedMechanicalInterval {get{lock(gate)return current.Mechanical.nextInterval;}}
+        public double MaximumMechanicalInterval {get{lock(gate)return current.Mechanical.maximumInterval;}}
+        public OwnedRuntimeMechanicalPolicy MechanicalPolicy {get{lock(gate)return current.Mechanical.Policy;}}
+        public OwnedRuntimeMechanicalState Mechanical {get{lock(gate)return current.Mechanical.Clone();}}
+        internal OwnedRuntimeMechanicalState MechanicalInternal {get{return current.Mechanical;}}
+        internal OwnedRuntimeBank CurrentForTrial {get{return current;}}
         public int PartSlot(long id) { return Definition.PartSlot(id); }
         public int ResourceSlot(long id) { return Definition.ResourceSlot(id); }
         public int BodyOfPart(int part) { return Definition.BodySlot(Definition.GetPart(part).BodyId); }
@@ -212,6 +219,52 @@ namespace KspContinuum
         internal OwnedRuntimeStamp MutateThermal(OwnedRuntimeStamp expected,Action<OwnedRuntimeBank> mutation)
         {lock(gate){RequireMutation(expected);var candidate=new OwnedRuntimeBank(current.Definition,current.Topology);candidate.CopyFrom(current);mutation(candidate);ValidateBank(candidate);candidate.Thermal.ValidateClock(expected.Time);candidate.Stamp=new OwnedRuntimeStamp(expected.Epoch,checked(expected.StateRevision+1),expected.TopologyRevision,expected.DefinitionRevision,expected.FrameRevision,expected.Time,expected.FrameId);PublishCold(candidate);return current.Stamp;}}
         public OwnedRuntimeThermalPolicy ThermalPolicy {get{lock(gate)return current.Thermal.Policy;}}
+        internal OwnedRuntimeStamp MutateMechanical(OwnedRuntimeStamp expected,OwnedRuntimeMechanicalPolicy policy)
+        {
+            if(policy==null)throw new ArgumentNullException("policy");lock(gate)
+            {
+                RequireMutation(expected);var candidate=new OwnedRuntimeBank(current.Definition,current.Topology);candidate.CopyFrom(current);candidate.Mechanical.Apply(policy);ValidateBank(candidate);
+                candidate.Stamp=new OwnedRuntimeStamp(expected.Epoch,checked(expected.StateRevision+1),expected.TopologyRevision,expected.DefinitionRevision,expected.FrameRevision,expected.Time,expected.FrameId);PublishCold(candidate);return current.Stamp;
+            }
+        }
+        internal OwnedRuntimeWorld CreateTrialWorld()
+        {
+            lock(gate)
+            {
+                RequireMutation(current.Stamp);var trial=new OwnedRuntimeWorld(current.Definition,current.Topology,current.RegionMotion[0],current.Stamp.Time,current.Stamp.FrameId);
+                ResetTrial(trial);if(boundWriterThread!=0)trial.BindWriterThread();return trial;
+            }
+        }
+        internal void ResetTrial(OwnedRuntimeWorld trial)
+        {
+            if(trial==null||ReferenceEquals(trial,this))throw new ArgumentException("Trial owner differs.");lock(gate)lock(trial.gate)
+            {
+                RequireWriterThread();trial.RequireMutation(trial.current.Stamp);
+                if(!ReferenceEquals(current.Definition,trial.current.Definition)||!ReferenceEquals(current.Topology,trial.current.Topology))throw new InvalidOperationException("Trial topology/definition must be recompiled.");
+                foreach(var bank in trial.banks)
+                {if(bank.Readers!=0)throw new InvalidOperationException("Private trial bank leaked a reader.");bank.CopyFrom(current);SynchronizePropertyOwners(bank);}
+                trial.current=trial.banks[0];
+            }
+        }
+        internal OwnedRuntimeStamp PublishAdaptive(OwnedRuntimeStamp expected,OwnedRuntimeWorld trial,double interval,OwnedRuntimeInput input,double error,double next,long rejected,long trials)
+        {
+            lock(gate)lock(trial.gate)
+            {
+                RequireWriterThread();RequireCurrent(expected);
+                if(!admitting||admissionThread!=Thread.CurrentThread.ManagedThreadId||writing!=null||hostedToken!=0)throw new InvalidOperationException("Adaptive publication lacks its exclusive admission.");
+                if(!ReferenceEquals(current.Definition,trial.current.Definition)||!ReferenceEquals(current.Topology,trial.current.Topology)||trial.current.Stamp.Time!=expected.Time+interval)
+                    throw new InvalidOperationException("Refined trial time/ownership differs.");
+                OwnedRuntimeBank candidate=null;foreach(var bank in banks)if(!ReferenceEquals(bank,current)&&bank.Readers==0){candidate=bank;break;}
+                if(candidate==null)throw new OwnedRuntimeReadPressureException("No retained bank is available for adaptive publication.");
+                candidate.CopyFrom(trial.current);for(int i=0;i<candidate.ResourceQuantity.Length;i++)CheckResourcePublication(candidate,i,candidate.ResourceQuantity[i]);
+                Array.Copy(current.History,candidate.History,current.History.Length);candidate.HistoryHead=current.HistoryHead;candidate.HistoryCount=current.HistoryCount;
+                var stamp=new OwnedRuntimeStamp(expected.Epoch,checked(expected.StateRevision+1),expected.TopologyRevision,expected.DefinitionRevision,expected.FrameRevision,trial.current.Stamp.Time,expected.FrameId);
+                candidate.Input=input;candidate.History[candidate.HistoryHead]=new OwnedRuntimeInputRecord {Sequence=stamp.StateRevision,StartedAt=expected.Time,DeltaTime=interval,Input=input};
+                candidate.HistoryHead=(candidate.HistoryHead+1)%candidate.History.Length;if(candidate.HistoryCount<candidate.History.Length)candidate.HistoryCount++;
+                var m=candidate.Mechanical;m.accepted=checked(current.Mechanical.accepted+1);m.rejected=checked(current.Mechanical.rejected+rejected);m.trialExecutions=checked(current.Mechanical.trialExecutions+trials);m.lastAcceptedInterval=interval;m.lastError=error;m.nextInterval=next;
+                candidate.Stamp=stamp;SynchronizePropertyOwners(candidate);ValidateBank(candidate);candidate.Thermal.ValidateClock(stamp.Time);current=candidate;return stamp;
+            }
+        }
         internal void EnterAdmission(OwnedRuntimeStamp expected)
         {
             lock (gate) { RequireMutation(expected); admitting = true; admissionThread = Thread.CurrentThread.ManagedThreadId; }
@@ -337,10 +390,13 @@ namespace KspContinuum
                 bank.PropertyOwners[r] = new RetainedRigidAssemblyProperties(members);
             }
         }
+        static void SynchronizePropertyOwners(OwnedRuntimeBank bank)
+        {EnsurePropertyOwners(bank);for(int r=0;r<bank.Topology.RegionCount;r++)foreach(int b in bank.Topology.RegionBodies[r])bank.PropertyOwners[r].Update(bank.Members[b]);}
         static void RequireCondition(RigidAssemblyProperties properties)
         { if (!(properties.PrincipalInertia.X / properties.PrincipalInertia.Z >= RigidAssemblyProjection.MinimumPrincipalMomentRatio)) throw new ArgumentException("Region inertia is ill-conditioned."); }
         static void ValidateBank(OwnedRuntimeBank bank)
         {
+            bank.Mechanical.Validate();
             bank.Input.Validate();
             for (int r = 0; r < bank.RegionMotion.Length; r++) { ValidateMotion(bank.RegionMotion[r]); RequireCondition(bank.Properties[r]); }
             foreach (double value in bank.Temperature) AssemblyModel.Positive(value);
@@ -418,6 +474,7 @@ namespace KspContinuum
 
         static void CopyCommon(OwnedRuntimeBank source, OwnedRuntimeBank target)
         {
+            target.Mechanical.CopyFrom(source.Mechanical);
             Array.Copy(source.Members, target.Members, source.Members.Length);
             Array.Copy(source.ResourceQuantity, target.ResourceQuantity, source.ResourceQuantity.Length);
             Array.Copy(source.LastResourceQuantity, target.LastResourceQuantity, source.LastResourceQuantity.Length);
@@ -502,7 +559,7 @@ namespace KspContinuum
                     Stamp = current.Stamp, BodyMembers = (RigidAssemblyMember[])current.Members.Clone(),
                     RegionMotion = (OwnedRuntimeMotion[])current.RegionMotion.Clone(), RegionIds = new long[current.Topology.RegionCount],
                     ResourceQuantity = (double[])current.ResourceQuantity.Clone(), Temperature = (double[])current.Temperature.Clone(),
-                    Thermal = current.Thermal.Clone(),
+                    Thermal = current.Thermal.Clone(), Mechanical=current.Mechanical.Clone(),
                     ProviderState = (double[])current.ProviderState.Clone(), Input = current.Input, InputHistory = new OwnedRuntimeInputRecord[current.HistoryCount] };
                 for (int r = 0; r < snapshot.RegionIds.Length; r++) snapshot.RegionIds[r] = current.Topology.GetRegionId(r);
                 for (int i = 0; i < current.HistoryCount; i++) snapshot.InputHistory[i] = current.History[(current.HistoryHead - current.HistoryCount + i + current.History.Length) % current.History.Length];
@@ -528,6 +585,7 @@ namespace KspContinuum
             Array.Copy(snapshot.ProviderState, bank.ProviderState, bank.ProviderState.Length);
             if(snapshot.Thermal==null)bank.Thermal.integratedTime=stamp.Time;
             else {snapshot.Thermal.Validate(definition.PartCount);bank.Thermal.CopyFrom(snapshot.Thermal);}
+            if(snapshot.Mechanical!=null){snapshot.Mechanical.Validate();bank.Mechanical.CopyFrom(snapshot.Mechanical);}
             for (int r = 0; r < topology.RegionCount; r++) if (snapshot.RegionIds[r] != topology.GetRegionId(r)) throw new ArgumentException("Snapshot region identities differ.");
             for (int b = 0; b < definition.BodyCount; b++)
             {

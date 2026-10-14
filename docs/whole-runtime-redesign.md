@@ -115,14 +115,13 @@ configured local quantum is a numerical contract, not an inherited requirement
 that every future system run at 50 Hz. Specialized systems can later use their
 own error bounds, dependencies and deadlines inside a complete transaction.
 
-The target execution host has an independent simulation worker. Unity Update
-acquires presentation state and submits ordered controls; it does not pump
-physical progress. The current workbench still pumps from Update, so its exact
-presentation-partition proof is not independent throughput qualification. Moving
-the pump alone is unsafe: Session environment sampling mutates physics guard
-scratch, while origin and universal time are currently read separately from the
-retained world bank. Publish one stamped flight descriptor and make presentation
-sampling read-only as part of the transfer.
+The captured-world execution host now has an independent simulation worker.
+Unity Update acquires one stamped presentation descriptor and submits ordered
+controls; it does not pump physical progress. Presentation samples the admitted
+context without touching physical guard scratch. No-render continuation is
+exercised by the captured lab and native consumer. The legacy unframed workbench
+retains its separately labelled main-thread accumulator. This distinction does
+not qualify whole-game throughput or transfer the stock KSP clock.
 
 Use one physical time coordinate with bank-owned domain integration times,
 pending transfers, input revisions and validity horizons. A domain's cadence
@@ -137,9 +136,13 @@ failure/material/provider behavior changes that independence.
 Topology, resource routes and geometry use compiled plans invalidated by relevant
 changes. Predictions consume immutable snapshots. Use coarse tasks over compact
 data rather than a message or future per part. ECS remains a representation
-option; it does not define causal validity or numerical scheduling. The next
-coherent implementation combines worker ownership, atomic presentation metadata,
-checkpointed causal state and thermal/mechanical scheduling.
+option; it does not define causal validity or numerical scheduling. The owned
+implementation now combines worker ownership, atomic presentation metadata,
+checkpointed causal state, bounded thermal history, adaptive mechanical trials
+and exact typed events. Rendering interpolates copied committed poses. The next
+transfer should replace expensive repeated trial/fold work with domain-specific
+error estimates and validity horizons, retaining complete-work accounting and
+the existing independent analytic and continuation checks.
 
 Live KSP still owns its game clock and stock callback dispatch. Its Planetarium
 advances universal time separately from Unity physics; TimeWarp changes both

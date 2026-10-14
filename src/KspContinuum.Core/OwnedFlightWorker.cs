@@ -43,7 +43,7 @@ namespace KspContinuum
         {if(Interlocked.Exchange(ref disposed,1)==0){try{Read.Dispose();}finally{worker.ReleasePresentation();}}}
     }
 
-    public enum OwnedFlightWorkerInvocation { ReadOnly, ColdMutation, SameTimeMutation, TimelineMutation }
+    public enum OwnedFlightWorkerInvocation { ReadOnly, ColdMutation, SameTimeMutation, TimelineMutation, CheckpointReplacement }
     public sealed class OwnedFlightWorkerOptions
     {
         public bool AutomaticProgress=true;
@@ -78,12 +78,13 @@ namespace KspContinuum
             if(host==null||session==null||!ReferenceEquals(host.World,session.Runtime))throw new ArgumentException("Worker host/session differ.");
             Host=host;Session=session;State=state;
         }
-        public void Replace(OwnedRuntimeHost host,OwnedFlightSession session,object state=null)
+        public void Replace(OwnedRuntimeHost host,OwnedFlightSession session,object state=null,OwnedFlightTimelineState execution=null)
         {
             if(Owner==null||!CanReplace)throw new InvalidOperationException("Owner replacement requires its worker cold invocation.");
             Owner.CheckThread();if(!Timeline.Paused||Timeline.DebtSeconds!=0)throw new InvalidOperationException("Replacement cannot discard unfinished demand.");
             if(host==null||session==null||!ReferenceEquals(host.World,session.Runtime))throw new ArgumentException("Replacement host/session differ.");
-            host.BindWorkerThread();Assign(host,session,state);Owner.Replaced();
+            host.BindWorkerThread();var restored=execution==null?null:OwnedFlightTimeline.RestoreState(host,session,execution,Owner.CurrentWall());
+            Assign(host,session,state);Owner.Replaced(restored);
         }
         public OwnedFlightTimelineProgress Configure(OwnedRuntimeControls input,double warp,bool paused,
             bool allowPassiveCoast=false,bool passiveStateFrozen=false,double nextDeadlineUniversalTime=double.PositiveInfinity,double coastGuardLeadSeconds=0,double? wallSeconds=null)
@@ -226,9 +227,9 @@ namespace KspContinuum
         public OwnedFlightWorkerAcknowledgement<OwnedFlightTimelineProgress> SetLiveControls(OwnedRuntimeControls input)
         {input.Validate();return Enqueue(c=>c.SetLiveControls(input),OwnedFlightWorkerInvocation.ReadOnly,true);}
         public OwnedFlightWorkerAcknowledgement<OwnedFlightTimelineProgress> SetPause(bool paused)
-        {return Enqueue(c=>Change(controls,c.Timeline.Warp,paused),OwnedFlightWorkerInvocation.ReadOnly,true);}
+        {return Enqueue(c=>Change(c.Timeline.HeldControls,c.Timeline.Warp,paused),OwnedFlightWorkerInvocation.ReadOnly,true);}
         public OwnedFlightWorkerAcknowledgement<OwnedFlightTimelineProgress> SetWarp(double warp)
-        {return Enqueue(c=>Change(controls,warp,c.Timeline.Paused),OwnedFlightWorkerInvocation.ReadOnly,true);}
+        {return Enqueue(c=>Change(c.Timeline.HeldControls,warp,c.Timeline.Paused),OwnedFlightWorkerInvocation.ReadOnly,true);}
         public OwnedFlightWorkerAcknowledgement<OwnedFlightTimelineProgress> RequestDemand(double wallSeconds)
         {
             AssemblyModel.Finite(wallSeconds);if(automatic)throw new InvalidOperationException("Explicit demand requires deterministic caller-clock mode.");
@@ -254,19 +255,22 @@ namespace KspContinuum
         }
         double Wall(double? explicitWall)
         {return explicitWall.HasValue?explicitWall.Value:automatic?wallClock():context.Timeline.ReadProgress().WallSeconds;}
-        internal void Replaced()
+        internal double CurrentWall(){return Wall(null);}
+        internal void Replaced(OwnedFlightTimeline restored=null)
         {
             CheckThread();double now=Wall(null);
-            context.Timeline=new OwnedFlightTimeline(context.Host,context.Session,now,maximumStep,sourceId);
-            controls=default(OwnedRuntimeControls);allowCoast=passiveFrozen=false;deadline=double.PositiveInfinity;coastLead=0;
+            context.Timeline=restored??new OwnedFlightTimeline(context.Host,context.Session,now,maximumStep,sourceId);
+            controls=context.Timeline.HeldControls;allowCoast=context.Timeline.AllowPassiveCoast;passiveFrozen=context.Timeline.PassiveStateFrozen;deadline=context.Timeline.NextDeadlineUniversalTime;coastLead=context.Timeline.CoastGuardLeadSeconds;
         }
         T Execute<T>(Func<OwnedFlightWorkerContext,T> action,OwnedFlightWorkerInvocation kind,bool internalCommand)
         {
             CheckThread();var before=context.Host.World.Stamp;long code=context.Host.CodeGeneration,configuration=context.Host.Systems.ConfigurationRevision;
             var oldHost=context.Host;var oldTimeline=context.Timeline;bool mutation=kind!=OwnedFlightWorkerInvocation.ReadOnly;
-            if(!internalCommand&&mutation&&(!oldTimeline.Paused||(kind==OwnedFlightWorkerInvocation.ColdMutation&&oldTimeline.DebtSeconds!=0)))
+            if(!internalCommand&&mutation&&(!oldTimeline.Paused||((kind==OwnedFlightWorkerInvocation.ColdMutation||kind==OwnedFlightWorkerInvocation.CheckpointReplacement)&&oldTimeline.DebtSeconds!=0)))
                 throw new InvalidOperationException("Cold invocation requires pause; physical replacement also requires zero debt.");
-            context.CanReplace=!internalCommand&&kind==OwnedFlightWorkerInvocation.ColdMutation;
+            if(!internalCommand&&(kind==OwnedFlightWorkerInvocation.ColdMutation||kind==OwnedFlightWorkerInvocation.SameTimeMutation)&&oldTimeline.PendingEvents>0)
+                throw new InvalidOperationException("Resolve queued physical events before unrelated cold/code mutations.");
+            context.CanReplace=!internalCommand&&(kind==OwnedFlightWorkerInvocation.ColdMutation||kind==OwnedFlightWorkerInvocation.CheckpointReplacement);
             try
             {
                 T result=action(context);var after=context.Host.World.Stamp;
@@ -276,7 +280,7 @@ namespace KspContinuum
                     if(kind==OwnedFlightWorkerInvocation.ReadOnly)throw new InvalidOperationException("Read-only invocation mutated execution state.");
                     if(kind==OwnedFlightWorkerInvocation.TimelineMutation)
                     {
-                        if(!ReferenceEquals(oldHost,context.Host)||code!=context.Host.CodeGeneration||configuration!=context.Host.Systems.ConfigurationRevision||!context.Timeline.ReadProgress().Stamp.Matches(after))
+                        if(!ReferenceEquals(oldHost,context.Host)||code!=context.Host.CodeGeneration||context.Timeline.ReadProgress().ConfigurationRevision!=context.Host.Systems.ConfigurationRevision||!context.Timeline.ReadProgress().Stamp.Matches(after))
                             throw new InvalidOperationException("Timeline invocation did not acknowledge its own unchanged-host physical transaction.");
                     }
                     else if(ReferenceEquals(oldTimeline,context.Timeline))
@@ -306,6 +310,7 @@ namespace KspContinuum
         }
         void Publish()
         {
+            controls=context.Timeline.HeldControls;
             CheckThread();var nextProgress=context.Timeline.ReadProgress();OwnedFlightReadDescriptor next=descriptor;
             if(!published||!ReferenceEquals(publishedWorld,context.Host.World)||!ReferenceEquals(publishedSession,context.Session)||!descriptor.Stamp.Matches(context.Host.World.Stamp))
                 next=context.Session.CaptureReadDescriptor(context.Host.World.Stamp);
@@ -356,7 +361,7 @@ namespace KspContinuum
                         if(next.Status=="blocked-readers")wait=idleWait;
                         else if(automatic&&!next.Paused&&fault==null&&!next.DeadlineReached&&next.Status!="deadline")
                         {
-                            double remaining=Math.Max(0,maximumStep-next.DebtSeconds)/next.Warp;
+                            double remaining=Math.Max(0,context.Timeline.NextLocalIntervalSeconds-next.DebtSeconds)/next.Warp;
                             wait=Math.Max(1,Math.Min(idleWait,(int)Math.Min(int.MaxValue,Math.Ceiling(remaining*1000))));
                         }
                         Monitor.Wait(gate,wait);

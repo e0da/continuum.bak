@@ -3,7 +3,7 @@ using KspContinuum;
 
 namespace KspContinuum.OwnedRuntimeScheduleExample
 {
-    public sealed class ForwardSchedule : IOwnedRuntimePassiveKeplerSchedule, IOwnedRuntimeWorkerSchedule
+    public sealed class ForwardSchedule : IOwnedRuntimePassiveKeplerSchedule, IOwnedRuntimeTrialSafeSchedule, IOwnedRuntimeWorkerSchedule
     {
         public string Schema {get{return "continuum-owned-runtime-schedule/v1";}}
         public string StateSchema {get{return "world-bank-state-only/v1";}}
@@ -14,7 +14,7 @@ namespace KspContinuum.OwnedRuntimeScheduleExample
         {systems.Step(step,field,controls);}
     }
 
-    public sealed class GravityProbeSchedule : IOwnedRuntimeFieldSchedule, IOwnedRuntimeWorkerSchedule
+    public sealed class GravityProbeSchedule : IOwnedRuntimeTrialSafeSchedule, IOwnedRuntimeWorkerSchedule
     {
         sealed class ProbeField : IOwnedRuntimeEnvironmentField
         {
@@ -51,7 +51,7 @@ namespace KspContinuum.OwnedRuntimeScheduleExample
         {throw new InvalidOperationException("An ABI-rejected schedule must never execute.");}
     }
 
-    public sealed class FailedSchedule : IOwnedRuntimeFieldSchedule, IOwnedRuntimeWorkerSchedule
+    public sealed class FailedSchedule : IOwnedRuntimeTrialSafeSchedule, IOwnedRuntimeWorkerSchedule
     {
         public string Schema {get{return "continuum-owned-runtime-schedule/v1";}}
         public string StateSchema {get{return "world-bank-state-only/v1";}}

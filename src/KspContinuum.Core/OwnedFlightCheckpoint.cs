@@ -16,6 +16,7 @@ namespace KspContinuum
         public OwnedFlightSessionData flight;
         public OwnedFlightPilotData pilot;
         public OwnedFlightManeuverData maneuver;
+        public OwnedFlightTimelineState timeline;
     }
     [Serializable] public sealed class OwnedFlightManeuverData
     {public string id;public long regionId;public double universalTime;public double[] deltaVelocity;}
@@ -28,6 +29,7 @@ namespace KspContinuum
         public OwnedRuntimeStepPlan Plan;
         public OwnedFlightPilotData Pilot;
         public OwnedFlightManeuverPlan Maneuver;
+        public OwnedFlightTimelineState TimelineState;
     }
     public static class OwnedFlightCheckpoint
     {
@@ -40,14 +42,17 @@ namespace KspContinuum
                 targetOrientation=(double[])value.targetOrientation.Clone(),targetVelocity=(double[])value.targetVelocity.Clone()};
         }
         public static OwnedFlightCheckpointData Capture(OwnedRuntimeHost host,OwnedRuntimeImportResult imported,OwnedFlightSession session,
-            OwnedRuntimeControls controls,OwnedRuntimeStepPlan plan,OwnedFlightPilotData pilot,string visualSha256,OwnedFlightManeuverPlan maneuver=null)
+            OwnedRuntimeControls controls,OwnedRuntimeStepPlan plan,OwnedFlightPilotData pilot,string visualSha256,OwnedFlightManeuverPlan maneuver=null,OwnedFlightTimeline timeline=null)
         {
             if(host==null||session==null||!ReferenceEquals(host.World,session.Runtime))throw new ArgumentException("Flight checkpoint owner differs.");
             if(!string.IsNullOrEmpty(visualSha256))OwnedRuntimeImport.Digest(visualSha256);
             var copied=CopyPilot(pilot);if(copied.mode!="manual")session.FindRegion(copied.regionId);
             var stamp=host.World.Stamp;
+            if(timeline!=null)controls=timeline.HeldControls;
             var result=new OwnedFlightCheckpointData {visualSha256=visualSha256??"",pilot=copied,flight=session.Capture(),
                 host=host.CaptureCheckpoint(imported,controls,session.EvaluateRegion(0),plan)};
+            if(timeline!=null)
+            {if(!ReferenceEquals(timeline.Host,host)||!ReferenceEquals(timeline.Session,session))throw new ArgumentException("Execution checkpoint owner differs.");result.timeline=timeline.CaptureState();result.schema="continuum-owned-flight-checkpoint/v2";}
             if(maneuver!=null)
             {
                 if(!maneuver.IsCurrent(session,host))throw new InvalidOperationException("Pending maneuver is stale; clear/replan before checkpointing.");
@@ -59,9 +64,10 @@ namespace KspContinuum
         public static OwnedFlightRestoredState Restore(OwnedRuntimeHost current,OwnedRuntimeImportResult imported,OwnedFlightCheckpointData data,
             string nativeSha,string partSha,string expectedContextSha,string expectedVisualSha)
         {
-            if(current==null||imported==null||!ReferenceEquals(current.World,imported.World)||data==null||data.schema!="continuum-owned-flight-checkpoint/v1"
+            if(current==null||imported==null||!ReferenceEquals(current.World,imported.World)||data==null||(data.schema!="continuum-owned-flight-checkpoint/v1"&&data.schema!="continuum-owned-flight-checkpoint/v2")
                 ||data.flight==null||data.flight.contextSha256!=expectedContextSha||data.visualSha256!=(expectedVisualSha??""))
                 throw new InvalidOperationException("Flight checkpoint source/context/visual binding differs.");
+            if((data.schema=="continuum-owned-flight-checkpoint/v2")!=(data.timeline!=null))throw new InvalidOperationException("Flight execution checkpoint presence differs.");
             var copied=CopyPilot(data.pilot);
             OwnedRuntimeRestoredState restored;var nextHost=current.RestoreCheckpoint(data.host,nativeSha,partSha,out restored);
             var session=OwnedFlightSession.Restore(restored.World,data.flight,nativeSha,partSha);
@@ -69,7 +75,7 @@ namespace KspContinuum
             var nextImported=new OwnedRuntimeImportResult {World=restored.World,Systems=restored.Systems,Source=restored.Source,
                 CapturedParts=imported.CapturedParts,NativeScene=imported.NativeScene,ColliderGeometry=imported.ColliderGeometry};
             OwnedFlightManeuverPlan node=data.maneuver==null?null:new OwnedFlightManeuverPlan(data.maneuver.id,session,nextHost,data.maneuver.regionId,data.maneuver.universalTime,OwnedRuntimeCheckpoint.V(data.maneuver.deltaVelocity));
-            return new OwnedFlightRestoredState {Host=nextHost,Imported=nextImported,Session=session,Controls=restored.Controls,Plan=restored.Plan,Pilot=copied,Maneuver=node};
+            return new OwnedFlightRestoredState {Host=nextHost,Imported=nextImported,Session=session,Controls=restored.Controls,Plan=restored.Plan,Pilot=copied,Maneuver=node,TimelineState=data.timeline};
         }
     }
 }

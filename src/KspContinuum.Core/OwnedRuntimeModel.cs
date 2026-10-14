@@ -186,6 +186,7 @@ namespace KspContinuum
         public long[] RegionIds;
         public OwnedRuntimeMotion[] RegionMotion;
         public double[] ResourceQuantity, Temperature, ProviderState;
+        public OwnedRuntimeMechanicalState Mechanical;
         public OwnedRuntimeThermalState Thermal;
         public OwnedRuntimeInput Input;
         public OwnedRuntimeInputRecord[] InputHistory;
@@ -207,6 +208,7 @@ namespace KspContinuum
         internal int HistoryCount, HistoryHead, Readers;
         internal bool SystemsExecuted;
         internal OwnedRuntimeDefinition Definition;
+        internal OwnedRuntimeMechanicalState Mechanical=new OwnedRuntimeMechanicalState();
         internal OwnedRuntimeTopology Topology;
         internal OwnedRuntimeStamp Stamp;
         internal OwnedRuntimeBank(OwnedRuntimeDefinition definition, OwnedRuntimeTopology topology)
@@ -222,6 +224,7 @@ namespace KspContinuum
         }
         internal void CopyFrom(OwnedRuntimeBank source)
         {
+            Mechanical.CopyFrom(source.Mechanical);
             if (RegionMotion.Length != source.RegionMotion.Length || Members.Length != source.Members.Length
                 || ResourceQuantity.Length != source.ResourceQuantity.Length || Temperature.Length != source.Temperature.Length
                 || ProviderState.Length != source.ProviderState.Length) throw new InvalidOperationException("Bank shapes differ.");

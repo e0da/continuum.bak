@@ -29,6 +29,16 @@ The optional original prethermal checkpoint is decoded and physically restored
 against the acquired hashes. Its producer schedule identity is retained as
 provenance; the old executable is not loaded or claimed continued.
 
+The adaptive extension arms an impulse and held-control event at the exact
+`.075` runtime frontier. Before either event it captures/restores the full
+execution queue, adaptive controller and pending thermal ledger. A dangling
+event receiver falsifier must leave both old authorities unchanged. With view
+leases and render-only interpolation enabled or fully suspended, the final full
+binary continuation must match exactly. A fixed-step reference executes the same
+controls/events/checkpoint transaction once; complete costs and final numerical
+differences are reported. Embedded local error estimates are not global
+trajectory, energy or FPS guarantees. Retained isolated trials remain charged.
+
 Preparation, thread coordination, checkpoint encoding and scenario work remain
 in complete elapsed cost. Allocations count the worker thread after preparation,
 not total process allocation. This is a functionality/continuation consumer,
