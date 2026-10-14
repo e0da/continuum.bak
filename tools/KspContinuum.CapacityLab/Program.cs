@@ -87,6 +87,7 @@ internal static partial class Program
     static int Main(string[] arguments)
     {
         if (arguments.Length >= 2 && arguments[0] == "--mode" && arguments[1] == "compare") return CompareCapacity(arguments);
+        if (arguments.Length >= 2 && arguments[0] == "--mode" && arguments[1] == "compare-columnar") return CompareColumnarCapacity(arguments);
         int mode = Array.IndexOf(arguments, "--mode");
         if (mode >= 0 && mode + 1 < arguments.Length && arguments[mode + 1] == "spatial") return RunSpatial(arguments);
         Console.CancelKeyPress += (_, e) => { interrupted = true; e.Cancel = true; };

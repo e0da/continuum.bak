@@ -128,3 +128,22 @@ packet provenance. Every complete field is checked after excluding only code
 source hash and process identity; a physical temperature change must fail.
 Peak memory reported as zero by the process API is recorded as unavailable.
 See [measured capacity and replacements](../../docs/capacity-runtime.md).
+
+Use `--mode compare-columnar` for two passed columnar runtime directories:
+
+```text
+dotnet tools/KspContinuum.CapacityLab/bin/Release/net8.0/KspContinuum.CapacityLab.dll --mode compare-columnar --baseline /ABSOLUTE/BASELINE --candidate /ABSOLUTE/CANDIDATE --output /ABSOLUTE/NEW/comparison
+```
+
+The comparator verifies actual fixture hashes and controls, complete success
+checks, each receipt-bound file hash, each envelope digest and the actual builtin
+image identity against its producer's Core image hash. It compares the checkpoint
+and both continuation images byte for byte with bounded reusable buffers. Only
+the admitted executable-image hash and independently verified derived envelope
+digest may differ. Every physical, control, resource and history byte remains
+covered. It does not restore a foreign executable image or normalize away
+physical differences. The executable falsifier changes a massless resource
+quantity, reseals all integrity hashes and requires comparison to fail.
+
+See [compiled thermal and mass validity](../../docs/compiled-thermal-mass.md) for
+the matched million-part observations, complete-state proof and consumer limits.

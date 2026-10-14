@@ -213,6 +213,18 @@ namespace KspContinuum
         internal RetainedRigidAssemblyProperties[] PropertyOwners;
         internal int HistoryCount, HistoryHead, Readers;
         internal bool SystemsExecuted;
+        internal bool MassPropertiesValid;
+        internal void InvalidateMassProperties() { MassPropertiesValid = false; }
+        internal void WriteResourceQuantity(int slot, double quantity)
+        {
+            var resource = Definition.GetResource(slot);
+            AssemblyModel.Finite(quantity);
+            if (quantity < 0 || quantity > resource.QuantityLimit)
+                throw new ArgumentException("Resource quantity is outside its declared retained domain.");
+            if (quantity != ResourceQuantity[slot] && resource.MassPerUnit != 0)
+                InvalidateMassProperties();
+            ResourceQuantity[slot] = quantity;
+        }
         internal bool MechanicalPublicationPending;
         internal OwnedRuntimeDefinition Definition;
         internal OwnedRuntimeMechanicalState Mechanical=new OwnedRuntimeMechanicalState();
@@ -245,6 +257,7 @@ namespace KspContinuum
             Thermal.CopyFrom(source.Thermal);
             Array.Copy(source.History, History, History.Length); Input = source.Input; HistoryCount = source.HistoryCount; HistoryHead = source.HistoryHead;
             Definition = source.Definition; Topology = source.Topology; Stamp = source.Stamp;
+            MassPropertiesValid = source.MassPropertiesValid;
             if(Work!=null)Work.Copy(RegionMotion.Length,Members.Length,ResourceQuantity.Length,History.Length,begin);
         }
     }

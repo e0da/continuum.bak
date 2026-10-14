@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace KspContinuum
 {
@@ -13,6 +14,8 @@ namespace KspContinuum
         internal readonly int[] SurfaceCounts;
         internal readonly int[][][] FuelRoutes;
         internal readonly double[] ResourceMassPerUnit;
+        internal readonly int[] ActuatorVisits;
+        internal readonly int SkippedActuators;
         readonly OwnedRuntimeDefinition definition;
         readonly OwnedRuntimeTopology topology;
         readonly long configuration;
@@ -21,16 +24,18 @@ namespace KspContinuum
         public int RegionCount {get{return SurfaceCounts.Length;}}
         public long ConfigurationRevision {get{return configuration;}}
         public long TopologyRevision {get{return topology.Revision;}}
-        internal OwnedRuntimeExecutionPlan(OwnedRuntimeBank bank,OwnedRuntimeActuatorSpec[] actuators,OwnedRuntimeSurfaceSpec[] surfaces,int[][][] fuelPools,bool[] flows,long configuration)
+        internal OwnedRuntimeExecutionPlan(OwnedRuntimeBank bank,OwnedRuntimeActuatorSpec[] actuators,OwnedRuntimeSurfaceSpec[] surfaces,int[][][] fuelPools,bool[] flows,bool[] enabled,long configuration)
         {
             definition=bank.Definition;topology=bank.Topology;this.configuration=configuration;
             Actuators=new ActuatorRow[actuators.Length];Surfaces=new SurfaceRow[surfaces.Length];SurfaceCounts=new int[topology.RegionCount];
             FuelRoutes=new int[actuators.Length][][];ResourceMassPerUnit=new double[definition.ResourceCount];
             for(int r=0;r<ResourceMassPerUnit.Length;r++)ResourceMassPerUnit[r]=definition.GetResource(r).MassPerUnit;
             var routedPools=new OwnedRuntimeResourceRoutes(bank,flows);
+            var visits=new List<int>();
             for(int i=0;i<Actuators.Length;i++)
             {
                 var spec=actuators[i];var part=definition.GetPart(spec.Part);int body=definition.BodySlot(part.BodyId);var member=bank.Members[body];
+                if(enabled[i]||spec.Kind==OwnedRuntimeActuatorKind.ReactionWheel)visits.Add(i);
                 Rotation local=member.LocalRotation*part.LocalRotation;
                 Actuators[i]=new ActuatorRow{Body=body,Region=topology.BodyRegions[body],Point=Point(part,member,spec.LocalPoint),Axis=local.Rotate(spec.LocalAxis)};
                 FuelRoutes[i]=new int[fuelPools[i].Length][];
@@ -39,6 +44,7 @@ namespace KspContinuum
                     FuelRoutes[i][f]=routedPools.Get(fuelPools[i][f],Actuators[i].Region);
                 }
             }
+            ActuatorVisits=visits.ToArray();SkippedActuators=actuators.Length-ActuatorVisits.Length;
             for(int i=0;i<Surfaces.Length;i++)
             {
                 var spec=surfaces[i];var part=definition.GetPart(spec.Part);int body=definition.BodySlot(part.BodyId);var member=bank.Members[body];

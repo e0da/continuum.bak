@@ -90,12 +90,12 @@ static partial class Program
     }
     static object CompiledExecution(Inputs input,string output,string executionModes)
     {
-        bool adaptiveOnly=executionModes=="adaptive",deadlineOnly=executionModes=="deadlines";
+        bool adaptiveOnly=executionModes=="adaptive",deadlineOnly=executionModes=="deadlines",compiledOnly=executionModes=="compiled";
         var rows=new List<ExecutionRow>();var comparisons=new List<object>();
         foreach(string scenario in deadlineOnly?new[]{"vacuum-powered","atmosphere-powered"}:new[]{"vacuum-quiet","vacuum-powered","atmosphere-quiet","atmosphere-powered"})
         for(int repetition=1;repetition<=2;repetition++)
         {
-            foreach(string mode in deadlineOnly?new[]{"embedded-oracle","embedded-retained"}:adaptiveOnly?new[]{"trials","embedded"}:new[]{"reference","compiled","trials","embedded"})
+            foreach(string mode in deadlineOnly?new[]{"embedded-oracle","embedded-retained"}:adaptiveOnly?new[]{"trials","embedded"}:compiledOnly?new[]{"reference","compiled"}:new[]{"reference","compiled","trials","embedded"})
             {
                 var row=ExecuteCase(input,scenario,mode,repetition,output);rows.Add(row);
                 using var file=new FileStream(Path.Combine(output,scenario+"-"+mode+"-"+repetition+".json"),FileMode.CreateNew,FileAccess.Write);JsonSerializer.Serialize(file,row,Json);
@@ -110,6 +110,7 @@ static partial class Program
             else
             {
                 Need(group[0].physicalSha256==group[1].physicalSha256,"Compiled fold changed complete physical/resource/provider/thermal continuation.");
+                if(compiledOnly){comparisons.Add(new{scenario,repetition,compiledBitwiseEquivalent=true,compiledHotRatio=(double)group[1].hotTicks/group[0].hotTicks,scope="Targeted reference/compiled fold comparison; unchanged numerical strategies are omitted. Full normalized continuation excludes only declared execution/configuration metadata."});continue;}
                 comparisons.Add(new{scenario,repetition,compiledBitwiseEquivalent=true,compiledHotRatio=(double)group[1].hotTicks/group[0].hotTicks,embeddedVersusTrialsRatio=(double)group[3].hotTicks/group[2].hotTicks,
                     embeddedVersusReferencePositionMeters=Distance(group[3].center,group[0].center),embeddedVersusReferenceVelocityMetersPerSecond=Distance(group[3].velocity,group[0].velocity),scope="Numerical method is a declared treatment; differences are reported. Exact fold gate excludes ONLY executionStrategy and systemsRevision treatment metadata."});
             }

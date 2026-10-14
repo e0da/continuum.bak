@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const PROTOCOL: &str = "1.0.0";
+const CLOCK_PROTOCOL: &str = "1.4.0";
 const MAX_SAMPLES: usize = 10_000;
 
 #[derive(Debug)]
@@ -20,6 +21,7 @@ struct Options {
     sweep: bool,
     quit: bool,
     rigid: Option<String>,
+    clock: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,6 +36,8 @@ struct Reply {
     observer_nanoseconds: Option<u64>,
     sweep: Option<SweepStatus>,
     rigid: Option<serde_json::Value>,
+    clock: Option<serde_json::Value>,
+    protocol_version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +107,7 @@ fn main() {
 fn run(arguments: Vec<String>) -> Result<(), String> {
     let options = parse_options(&arguments)?;
     if let Some(action) = &options.rigid { return run_rigid(&options, action); }
+    if let Some(action) = &options.clock { return run_clock(&options, action); }
     if options.quit {
         return run_quit(&options);
     }
@@ -209,6 +214,50 @@ fn run_rigid(options: &Options, action: &str) -> Result<(), String> {
         writeln!(file, "{text}").map_err(|error| error.to_string())?;
     }
     println!("{text}");
+    Ok(())
+}
+
+fn require_clock_identity(reply: &Reply, request_id: &str, expected: Option<&Identity>) -> Result<(), String> {
+    require_ok(reply, request_id, false)?;
+    if reply.protocol_version.as_deref() != Some(CLOCK_PROTOCOL) {
+        return Err("clock reply did not use protocol 1.4.0".into());
+    }
+    let observed = reply.identity.as_ref().ok_or("clock reply omitted identity")?;
+    if observed.session_id.is_empty() || observed.epoch == 0 {
+        return Err("clock reply has an invalid identity".into());
+    }
+    if let Some(identity) = expected {
+        if observed.session_id != identity.session_id || observed.epoch != identity.epoch {
+            return Err("clock reply changed session or epoch".into());
+        }
+    }
+    Ok(())
+}
+
+fn run_clock(options: &Options, action: &str) -> Result<(), String> {
+    if options.output.as_ref().is_some_and(|path| path.exists()) {
+        return Err("clock output already exists; no command sent".into());
+    }
+    let mut stream = connect(options)?;
+    let mut reader = BufReader::new(stream.try_clone().map_err(|error| error.to_string())?);
+    let mut observations = VecDeque::new();
+    let hello = exchange(&mut stream, &mut reader, &mut observations, "hello 1.4.0 clock-hello")?;
+    require_clock_identity(&hello, "clock-hello", None)?;
+    if !hello.capabilities.as_ref().is_some_and(|capabilities| capabilities.iter().any(|value| value == "owned-clock-control")) {
+        return Err("server does not support owned clock control".into());
+    }
+    let identity = hello.identity.as_ref().ok_or("clock hello omitted identity")?;
+    let command = format!("clock-{action} {CLOCK_PROTOCOL} clock-command {} {}", identity.session_id, identity.epoch);
+    let reply = exchange(&mut stream, &mut reader, &mut observations, &command)?;
+    require_clock_identity(&reply, "clock-command", Some(identity))?;
+    let status = reply.clock.as_ref().filter(|value| value.is_object()).ok_or("clock reply omitted its status object")?;
+    if action == "lighting" && !status.get("lightingPath").and_then(serde_json::Value::as_str).is_some_and(|value| std::path::Path::new(value).is_absolute()) {
+        return Err("successful clock lighting reply omitted its absolute saved path".into());
+    }
+    let receipt = serde_json::json!({"schema":"continuum-clock-control-observation/v1","protocolVersion":CLOCK_PROTOCOL,"operation":action,
+        "requestId":"clock-command","sessionId":identity.session_id,"epoch":identity.epoch,"status":"ok","clock":status});
+    if let Some(path) = &options.output { write_new(path, &receipt, "clock receipt")?; }
+    println!("{}", serde_json::to_string_pretty(&receipt).map_err(|error| error.to_string())?);
     Ok(())
 }
 
@@ -444,9 +493,12 @@ fn parse_options(arguments: &[String]) -> Result<Options, String> {
     let mut output = None;
     let mut ready = None;
     let mut timeout_ms = 5_000u64;
+    let mut timeout_explicit = false;
     let mut sweep = false;
     let mut quit = false;
     let mut rigid = None;
+    let mut clock = None;
+    let mut qualification_selected = false;
     let mut index = 0;
     while index < arguments.len() {
         if arguments[index] == "--dry-buoyancy-sweep" {
@@ -460,13 +512,20 @@ fn parse_options(arguments: &[String]) -> Result<Options, String> {
             continue;
         }
         let value = arguments.get(index + 1).ok_or_else(usage)?;
+        if matches!(arguments[index].as_str(), "--samples" | "--ready") {
+            qualification_selected = true;
+        }
         match arguments[index].as_str() {
             "--address" => address = value.clone(),
             "--samples" => samples = value.parse().map_err(|_| "invalid --samples")?,
             "--output" => output = Some(PathBuf::from(value)),
             "--ready" => ready = Some(PathBuf::from(value)),
-            "--timeout-ms" => timeout_ms = value.parse().map_err(|_| "invalid --timeout-ms")?,
+            "--timeout-ms" => { timeout_ms = value.parse().map_err(|_| "invalid --timeout-ms")?; timeout_explicit = true; },
             "--rigid" if matches!(value.as_str(), "status" | "enable" | "disable" | "retry" | "warp4" | "normal" | "save" | "load" | "capture") => rigid = Some(value.clone()),
+            "--clock" if matches!(value.as_str(), "status" | "enable" | "disable" | "normal" | "warp32" | "warp128" | "pause" | "resume" | "save" | "restore" | "lighting") => {
+                if clock.is_some() { return Err("choose one clock command".into()); }
+                clock = Some(value.clone());
+            },
             _ => return Err(usage()),
         }
         index += 2;
@@ -474,13 +533,20 @@ fn parse_options(arguments: &[String]) -> Result<Options, String> {
     if samples == 0 || samples > MAX_SAMPLES {
         return Err(format!("--samples must be between 1 and {MAX_SAMPLES}"));
     }
-    if timeout_ms == 0 || timeout_ms > 60_000 {
-        return Err("--timeout-ms must be between 1 and 60000".into());
+    if !timeout_explicit && clock.as_deref().is_some_and(|action| matches!(action, "enable" | "disable" | "save" | "restore")) {
+        timeout_ms = 65_000;
     }
-    if (usize::from(sweep) + usize::from(quit) + usize::from(rigid.is_some())) > 1 {
+    let maximum_timeout = if clock.is_some() { 65_000 } else { 60_000 };
+    if timeout_ms == 0 || timeout_ms > maximum_timeout {
+        return Err(format!("--timeout-ms must be between 1 and {maximum_timeout}"));
+    }
+    if (usize::from(sweep) + usize::from(quit) + usize::from(rigid.is_some()) + usize::from(clock.is_some())) > 1 {
         return Err("choose one live command".into());
     }
-    if !sweep && !quit && rigid.is_none() && (output.is_none() || ready.is_none()) {
+    if clock.is_some() && qualification_selected {
+        return Err("choose one live command; clock and snapshot qualification cannot mix".into());
+    }
+    if !sweep && !quit && rigid.is_none() && clock.is_none() && (output.is_none() || ready.is_none()) {
         return Err(usage());
     }
     if output.is_some() && output == ready {
@@ -495,6 +561,7 @@ fn parse_options(arguments: &[String]) -> Result<Options, String> {
         sweep,
         quit,
         rigid,
+        clock,
     })
 }
 
@@ -506,7 +573,7 @@ fn nanos(duration: Duration) -> Result<u64, String> {
 }
 
 fn usage() -> String {
-    "usage: continuum-live-control-client [--address HOST:PORT] [--timeout-ms 1..60000] (--rigid status|enable|disable|retry|warp4|normal|save|load|capture [--output RECEIPT.json] | --dry-buoyancy-sweep | --quit-when-idle | [--samples 1..10000] --ready READY.json --output RECEIPT.json)".into()
+    "usage: continuum-live-control-client [--address HOST:PORT] [--timeout-ms 1..60000 (clock up to 65000)] (--clock status|enable|disable|normal|warp32|warp128|pause|resume|save|restore|lighting [--output RECEIPT.json] | --rigid status|enable|disable|retry|warp4|normal|save|load|capture [--output RECEIPT.json] | --dry-buoyancy-sweep | --quit-when-idle | [--samples 1..10000] --ready READY.json --output RECEIPT.json). Clock enable/disable/save/restore default to 65000 ms; other defaults remain 5000 ms.".into()
 }
 
 #[cfg(test)]
@@ -542,9 +609,60 @@ mod tests {
     }
 
     #[test]
+    fn clock_actions_are_bounded_and_keep_old_defaults() {
+        for action in ["status", "enable", "disable", "normal", "warp32", "warp128", "pause", "resume", "save", "restore", "lighting"] {
+            let options = parse_options(&["--clock".into(), action.into()]).unwrap();
+            assert_eq!(options.clock.as_deref(), Some(action));
+            assert!(!options.sweep && !options.quit && options.rigid.is_none());
+            let timeout = if matches!(action, "enable" | "disable" | "save" | "restore") { 65_000 } else { 5_000 };
+            assert_eq!(options.timeout, Duration::from_millis(timeout));
+        }
+        assert_eq!(parse_options(&["--rigid".into(), "status".into()]).unwrap().timeout, Duration::from_millis(5_000));
+        assert!(parse_options(&["--clock".into(), "warp4".into()]).is_err());
+        assert!(parse_options(&["--clock".into(), "status".into(), "--timeout-ms".into(), "65001".into()]).is_err());
+    }
+
+    #[test]
+    fn clock_cannot_mix_with_other_live_actions() {
+        for command in [vec!["--rigid", "status"], vec!["--dry-buoyancy-sweep"], vec!["--quit-when-idle"], vec!["--clock", "pause"], vec!["--samples", "1"], vec!["--ready", "ready.json"]] {
+            let mut arguments = vec!["--clock".to_string(), "status".to_string()];
+            arguments.extend(command.into_iter().map(str::to_string));
+            assert!(parse_options(&arguments).unwrap_err().contains("choose one"));
+        }
+    }
+
+    #[test]
+    fn clock_contract_is_version_capability_and_identity_bound() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            for expected in ["hello 1.4.0 clock-hello", "clock-lighting 1.4.0 clock-command 00000000-0000-0000-0000-000000000001 7"] {
+                let mut line = String::new(); reader.read_line(&mut line).unwrap(); assert_eq!(line.trim_end(), expected);
+                let reply = if expected.starts_with("hello") {
+                    r#"{"status":"ok","protocolVersion":"1.4.0","requestId":"clock-hello","capabilities":["owned-clock-control"],"identity":{"sessionId":"00000000-0000-0000-0000-000000000001","epoch":7,"renderFrame":10,"observedFixedCallbacks":4}}"#
+                } else {
+                    r#"{"status":"ok","protocolVersion":"1.4.0","requestId":"clock-command","identity":{"sessionId":"00000000-0000-0000-0000-000000000001","epoch":7,"renderFrame":11,"observedFixedCallbacks":4},"clock":{"state":"owned","owned":true,"enabled":true,"lightingPath":"/runtime/lighting-facts.json"}}"#
+                };
+                writeln!(socket, "{reply}").unwrap();
+            }
+        });
+        let options = parse_options(&["--clock".into(), "lighting".into(), "--address".into(), address.to_string(), "--timeout-ms".into(), "2000".into()]).unwrap();
+        run_clock(&options, "lighting").unwrap(); server.join().unwrap();
+        let expected = Identity { session_id: "session".into(), epoch: 7, render_frame: 1, observed_fixed_callbacks: 1 };
+        let foreign: Reply = serde_json::from_str(r#"{"status":"ok","protocolVersion":"1.4.0","requestId":"clock-command","identity":{"sessionId":"session","epoch":8,"renderFrame":2,"observedFixedCallbacks":1},"clock":{"state":"owned"}}"#).unwrap();
+        assert!(require_clock_identity(&foreign, "clock-command", Some(&expected)).unwrap_err().contains("changed session or epoch"));
+        let old: Reply = serde_json::from_str(r#"{"status":"ok","protocolVersion":"1.3.0","requestId":"clock-hello","identity":{"sessionId":"session","epoch":7,"renderFrame":2,"observedFixedCallbacks":1}}"#).unwrap();
+        assert!(require_clock_identity(&old, "clock-hello", None).unwrap_err().contains("protocol 1.4.0"));
+    }
+
+    #[test]
     fn rejected_sweep_start_does_not_attach_to_an_existing_run() {
         let reply = Reply {
             rigid: None,
+            clock: None,
+            protocol_version: None,
             status: "ok".into(),
             reason: None,
             request_id: Some("sweep-start".into()),
@@ -687,6 +805,7 @@ mod tests {
             sweep: true,
             quit: false,
             rigid: None,
+            clock: None,
         };
         run_sweep(&options).unwrap();
         server.join().unwrap();
@@ -721,6 +840,7 @@ mod tests {
             sweep: true,
             quit: false,
             rigid: None,
+            clock: None,
         };
         assert!(
             run_sweep(&options)

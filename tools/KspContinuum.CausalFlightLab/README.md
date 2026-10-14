@@ -64,6 +64,13 @@ as stock equivalence. Every mode checks complete strategy/method checkpoint
 restore. Failed rows remain preserved. These direct net8 physical measurements
 do not establish Unity/Metal FPS, maximum KSP warp or universal global error.
 
+Use `--execution-modes compiled` with `--execution-only true` for just Reference
+and Compiled in the four quiet/powered vacuum/atmosphere situations. Two
+observations per case retain the full normalized continuation and restore checks
+without repeating unchanged adaptive strategies. This compares strategies in the
+current build; an optimization shared by both strategies needs retained
+cross-build evidence to establish its before/after cost.
+
 Use `--execution-modes adaptive` with `--execution-only true` when only the
 adaptive execution paths changed. It runs the two numerical strategies and
 retains earlier reference/compiled evidence without repeating unchanged cases.

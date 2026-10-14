@@ -120,7 +120,10 @@ The million-part run now exposes actual computation costs: thermal updates and
 scalar/mass work dominate the retained counters, while rigid-region integration
 is small. These nested counters are nonadditive. The 15-step interval averages
 about 216 ms per step, so the model is not real-time at its 64 Hz local interval.
-Next redesign should target the measured thermal/scalar/mass data paths and
-scheduling, while carrying this exact state and continuation proof into the
-installed flight consumer. See [scale frontier](scale-frontier.md) and
+The [compiled thermal, sparse actuation and mass validity replacement](compiled-thermal-mass.md)
+now carries that proof into two matched million-part observations, captured
+512-part flight situations and a private installed flight save/restore/handback
+consumer. Hot stepping fell to 68–69 ms per step; complete lifecycle cost fell
+to 20.0–20.8 seconds. Scalar/mass reduction and persistence remain substantial
+costs. Native craft lighting remains an explicit visual gate. See [scale frontier](scale-frontier.md) and
 [laboratory CLI](../tools/KspContinuum.CapacityLab/README.md).

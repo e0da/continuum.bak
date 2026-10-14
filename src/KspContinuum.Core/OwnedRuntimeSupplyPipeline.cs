@@ -66,14 +66,14 @@ namespace KspContinuum
             {
                 bank.ProviderState[solarProviderSlots[i]]=rates[i];double left=rates[i]*delta;result.GeneratedUnits+=left;int region=bank.Topology.PartRegions[solar[i].Part];
                 foreach(int resource in ec)if(flow[resource]&&bank.Topology.PartRegions[resourceParts[resource]]==region&&left>0)
-                {double capacity=definition.GetResource(resource).Capacity,available=Math.Max(0,capacity-bank.ResourceQuantity[resource]),take=Math.Min(left,available);double old=bank.ResourceQuantity[resource],next=Math.Min(capacity,old+take);if(old>capacity)continue;if(next-old>take)next=Previous(next);double credited=next-old;bank.ResourceQuantity[resource]=next;left=Math.Max(0,left-credited);result.CreditedUnits+=credited;}
+                {double capacity=definition.GetResource(resource).Capacity,available=Math.Max(0,capacity-bank.ResourceQuantity[resource]),take=Math.Min(left,available);double old=bank.ResourceQuantity[resource],next=Math.Min(capacity,old+take);if(old>capacity)continue;if(next-old>take)next=Previous(next);double credited=next-old;bank.WriteResourceQuantity(resource,next);left=Math.Max(0,left-credited);result.CreditedUnits+=credited;}
                 result.SpilledUnits+=left;
             }
             for(int i=0;i<commands.Length;i++)
             {
                 var c=commands[i];double left=requested[i],withdrawn=0;int region=bank.Topology.PartRegions[c.Part];result.CommandRequestedUnits+=left;
                 foreach(int resource in ec)if(flow[resource]&&bank.Topology.PartRegions[resourceParts[resource]]==region&&left>0)
-                {double old=bank.ResourceQuantity[resource],take=Math.Min(old,left),next=Math.Max(0,old-take);if(old-next>take)next=Next(next);double actual=old-next;bank.ResourceQuantity[resource]=next;if(initialResources[resource]>0&&next==0&&BoundaryResource<0)BoundaryResource=resource;left=Math.Max(0,left-actual);withdrawn+=actual;}
+                {double old=bank.ResourceQuantity[resource],take=Math.Min(old,left),next=Math.Max(0,old-take);if(old-next>take)next=Next(next);double actual=old-next;bank.WriteResourceQuantity(resource,next);if(initialResources[resource]>0&&next==0&&BoundaryResource<0)BoundaryResource=resource;left=Math.Max(0,left-actual);withdrawn+=actual;}
                 bool ready=OwnedRuntimeScalarSupply.CommandReady(c,requested[i],Math.Min(requested[i],withdrawn));bank.ProviderState[c.ReadinessProviderSlot]=ready?1:0;if(ready)result.ReadyCommands++;result.CommandWithdrawnUnits+=withdrawn;
             }
             OwnedRuntimeEnvironment.Nonnegative(result.GeneratedUnits);OwnedRuntimeEnvironment.Nonnegative(result.CreditedUnits);OwnedRuntimeEnvironment.Nonnegative(result.SpilledUnits);OwnedRuntimeEnvironment.Nonnegative(result.CommandRequestedUnits);OwnedRuntimeEnvironment.Nonnegative(result.CommandWithdrawnUnits);return result;

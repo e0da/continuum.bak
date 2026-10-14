@@ -21,7 +21,7 @@ namespace KspContinuum
         public void SetResourceQuantity(int slot, double quantity)
         {
             World.CheckStep(this); World.CheckResourcePublication(Bank, slot, quantity);
-            Bank.ResourceQuantity[slot] = quantity;
+            Bank.WriteResourceQuantity(slot, quantity);
         }
         public double GetResourceQuantity(int slot) { World.CheckStep(this); return Bank.ResourceQuantity[slot]; }
         public void SetTemperature(int part, double kelvin)
@@ -306,6 +306,7 @@ namespace KspContinuum
 
         internal static void RefreshMass(OwnedRuntimeBank bank, bool preserveMaterialMotion)
         {
+            if (bank.MassPropertiesValid) return;
             long begin=bank.Work==null?0:bank.Work.Begin();
             try
             {
@@ -345,6 +346,7 @@ namespace KspContinuum
                     bank.Properties[r] = after;
                 }
             }
+            bank.MassPropertiesValid = true;
             }
             finally{if(bank.Work!=null)bank.Work.Mass(bank.ResourceQuantity.Length,begin);}
         }
@@ -487,6 +489,7 @@ namespace KspContinuum
                 removedEnergy += projection.RemovedKineticEnergy; AssemblyModel.Finite(removedEnergy);
             }
             EnsurePropertyOwners(candidate); ValidateBank(candidate);
+            candidate.MassPropertiesValid = true;
             candidate.Stamp = new OwnedRuntimeStamp(checked(before.Stamp.Epoch + 1), checked(before.Stamp.StateRevision + 1),
                 topology.Revision, before.Stamp.DefinitionRevision, before.Stamp.FrameRevision, before.Stamp.Time, before.Stamp.FrameId);
             PublishCold(candidate); LastTopologyRemovedEnergy = removedEnergy; return current.Stamp;
@@ -614,6 +617,7 @@ namespace KspContinuum
             bank.PropertyOwners = null; EnsurePropertyOwners(bank);
             for (int r = 0; r < topology.RegionCount; r++) { bank.Properties[r] = bank.PropertyOwners[r].Combine(); RequireCondition(bank.Properties[r]); }
             ValidateRestoredMass(bank); ValidateBank(bank);bank.Thermal.ValidateClock(stamp.Time);
+            bank.MassPropertiesValid = true;
             long lastSequence = -1; double lastEnd = double.NegativeInfinity;
             foreach (var record in snapshot.InputHistory)
             {
