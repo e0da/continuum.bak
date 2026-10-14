@@ -134,6 +134,8 @@ namespace KspContinuum
             if (Array.IndexOf(arguments, "--continuum-scale-profile") < 0) return;
             if (Array.IndexOf(arguments, "--continuum-live-setdrag-provider") >= 0 &&
                 Array.IndexOf(arguments, "--continuum-setdrag-quit-after-qualification") >= 0) return;
+            if (Array.IndexOf(arguments, "--continuum-input-cadence-census") >= 0 &&
+                Array.IndexOf(arguments, "--continuum-input-cadence-quit") >= 0) return;
             try
             {
                 PrepareDirectory(); quitAfterQualification = true;
