@@ -74,7 +74,7 @@ namespace KspContinuum
             var rows = new List<OwnedRuntimeConnection>(); var ids = new HashSet<long>();
             foreach (var row in source)
             {
-                if (rows.Count >= OwnedRuntimeDefinition.MaximumParts * 16 || !ids.Add(row.Id))
+                if (rows.Count >= definition.Capacity.MaxConnections || !ids.Add(row.Id))
                     throw new ArgumentException("Connections must be bounded with unique identities.");
                 rows.Add(row);
             }

@@ -74,15 +74,19 @@ namespace KspContinuum
         internal readonly int[][] BodyResources;
         public OwnedRuntimeDefinition(string id, long revision, OwnedRuntimePartDefinition[] parts,
             OwnedRuntimeBodyDefinition[] bodies, OwnedRuntimeResourceDefinition[] resources, long[] providerKeys = null)
+            : this(id, revision, parts, bodies, resources, providerKeys, OwnedRuntimeCapacity.Native) { }
+        public OwnedRuntimeDefinition(string id, long revision, OwnedRuntimePartDefinition[] parts,
+            OwnedRuntimeBodyDefinition[] bodies, OwnedRuntimeResourceDefinition[] resources, long[] providerKeys, OwnedRuntimeCapacity capacity)
         {
+            if (capacity == null) throw new ArgumentNullException("capacity");
             if (string.IsNullOrEmpty(id) || revision < 0) throw new ArgumentException("Definition identity/revision is invalid.");
             if (parts == null || bodies == null || resources == null || parts.Length == 0 || bodies.Length == 0
-                || parts.Length > MaximumParts || bodies.Length > parts.Length || resources.Length > MaximumResources)
+                || parts.Length > capacity.MaxParts || bodies.Length > parts.Length || resources.Length > capacity.MaxResources)
                 throw new ArgumentException("Definition dimensions are invalid.");
             this.parts = (OwnedRuntimePartDefinition[])parts.Clone(); this.bodies = (OwnedRuntimeBodyDefinition[])bodies.Clone();
             this.resources = (OwnedRuntimeResourceDefinition[])resources.Clone();
             this.providerKeys = providerKeys == null ? new long[0] : (long[])providerKeys.Clone();
-            if (this.providerKeys.Length > MaximumProviderStates) throw new ArgumentException("Provider state is unbounded.");
+            if (this.providerKeys.Length > capacity.MaxProviderStates) throw new ArgumentException("Provider state is unbounded.");
             Array.Sort(this.parts, (a, b) => Compare(a, b, a == null ? 0 : a.Id, b == null ? 0 : b.Id));
             Array.Sort(this.bodies, (a, b) => Compare(a, b, a == null ? 0 : a.Id, b == null ? 0 : b.Id));
             Array.Sort(this.resources, (a, b) => Compare(a, b, a == null ? 0 : a.Id, b == null ? 0 : b.Id));
@@ -104,13 +108,14 @@ namespace KspContinuum
             for (int b = 0; b < BodyResources.Length; b++) BodyResources[b] = bodyResources[b].ToArray();
             var keys = new HashSet<long>(); foreach (long key in this.providerKeys)
                 if (!keys.Add(key)) throw new ArgumentException("Provider-state keys must be unique.");
-            Id = id; Revision = revision;
+            Id = id; Revision = revision; Capacity = capacity;
         }
         static int Compare(object a, object b, long ai, long bi)
         { if (a == null || b == null) throw new ArgumentException("Definition rows cannot be null."); return ai.CompareTo(bi); }
         static void Add(Dictionary<long, int> target, bool isNull, long id, int slot)
         { if (isNull || target.ContainsKey(id)) throw new ArgumentException("Definition rows require unique nonnull identities."); target.Add(id, slot); }
         public string Id { get; private set; }
+        public OwnedRuntimeCapacity Capacity { get; private set; }
         public long Revision { get; private set; }
         public int PartCount { get { return parts.Length; } }
         public int BodyCount { get { return bodies.Length; } }

@@ -46,6 +46,7 @@ namespace KspContinuum
         void Check() { if (Volatile.Read(ref disposed) != 0) throw new ObjectDisposedException("OwnedRuntimeReadLease"); }
         public OwnedRuntimeStamp Stamp { get { Check(); return bank.Stamp; } }
         internal object SourceIdentity {get {Check();return bank;}}
+        internal OwnedRuntimeBank Bank { get { Check(); return bank; } }
         public OwnedRuntimeDefinition Definition { get { Check(); return bank.Definition; } }
         public OwnedRuntimeTopology Topology { get { Check(); return bank.Topology; } }
         public int PartCount { get { Check(); return bank.Definition.PartCount; } }

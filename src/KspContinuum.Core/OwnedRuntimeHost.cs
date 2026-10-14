@@ -81,6 +81,33 @@ namespace KspContinuum
         }
         void RequireWorkerThread()
         {if(workerThread!=0 && workerThread!=Thread.CurrentThread.ManagedThreadId)throw new InvalidOperationException("The simulation worker owns this runtime host.");}
+        internal T WithStateRead<T>(Func<OwnedRuntimeReadLease,T> action)
+        {
+            if(action==null)throw new ArgumentNullException("action");
+            lock(gate)
+            {
+                RequireWorkerThread();
+                if(advancing || !(schedule is OwnedRuntimeBuiltinSchedule))throw new InvalidOperationException("State storage requires an idle builtin schedule with no hidden schedule state.");
+                if(!Systems.IsBoundTo(World))throw new InvalidOperationException("State storage requires systems bound to its actual world owner.");
+                bool admitted=false,entered=false;advancing=true;
+                try
+                {
+                    World.EnterAdmission(World.Stamp);admitted=true;
+                    Systems.EnterExecution();entered=true;
+                    if(Systems.HasScalarSupply)throw new InvalidOperationException("State storage does not yet retain scalar supply configuration and accounting.");
+                    using(var read=World.AcquireRead())return action(read);
+                }
+                finally {try {if(entered)Systems.ExitExecution();}finally {try {if(admitted)World.ExitAdmission();}finally {advancing=false;}}}
+            }
+        }
+        internal static OwnedRuntimeHost RestoreBuiltinState(OwnedRuntimeWorld world,OwnedRuntimeSystems systems,string sourceSha256,long codeGeneration)
+        {
+            RequireBuiltinStateImage(sourceSha256,codeGeneration);
+            if(systems==null||!systems.IsBoundTo(world))throw new InvalidOperationException("Restored systems belong to a different world.");
+            var host=new OwnedRuntimeHost(world,systems);host.CodeGeneration=codeGeneration;return host;
+        }
+        internal static void RequireBuiltinStateImage(string sourceSha256,long codeGeneration)
+        {if(sourceSha256!=BuiltinSourceSha256 || codeGeneration<0)throw new InvalidOperationException("State storage requires the exact loaded builtin executable image and a valid generation.");}
         public OwnedRuntimeHostCheckpoint CaptureCheckpoint(OwnedRuntimeImportResult imported,OwnedRuntimeControls controls,OwnedRuntimeEnvironment environment,OwnedRuntimeStepPlan plan)
         {
             lock(gate)

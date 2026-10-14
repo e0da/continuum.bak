@@ -107,7 +107,8 @@ internal static partial class Program
             CapacityFixture fixture = Measure(receipt, "fixture-construction", () => new CapacityFixture(options));
             receipt.AuthoredParts = fixture.Parts.Length; receipt.PhysicalBodies = fixture.Bodies.Length; receipt.ResourceRows = fixture.Resources.Length; receipt.ProviderStateRows = fixture.ProviderKeys.Length;
             receipt.ActuatorRows = fixture.Actuators.Length; receipt.EnabledActuatorRows = fixture.ActiveRows; receipt.SurfaceRows = fixture.Surfaces.Length; receipt.ThermalEdges = fixture.ThermalLinks.Length;
-            var definition = Measure(receipt, "definition-construction", () => new OwnedRuntimeDefinition("generated-" + receipt.FixtureSha256, 0, fixture.Parts, fixture.Bodies, fixture.Resources, fixture.ProviderKeys));
+            var definition = Measure(receipt, "definition-construction", () => new OwnedRuntimeDefinition("generated-" + receipt.FixtureSha256, 0, fixture.Parts, fixture.Bodies, fixture.Resources, fixture.ProviderKeys,
+                options.StateFormat == "columnar" ? OwnedRuntimeCapacity.Research : OwnedRuntimeCapacity.Native));
             var topology = Measure(receipt, "topology-compilation", () => OwnedRuntimeTopology.Compile(definition, fixture.Connections));
             receipt.RigidRegions = topology.RegionCount; receipt.Connections = topology.ConnectionCount;
             Need(topology.RegionCount == options.Regions, "Compiled region count differs from authored partition.");
@@ -120,7 +121,7 @@ internal static partial class Program
             var systems = Measure(receipt, "systems-construction", () => new OwnedRuntimeSystems(world, fixture.Actuators, fixture.Surfaces, fixture.ThermalLinks, observeClock: true, wheelProviderSlots: fixture.WheelSlots));
             Measure(receipt, "systems-configuration", () => { for (int a = 0; a < fixture.Enabled.Length; a++) systems.SetEnabled(a, fixture.Enabled[a]); systems.SetExecutionStrategy(options.Strategy == "compiled" ? OwnedRuntimeExecutionStrategy.Compiled : OwnedRuntimeExecutionStrategy.Reference); world.SetWorkObservation(world.Stamp, true); return true; });
             var host = Measure(receipt, "host-construction", () => new OwnedRuntimeHost(world, systems));
-            var imported = new OwnedRuntimeImportResult { World = world, Systems = systems, Source = fixture.Source(receipt.FixtureSha256, receipt.PartRecipeSha256) };
+            var imported = options.StateFormat == "legacy" ? new OwnedRuntimeImportResult { World = world, Systems = systems, Source = fixture.Source(receipt.FixtureSha256, receipt.PartRecipeSha256) } : null;
             var environment = fixture.Environment; var controls = fixture.Controls; var plan = new OwnedRuntimeStepPlan(options.Delta);
             Measure(receipt, "initial-analytic-checks", () => { Check(fixture, world, receipt); return true; });
             if (options.DeadlineProbe)
@@ -139,6 +140,9 @@ internal static partial class Program
             Measure(receipt, "step-steady", () => { for (int s = 1; s < options.Steps; s++) { Cancellation(); host.Advance(options.Delta, fixture.Input, environment, controls); receipt.CompletedSteps++; Frontier(receipt, world); } return true; });
             receipt.Systems = systems.Counters.Snapshot(); receipt.BankWork = world.Work;
             Measure(receipt, "stepped-analytic-checks", () => { Check(fixture, world, receipt); return true; });
+            if (options.StateFormat == "columnar") RunColumnarLifecycle(output, receipt, fixture, host, controls, environment, plan);
+            else
+            {
             var checkpoint = Measure(receipt, "checkpoint-capture", () => host.CaptureCheckpoint(imported, controls, environment, plan));
             byte[] bytes = Measure(receipt, "checkpoint-encode", () => OwnedRuntimeCheckpointBinary.Encode(checkpoint)); receipt.CheckpointBytes = bytes.Length; receipt.CheckpointSha256 = Hash(bytes);
             Measure(receipt, "checkpoint-write", () => { WriteNew(Path.Combine(output, "checkpoint.ofcb"), bytes); return true; });
@@ -166,6 +170,7 @@ internal static partial class Program
                 Need(original.AsSpan().SequenceEqual(restored), "Complete original/restored continuation differs."); receipt.ContinuationPacketIdentical = true; receipt.ContinuationSha256 = Hash(original);
                 Check(fixture, world, receipt); Check(fixture, restoredState.World, receipt); return true;
             });
+            }
             receipt.ContinuationSteps = options.ContinuationSteps; receipt.SimulationTime = world.Stamp.Time; receipt.Status = "passed"; receipt.ActiveStage = "complete";
         }
         catch (OperationCanceledException error) { receipt.Status = "interrupted"; receipt.Failure = error.ToString(); receipt.ExitCode = 130; }
@@ -249,6 +254,7 @@ internal static partial class Program
             {
                 case "--mode": if (value != "runtime") throw new ArgumentException("This entry point admits runtime mode only."); break;
                 case "--family": result.Family = value; break; case "--provider": result.Provider = value; break; case "--strategy": result.Strategy = value; break;
+                case "--state-format": result.StateFormat = value; break;
                 case "--parts": result.Parts = Number(); break; case "--bodies": result.Bodies = Number(); break; case "--regions": result.Regions = Number(); break;
                 case "--steps": result.Steps = Number(); break; case "--continuation-steps": result.ContinuationSteps = Number(); break;
                 case "--delta": result.Delta = Real(); break; case "--active-fraction": result.ActiveFraction = Real(); break; case "--throttle": result.Throttle = Real(); break;

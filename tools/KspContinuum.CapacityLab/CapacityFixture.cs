@@ -5,6 +5,7 @@ internal sealed class CapacityOptions
     public string Family { get; set; } = "station";
     public string Provider { get; set; } = "wheel";
     public string Strategy { get; set; } = "reference";
+    public string StateFormat { get; set; } = "legacy";
     public int Parts { get; set; } = 4096;
     public int Bodies { get; set; } = 256;
     public int Regions { get; set; } = 1;
@@ -17,6 +18,7 @@ internal sealed class CapacityOptions
     public bool DeadlineProbe { get; set; }
     public void Validate()
     {
+        if (StateFormat != "legacy" && StateFormat != "columnar") throw new ArgumentException("State format must be legacy|columnar.");
         if (Family != "station" && Family != "grid" || Provider != "wheel" && Provider != "engine" && Provider != "none" || Strategy != "reference" && Strategy != "compiled")
             throw new ArgumentException("Family must be station|grid, provider wheel|engine|none, and strategy reference|compiled.");
         if (!PowerOfTwo(Parts) || !PowerOfTwo(Bodies) || !PowerOfTwo(Regions) || Regions > Bodies || Bodies > Parts)
@@ -57,21 +59,22 @@ internal sealed class CapacityFixture
     public CapacityFixture(CapacityOptions options)
     {
         Options = options;
-        if (options.Parts > OwnedRuntimeDefinition.MaximumParts)
-            throw new ArgumentOutOfRangeException(nameof(options.Parts), "Current Core definition admits at most " + OwnedRuntimeDefinition.MaximumParts + " authored parts.");
+        int maxParts = options.StateFormat == "columnar" ? OwnedRuntimeCapacity.Research.MaxParts : OwnedRuntimeDefinition.MaximumParts;
+        if (options.Parts > maxParts)
+            throw new ArgumentOutOfRangeException(nameof(options.Parts), "Selected state admission permits at most " + maxParts + " authored parts.");
         Parts = new OwnedRuntimePartDefinition[options.Parts]; Bodies = new OwnedRuntimeBodyDefinition[options.Bodies];
         Resources = new OwnedRuntimeResourceDefinition[options.Parts * (options.Provider == "engine" ? 2 : 1)];
         ProviderKeys = options.Provider == "wheel" ? new long[options.Parts] : Array.Empty<long>();
         Actuators = options.Provider == "none" ? Array.Empty<OwnedRuntimeActuatorSpec>() : new OwnedRuntimeActuatorSpec[options.Parts];
         WheelSlots = new int[Actuators.Length]; Enabled = new bool[Actuators.Length];
         Surfaces = new OwnedRuntimeSurfaceSpec[options.Parts]; ThermalLinks = new OwnedRuntimeThermalLink[options.Parts - options.Regions];
-        Connections = new OwnedRuntimeConnection[options.Bodies - options.Regions]; BodyBindings = new OwnedRuntimeBodyBinding[options.Bodies];
+        Connections = new OwnedRuntimeConnection[options.Bodies - options.Regions]; BodyBindings = options.StateFormat == "legacy" ? new OwnedRuntimeBodyBinding[options.Bodies] : Array.Empty<OwnedRuntimeBodyBinding>();
         Vec[] coordinates = Coordinates(options.Family, BodiesPerRegion);
         int edge = 0, thermal = 0, activePerRegion = (int)(PartsPerRegion * options.ActiveFraction);
         for (int b = 0; b < Bodies.Length; b++)
         {
             Bodies[b] = new OwnedRuntimeBodyDefinition(b + 1, new RigidAssemblyMember(b, 1, coordinates[b % BodiesPerRegion], Rotation.Identity, new Vec(), new Vec(1, 1, 1), Rotation.Identity));
-            BodyBindings[b] = new OwnedRuntimeBodyBinding { sourceBodyId = b + 1, bodyId = b + 1, bodySlot = b };
+            if (BodyBindings.Length != 0) BodyBindings[b] = new OwnedRuntimeBodyBinding { sourceBodyId = b + 1, bodyId = b + 1, bodySlot = b };
             if (b % BodiesPerRegion != 0) Connections[edge] = new OwnedRuntimeConnection(++edge, (b - 1) * PartsPerBody + 1, b * PartsPerBody + 1);
         }
         for (int p = 0; p < Parts.Length; p++)

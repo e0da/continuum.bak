@@ -7,7 +7,7 @@ costs cover construction, stepping, deadline queries, persistence, rollback and
 exact continuation. This is a standalone numeric consumer: stock KSP hosting,
 imported assets, rendering, contacts and flexible joints remain separate gates.
 
-## Observed frontier
+## Earlier legacy-contract frontier
 
 | Workload | Result |
 | --- | --- |
@@ -82,12 +82,45 @@ zeros are preserved and mean unavailable. The 65,536-independent-body refusal
 had a concurrent test build: its timing is not accepted as isolated cost
 evidence, although the committed state and source-contract failure hold.
 
-The next architecture is versioned columnar/segmented state interchange with
-generated/numeric provenance separate from native KSP bindings. Preserve
-stable identities, bounded admission and exact future-relevant continuation.
-The present 64 MiB payload/element bounds remain unchanged. Thermal forcing,
-snapshot copies and DTO/vector construction still amplify memory; raising
-constants alone would not qualify a larger runtime. Keep useful mission growth
-and adversarial contact queries together, then qualify decisive changes in the
+## Segmented state replacement
+
+The new [columnar store](segmented-state.md) separates standalone provenance from
+KSP binding ledgers. Its producer reads the actual committed bank under exclusive
+world/configuration admission, and reuses bounded segment scratch. Its reader
+validates budgets and integrity before constructing a new owner. Dormant thermal
+forcing arrays remain compact; public legacy cloning still materializes the
+original dense schema. Explicit research capacity replaces the standalone
+definition admission contract. Native/legacy gates and the old 64 MiB codec
+remain unchanged.
+
+| New numeric workload | Complete lifecycle | Image bytes | Hot 15-step interval |
+| --- | --- | --- | --- |
+| 65,536 parts, bodies and independent regions; no actuators | 3.145 s | 44,152,492 | 294.58 ms |
+| 131,072 parts, 8,192 bodies, 16 regions, 16,384 enabled engines | 3.779 s | 63,078,504 | 377.69 ms |
+| 1,048,576 parts, 65,536 bodies, 128 regions, 131,072 enabled engines | 27.671 s | 505,433,418 | 3,237.08 ms |
+
+Every row passed independent physical/resource checks, exact canonical rewrite,
+discarded-bank identity and three-step original/restored continuation. The final
+row has 2,097,152 resource rows and approximately 4.70 GB at the largest sampled
+process working set. Cumulative allocation was 7.64 GB; peak RSS remains
+unavailable. This is a short generated system-update/rigid-region workload,
+not a million-body collision solve or million-part rendered flight.
+
+For the matched 4,096-part engine/deadline recipe, a fresh retained baseline
+completed in 419.72 ms with 173.35 MB cumulative allocation. Two new-store
+observations completed in 241.20 / 233.31 ms with 30.84 / 30.85 MB: approximately
+43–44% lower complete cost and 82% lower allocation. Images decreased from
+3,788,384 to 1,968,505 bytes. Persistence format, buffer reuse and compact dormant
+state are declared treatments; the nominal suite independently proves full
+legacy/new numerical continuation. This is complete-lifecycle evidence, not an
+isolated codec or FPS claim. The earlier 65,536-independent-body and
+131,072-part refusals remain preserved as historical results.
+
+The million-part run now exposes actual computation costs: thermal updates and
+scalar/mass work dominate the retained counters, while rigid-region integration
+is small. These nested counters are nonadditive. The 15-step interval averages
+about 216 ms per step, so the model is not real-time at its 64 Hz local interval.
+Next redesign should target the measured thermal/scalar/mass data paths and
+scheduling, while carrying this exact state and continuation proof into the
 installed flight consumer. See [scale frontier](scale-frontier.md) and
 [laboratory CLI](../tools/KspContinuum.CapacityLab/README.md).

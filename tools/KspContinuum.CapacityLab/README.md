@@ -23,6 +23,31 @@ The requested active count per region must be integral and paired (except a
 single-part region); unrepresentable requests reject rather than round down.
 No enabled resource/provider state is silently removed to accelerate a case.
 
+`--state-format legacy|columnar` selects the persistence contract; legacy is the
+default for existing recipes. Columnar mode admits explicit research capacity
+through 1,048,576 parts and uses generated provenance without native body/process
+bindings. It writes bounded segments from the pinned retained bank, restores a
+new owner, and compares complete files after rewrite, discarded mutation and
+future continuation. Checkpoint files use `.ocss`; no whole-file byte arrays or
+legacy per-part checkpoint DTOs are constructed on that path. Limits cover
+dimensions, encoded bytes, logical elements and conservative restore allocation.
+The receipt separates file writing, disk hashing and read/restore costs.
+Canonical restore and rollback checks compare streaming writes to the saved
+checkpoint instead of saving duplicate images. The checkpoint and both final
+continuation images remain available as raw evidence.
+
+```text
+dotnet tools/KspContinuum.CapacityLab/bin/Release/net8.0/KspContinuum.CapacityLab.dll --mode runtime --state-format columnar --family grid --parts 131072 --bodies 8192 --regions 16 --provider engine --active-fraction 0.125 --throttle 0.25 --steps 16 --delta 0.015625 --strategy compiled --deadline-probe true --output /ABSOLUTE/NEW/columnar-engine-131072
+```
+
+The new host store supports the actual builtin executable image. Custom schedule
+state, scalar supply configuration/accounting, flight-session debt/events and
+renderer state are outside this first contract and must be retained separately;
+unrepresented custom schedules and scalar supply reject explicitly. Native KSP
+sidecars retain their existing strict validation and bounds. Larger numeric
+admission does not qualify larger KSP flights. See
+[segmented state](../../docs/segmented-state.md) for the wire and ownership contract.
+
 `station` uses a centered line of unit dry bodies; `grid` uses a centered lattice.
 Authored parts and point resources alias their body's origin. Parts exchange heat
 along a declared path and radiate against a 300 K environment. Region roots are
@@ -63,6 +88,11 @@ the public imported-runtime checkpoint facade with that generated source ledger.
 Current Core definition and codec bounds remain real admission limits; source
 body mappings currently cap at 50,000 and payloads at 64 MiB. Refusals preserve
 the active stage and completed work instead of truncating rows.
+
+Those source-ledger and payload limits describe legacy mode. Columnar mode has
+an independent versioned store and explicit admission budgets. The existing
+`--mode compare` command compares legacy packets across builds; it does not
+normalize columnar and legacy formats into a shared semantic image.
 
 Spatial mode is a separate consumer of `CapacityBroadphase`:
 

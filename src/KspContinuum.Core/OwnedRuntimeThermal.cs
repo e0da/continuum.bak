@@ -32,30 +32,56 @@ namespace KspContinuum
         public int segmentCount;
         public double[] segmentDuration,segmentHeat,segmentConvection,segmentConvectionSource,segmentRadiation,segmentRadiationSource;
         public OwnedRuntimeThermalPolicy Policy {get{return new OwnedRuntimeThermalPolicy(independent,maximumLagSeconds,maximumDeferredKelvin,absoluteKelvinError,relativeError,maximumRefinements);}}
+        bool canonicalDormant,canonicalTail=true;
         public OwnedRuntimeThermalState(){}
         internal OwnedRuntimeThermalState(int parts,double time=0)
-        {integratedTime=time;heatJoules=new double[parts];convectionExposure=new double[parts];convectionSource=new double[parts];radiationExposure=new double[parts];radiationSource=new double[parts];segmentDuration=new double[SegmentCapacity];int count=checked(parts*SegmentCapacity);segmentHeat=new double[count];segmentConvection=new double[count];segmentConvectionSource=new double[count];segmentRadiation=new double[count];segmentRadiationSource=new double[count];}
+        {integratedTime=time;heatJoules=new double[parts];convectionExposure=new double[parts];convectionSource=new double[parts];radiationExposure=new double[parts];radiationSource=new double[parts];segmentDuration=new double[SegmentCapacity];if(parts>int.MaxValue/SegmentCapacity)throw new ArgumentException("Thermal logical capacity overflow.");segmentHeat=segmentConvection=segmentConvectionSource=segmentRadiation=segmentRadiationSource=Array.Empty<double>();canonicalDormant=true;}
         internal void Apply(OwnedRuntimeThermalPolicy policy)
         {independent=policy.Independent;maximumLagSeconds=policy.MaximumLagSeconds;maximumDeferredKelvin=policy.MaximumDeferredKelvin;absoluteKelvinError=policy.AbsoluteKelvinError;relativeError=policy.RelativeError;maximumRefinements=policy.MaximumRefinements;}
+        internal void EnsureSegmentStorage()
+        {
+            int count=checked(heatJoules.Length*SegmentCapacity);
+            if(segmentHeat.Length==count&&segmentConvection.Length==count&&segmentConvectionSource.Length==count&&segmentRadiation.Length==count&&segmentRadiationSource.Length==count)return;
+            if(segmentHeat.Length!=0||segmentConvection.Length!=0||segmentConvectionSource.Length!=0||segmentRadiation.Length!=0||segmentRadiationSource.Length!=0||segmentCount!=0)throw new ArgumentException("Compact thermal capacity differs.");
+            var h=new double[count];var c=new double[count];var cs=new double[count];var r=new double[count];var rs=new double[count];
+            segmentHeat=h;segmentConvection=c;segmentConvectionSource=cs;segmentRadiation=r;segmentRadiationSource=rs;
+        }
+        internal void PrepareSegmentAppend()
+        {EnsureSegmentStorage();canonicalDormant=false;}
         internal void CopyFrom(OwnedRuntimeThermalState s)
         {
-            int previousSegments=segmentCount;
+            if(ReferenceEquals(this,s))return;
+            int previousSegments=segmentCount;bool previousDormant=canonicalDormant,previousTail=canonicalTail;
+            if(s==null||s.heatJoules==null||s.heatJoules.Length!=heatJoules.Length)throw new ArgumentException("Thermal copy dimensions differ.");
+            if(!s.canonicalDormant)EnsureSegmentStorage();
             schema=s.schema;planId=s.planId;independent=s.independent;integratedTime=s.integratedTime;pendingDuration=s.pendingDuration;
             maximumLagSeconds=s.maximumLagSeconds;maximumDeferredKelvin=s.maximumDeferredKelvin;absoluteKelvinError=s.absoluteKelvinError;relativeError=s.relativeError;
             maximumRefinements=s.maximumRefinements;passiveFrozenSeconds=s.passiveFrozenSeconds;lastErrorKelvin=s.lastErrorKelvin;
             lastDeferredBoundKelvin=s.lastDeferredBoundKelvin;sourceJoules=s.sourceJoules;exchangeJoules=s.exchangeJoules;lastSubsteps=s.lastSubsteps;
             causalRevision=s.causalRevision;integratedCausalRevision=s.integratedCausalRevision;topologyRevision=s.topologyRevision;advances=s.advances;deferredSteps=s.deferredSteps;
-            if(s.segmentCount!=0||previousSegments!=0)
+            if(!s.canonicalDormant||!previousDormant)
             {Array.Copy(s.heatJoules,heatJoules,heatJoules.Length);Array.Copy(s.convectionExposure,convectionExposure,heatJoules.Length);Array.Copy(s.convectionSource,convectionSource,heatJoules.Length);Array.Copy(s.radiationExposure,radiationExposure,heatJoules.Length);Array.Copy(s.radiationSource,radiationSource,heatJoules.Length);}
             segmentCount=s.segmentCount;Array.Copy(s.segmentDuration,segmentDuration,SegmentCapacity);
-            CopySegments(s.segmentHeat,segmentHeat,previousSegments);CopySegments(s.segmentConvection,segmentConvection,previousSegments);CopySegments(s.segmentConvectionSource,segmentConvectionSource,previousSegments);CopySegments(s.segmentRadiation,segmentRadiation,previousSegments);CopySegments(s.segmentRadiationSource,segmentRadiationSource,previousSegments);
+            CopySegments(s.segmentHeat,segmentHeat,previousSegments,s.canonicalTail,previousTail);CopySegments(s.segmentConvection,segmentConvection,previousSegments,s.canonicalTail,previousTail);CopySegments(s.segmentConvectionSource,segmentConvectionSource,previousSegments,s.canonicalTail,previousTail);CopySegments(s.segmentRadiation,segmentRadiation,previousSegments,s.canonicalTail,previousTail);CopySegments(s.segmentRadiationSource,segmentRadiationSource,previousSegments,s.canonicalTail,previousTail);
+            canonicalDormant=s.canonicalDormant;canonicalTail=s.canonicalTail;
         }
-        void CopySegments(double[] source,double[] target,int previousSegments)
-        {int used=segmentCount*heatJoules.Length;Array.Copy(source,target,used);if(previousSegments>segmentCount)Array.Clear(target,used,(previousSegments-segmentCount)*heatJoules.Length);}
+        void CopySegments(double[] source,double[] target,int previousSegments,bool sourceTail,bool targetTail)
+        {
+            if(target.Length==0){if(segmentCount!=0||!sourceTail)throw new ArgumentException("Nonzero history cannot enter compact thermal storage.");return;}
+            int used=segmentCount*heatJoules.Length;
+            if(!sourceTail){Array.Copy(source,target,target.Length);return;}
+            if(source.Length!=0)Array.Copy(source,target,used);
+            if(!targetTail)Array.Clear(target,used,target.Length-used);
+            else if(previousSegments>segmentCount)Array.Clear(target,used,(previousSegments-segmentCount)*heatJoules.Length);
+        }
+        static bool canonicalZero(double[] values){foreach(double value in values)if(BitConverter.DoubleToInt64Bits(value)!=0)return false;return true;}
         public OwnedRuntimeThermalState Clone()
+        {var result=CloneCompact();result.EnsureSegmentStorage();return result;}
+        internal OwnedRuntimeThermalState CloneCompact()
         {if(heatJoules==null)throw new ArgumentException("Thermal ledger absent.");Validate(heatJoules.Length);var result=new OwnedRuntimeThermalState(heatJoules.Length);result.CopyFrom(this);return result;}
         internal void Validate(int parts)
         {
+            canonicalDormant=false;canonicalTail=true;
             if(schema!="continuum-owned-thermal-state/v1" || planId==null || planId.Length>256 || causalRevision<0 || integratedCausalRevision<0 || integratedCausalRevision>causalRevision || topologyRevision<0)
                 throw new ArgumentException("Thermal causal metadata differs.");
             AssemblyModel.Positive(maximumLagSeconds);AssemblyModel.Positive(maximumDeferredKelvin);AssemblyModel.Positive(absoluteKelvinError);AssemblyModel.Positive(relativeError);
@@ -71,17 +97,21 @@ namespace KspContinuum
             double duration=0;for(int i=0;i<SegmentCapacity;i++){Nonnegative(segmentDuration[i]);if(i<segmentCount){AssemblyModel.Positive(segmentDuration[i]);duration+=segmentDuration[i];}else if(segmentDuration[i]!=0)throw new ArgumentException("Unused thermal history duration differs.");}
             if(Math.Abs(duration-pendingDuration)>16*2.2204460492503131e-16*Math.Max(1,Math.Abs(integratedTime+pendingDuration)))throw new ArgumentException("Thermal forcing history clock differs.");
             if(causalRevision-integratedCausalRevision!=segmentCount)throw new ArgumentException("Thermal forcing causal revision differs.");
+            bool compact=segmentHeat!=null&&segmentConvection!=null&&segmentConvectionSource!=null&&segmentRadiation!=null&&segmentRadiationSource!=null&&segmentHeat.Length==0&&segmentConvection.Length==0&&segmentConvectionSource.Length==0&&segmentRadiation.Length==0&&segmentRadiationSource.Length==0;
+            bool dormant=segmentCount==0&&canonicalZero(heatJoules)&&canonicalZero(convectionExposure)&&canonicalZero(convectionSource)&&canonicalZero(radiationExposure)&&canonicalZero(radiationSource);
+            if(compact){if(!dormant)throw new ArgumentException("Compact thermal forcing must represent exact dormant positive zero.");canonicalDormant=true;return;}
             ValidateLedger(heatJoules,segmentHeat,parts);ValidateLedger(convectionExposure,segmentConvection,parts);ValidateLedger(convectionSource,segmentConvectionSource,parts);ValidateLedger(radiationExposure,segmentRadiation,parts);ValidateLedger(radiationSource,segmentRadiationSource,parts);
+            canonicalDormant=dormant&&canonicalTail;
         }
         void ValidateLedger(double[] total,double[] history,int parts)
-        {if(history==null||history.Length!=parts*SegmentCapacity)throw new ArgumentException("Thermal array shape differs.");for(int p=0;p<parts;p++){double sum=0;for(int i=0;i<SegmentCapacity;i++){double value=history[i*parts+p];Nonnegative(value);if(i<segmentCount)sum+=value;else if(value!=0)throw new ArgumentException("Unused thermal forcing history differs.");}if(sum!=total[p])throw new ArgumentException("Thermal energy/exposure ledger differs from exact ordered history.");}}
+        {if(history==null||history.Length!=parts*SegmentCapacity)throw new ArgumentException("Thermal array shape differs.");for(int p=0;p<parts;p++){double sum=0;for(int i=0;i<SegmentCapacity;i++){double value=history[i*parts+p];Nonnegative(value);if(i<segmentCount)sum+=value;else {if(value!=0)throw new ArgumentException("Unused thermal forcing history differs.");if(BitConverter.DoubleToInt64Bits(value)!=0)canonicalTail=false;}}if(sum!=total[p])throw new ArgumentException("Thermal energy/exposure ledger differs from exact ordered history.");}}
         static void ValidateArray(double[] array,int parts)
         {if(array==null||array.Length!=parts)throw new ArgumentException("Thermal array shape differs.");foreach(double value in array)Nonnegative(value);}
         internal void ValidateClock(double time)
         {double end=integratedTime+pendingDuration;AssemblyModel.Finite(end);if(Math.Abs(end-time)>16*2.2204460492503131e-16*Math.Max(1,Math.Abs(time)))throw new ArgumentException("Thermal causal frontier differs from physical time.");}
         internal static void Nonnegative(double value){AssemblyModel.Finite(value);if(value<0)throw new ArgumentException("Thermal quantity must be nonnegative.");}
         internal void Clear()
-        {Array.Clear(heatJoules,0,heatJoules.Length);Array.Clear(convectionExposure,0,heatJoules.Length);Array.Clear(convectionSource,0,heatJoules.Length);Array.Clear(radiationExposure,0,heatJoules.Length);Array.Clear(radiationSource,0,heatJoules.Length);Array.Clear(segmentDuration,0,SegmentCapacity);Array.Clear(segmentHeat,0,segmentHeat.Length);Array.Clear(segmentConvection,0,segmentHeat.Length);Array.Clear(segmentConvectionSource,0,segmentHeat.Length);Array.Clear(segmentRadiation,0,segmentHeat.Length);Array.Clear(segmentRadiationSource,0,segmentHeat.Length);segmentCount=0;pendingDuration=0;}
+        {Array.Clear(heatJoules,0,heatJoules.Length);Array.Clear(convectionExposure,0,heatJoules.Length);Array.Clear(convectionSource,0,heatJoules.Length);Array.Clear(radiationExposure,0,heatJoules.Length);Array.Clear(radiationSource,0,heatJoules.Length);Array.Clear(segmentDuration,0,SegmentCapacity);Array.Clear(segmentHeat,0,segmentHeat.Length);Array.Clear(segmentConvection,0,segmentHeat.Length);Array.Clear(segmentConvectionSource,0,segmentHeat.Length);Array.Clear(segmentRadiation,0,segmentHeat.Length);Array.Clear(segmentRadiationSource,0,segmentHeat.Length);segmentCount=0;pendingDuration=0;canonicalDormant=true;canonicalTail=true;}
     }
     internal sealed class OwnedRuntimeThermalSolver
     {

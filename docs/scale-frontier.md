@@ -115,7 +115,7 @@ At source checkpoint `5fd1aff`, `OwnedRuntimeDefinition` admits at most 65,536
 parts; `SimulationBatch` and the legacy coast path admit 4,096 bodies. Supply
 capture bounds each solar/command/engine table at 4,096 rows. Runtime recording
 admits 4,096 parts and 8,192 draws. Numeric checkpoint payloads and module XML are
-bounded at 64 MiB. These are current admission limits, not proven capacity or
+bounded at 64 MiB. These are legacy admission limits, not proven capacity or
 design goals. They can block different families at different sizes.
 
 Include segmented storage, streamed/sectioned persistence, stable identities,
@@ -123,6 +123,14 @@ compiled sparse connectivity, shared immutable assets and resident instance
 publication among the alternatives. Replace an insufficient contract together
 with its readers/writers, overflow checks and restoration obligations. Do not
 silently truncate rows or merely increase every constant and claim support.
+
+The [segmented standalone state contract](segmented-state.md) now crosses the
+definition, source-ledger and legacy payload boundaries without loosening native
+binding validation. Its complete generated lifecycle passed at 1,048,576 parts,
+65,536 physical contributors and 128 rigid regions. A separate 65,536-independent
+body family also passed persistence and exact continuation. These are distinct
+numeric frontiers; rendering, contact response and flexible coupling remain
+separate qualification domains.
 
 Large-scale discovery belongs inside the next sustained-flight implementation.
 Keep one integrated useful mission and one growing adversarial capacity family

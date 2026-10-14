@@ -916,6 +916,7 @@ namespace KspContinuum
             }
             if(state.pendingDuration==0){state.planId=thermalPlanId;state.topologyRevision=bank.Topology.Revision;}
             int segment=state.segmentCount;if(segment>=OwnedRuntimeThermalState.SegmentCapacity)throw new InvalidOperationException("Thermal forcing segment capacity exceeded.");
+            state.PrepareSegmentAppend();
             int offset=segment*heat.Length;state.segmentDuration[segment]=step.DeltaTime;state.segmentCount++;
             state.pendingDuration=step.ExpectedStamp.Time+step.DeltaTime-state.integratedTime;
             AssemblyModel.Positive(state.pendingDuration);
