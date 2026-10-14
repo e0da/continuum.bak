@@ -463,25 +463,23 @@ namespace KspContinuum
                     int body = bodies[i], oldRegion = before.Topology.BodyRegions[body];
                     RigidAssemblyMember old = before.Members[body]; OwnedRuntimeMotion oldMotion = before.RegionMotion[oldRegion];
                     RigidAssemblyProperties oldProperties = before.Properties[oldRegion];
-                    Vec worldCenter = oldMotion.RootPosition + oldMotion.Orientation.Rotate(old.LocalPosition + old.LocalRotation.Rotate(old.LocalCenterOfMass));
-                    Vec oldCenter = oldMotion.RootPosition + oldMotion.Orientation.Rotate(oldProperties.CenterOfMass);
+                    Vec worldLocalArm = oldMotion.Orientation.Rotate(old.LocalPosition + old.LocalRotation.Rotate(old.LocalCenterOfMass) + oldProperties.CenterOfMass * -1);
                     Vec omega = OwnedRuntimeDynamics.AngularVelocity(oldProperties, oldMotion.Orientation, oldMotion.AngularMomentum);
-                    Vec velocity = oldMotion.Velocity + Vec.Cross(omega, worldCenter + oldCenter * -1);
+                    Vec relativeVelocity = oldMotion.Velocity + frame.Velocity * -1 + Vec.Cross(omega, worldLocalArm);
                     RigidAssemblyMember member = old;
                     if (oldRegion != anchor)
                     {
-                        Vec worldOrigin = oldMotion.RootPosition + oldMotion.Orientation.Rotate(old.LocalPosition);
-                        Vec localOrigin = frame.Orientation.Inverse.Rotate(worldOrigin + frame.RootPosition * -1);
+                        Vec localOrigin = frame.Orientation.Inverse.Rotate((oldMotion.RootPosition + frame.RootPosition * -1) + oldMotion.Orientation.Rotate(old.LocalPosition));
                         Rotation localRotation = frame.Orientation.Inverse * oldMotion.Orientation * old.LocalRotation;
                         member = new RigidAssemblyMember(body, old.Mass, localOrigin, localRotation,
                             old.LocalCenterOfMass, old.PrincipalInertia, old.PrincipalRotation);
                     }
                     candidate.Members[body] = member;
-                    motions[i] = new RigidAssemblyMotion(member, frame.Orientation.Inverse.Rotate(velocity), frame.Orientation.Inverse.Rotate(omega));
+                    motions[i] = new RigidAssemblyMotion(member, frame.Orientation.Inverse.Rotate(relativeVelocity), frame.Orientation.Inverse.Rotate(omega));
                 }
                 var projection = RigidAssemblyProjection.Project(motions); candidate.Properties[r] = projection.Properties;
                 candidate.RegionMotion[r] = new OwnedRuntimeMotion { RootPosition = frame.RootPosition, Orientation = frame.Orientation,
-                    Velocity = frame.Orientation.Rotate(projection.Velocity), AngularMomentum = frame.Orientation.Rotate(projection.AngularMomentumAboutCenter) };
+                    Velocity = frame.Velocity + frame.Orientation.Rotate(projection.Velocity), AngularMomentum = frame.Orientation.Rotate(projection.AngularMomentumAboutCenter) };
                 removedEnergy += projection.RemovedKineticEnergy; AssemblyModel.Finite(removedEnergy);
             }
             EnsurePropertyOwners(candidate); ValidateBank(candidate);

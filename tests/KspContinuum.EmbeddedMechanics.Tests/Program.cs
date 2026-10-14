@@ -9,7 +9,7 @@ static class Program
         public readonly OwnedRuntimeSystems Systems;
         public readonly OwnedRuntimeHost Host;
         public readonly OwnedFlightSession Session;
-        public Fixture(bool orbit=false,bool wheel=false,double initialTime=0,double force=11,double fuel=1,double isp=1e100,bool opposing=false)
+        public Fixture(bool orbit=false,bool wheel=false,double initialTime=0,double force=11,double fuel=1,double isp=1e100,bool opposing=false,double mu=4e6)
         {
             var part=new OwnedRuntimePartDefinition(1,"analytic",10,new Vec(),Rotation.Identity,100);
             var body=new OwnedRuntimeBodyDefinition(10,new RigidAssemblyMember(0,10,new Vec(),Rotation.Identity,new Vec(),new Vec(2,3,4),Rotation.Identity));
@@ -18,8 +18,8 @@ static class Program
             var definition=new OwnedRuntimeDefinition("embedded-analytic",0,new[]{part},new[]{body},resources,wheel?new long[]{9}:new long[0]);
             World=new OwnedRuntimeWorld(definition,OwnedRuntimeTopology.Compile(definition,new OwnedRuntimeConnection[0]),new OwnedRuntimeMotion{Orientation=Rotation.Identity},initialTime,"cold");
             var capture=new OwnedFlightCapture{runId="embedded-analytic",processId=1,vesselId="fixture",bodyId="central",nativeManifestSha256=new string('a',64),partSpecsSha256=new string('b',64),
-                sourceEpochSeconds=0,gravitationalParameter=orbit?4e6:1e-20,radiusMeters=1000,atmosphereDepthMeters=0,angularVelocity=new double[3],sunDirection=new[]{1d,0,0},solarFluxWattsPerSquareMeter=0,
-                bodyRotation=new[]{0d,0,0,1},rootPositionBodyRelative=new[]{1200d,0,0},rootRotation=new[]{0d,0,0,1},centerOfMassVelocityInertial=new[]{0d,orbit?Math.Sqrt(4e6/1200):0,0},
+                sourceEpochSeconds=0,gravitationalParameter=orbit?mu:1e-20,radiusMeters=1000,atmosphereDepthMeters=0,angularVelocity=new double[3],sunDirection=new[]{1d,0,0},solarFluxWattsPerSquareMeter=0,
+                bodyRotation=new[]{0d,0,0,1},rootPositionBodyRelative=new[]{1200d,0,0},rootRotation=new[]{0d,0,0,1},centerOfMassVelocityInertial=new[]{0d,orbit?Math.Sqrt(mu/1200):0,0},
                 altitudeMeters=new double[0],densityKilogramsPerCubicMeter=new double[0],temperatureKelvin=new double[0],omissions=new string[0]};
             Session=OwnedFlightSession.SeedCaptured(World,OwnedFlightWorld.Admit(capture,new string('a',64),new string('b',64),new string('c',64)),new Vec(1200,0,0));
             var actuator=wheel?new OwnedRuntimeActuatorSpec(0,OwnedRuntimeActuatorKind.ReactionWheel,new Vec(),new Vec(0,1,0),1,wheelMomentumCapacity:100):
@@ -97,5 +97,17 @@ static class Program
         double loose=Orbit(1e-4),tight=Orbit(1e-5);Need(tight<loose&&tight<.02,"Embedded central gravity did not converge toward independent circular motion: "+loose+" / "+tight);
     }
     public static int Main()
-    {ConstantAndChangingMass();SpinAndWheel();RejectionAndAdmission();Console.WriteLine("PASS embedded mechanics: independent force/depletion integrals, wheel total-H, asymmetric spin energy, orbital convergence, exact clock tails, atomic rejection and builtin stage admission");return 0;}
+    {ConstantAndChangingMass();SpinAndWheel();RejectionAndAdmission();RefinementFloor();Console.WriteLine("PASS embedded mechanics: independent force/depletion integrals, wheel total-H, asymmetric spin energy, orbital convergence, exact clock tails, atomic rejection, fine-domain refinement and builtin stage admission");return 0;}
+    static void RefinementFloor()
+    {
+        const double mu=1e11,radius=1200;var blocked=new Fixture(orbit:true,mu:mu);blocked.Embedded();var prior=blocked.World.Stamp;bool refused=false;
+        try{blocked.Session.AdvanceLocal(blocked.Host,.02,new OwnedRuntimeControls());}catch(OwnedRuntimeMechanicalAccuracyException){refused=true;}
+        Need(refused&&blocked.World.Stamp.Matches(prior),"Frozen coarse floor did not reject its inaccurate private attempt.");
+        var fine=new Fixture(orbit:true,mu:mu);fine.Systems.SetMechanicalPolicy(fine.World.Stamp,new OwnedRuntimeMechanicalPolicy(true,minimumInterval:1e-6,method:OwnedRuntimeMechanicalMethod.EmbeddedMidpoint));
+        fine.Session.AdvanceLocal(fine.Host,.02,new OwnedRuntimeControls());double t=fine.World.Stamp.Time,omega=Math.Sqrt(mu/(radius*radius*radius)),angle=omega*t;
+        Need(t>0&&t<1e-4&&fine.World.Mechanical.lastError<=1&&fine.Host.AdaptiveObservation.Rejected>0,"Fine domain did not refine below the old floor under its unchanged error budgets.");
+        Near(fine.Session.CenterPosition(0),new Vec(radius*Math.Cos(angle),radius*Math.Sin(angle),0),1e-8);
+        Near(fine.Motion.Velocity,new Vec(-radius*omega*Math.Sin(angle),radius*omega*Math.Cos(angle),0),1e-8);
+        var snapshot=fine.World.CaptureSnapshot();var restored=OwnedRuntimeWorld.RestoreSnapshot(snapshot);Need(restored.Mechanical.minimumInterval==1e-6,"Fine domain policy lost checkpoint continuation.");
+    }
 }

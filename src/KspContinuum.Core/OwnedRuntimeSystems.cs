@@ -195,6 +195,8 @@ namespace KspContinuum
         public long ExecutionPlanBuilds,CompiledActuatorRows,InactiveActuatorRows,CompiledSurfaceRows,VacuumSurfaceRows,RegionMotionContexts,RetainedGeometryRows;
         public long ScalarTicks,AeroTicks,ThermalTicks,RegionIntegrationTicks,PlanTicks;
         public long BoundaryProbes,BoundaryResourceCopies,BoundaryResourceRowsCopied,BoundaryTicks;
+        public long DeadlinePlanBuilds,DeadlinePlanHits,DeadlineLocalProbes,DeadlineFallbacks;
+        public long DeadlineAdmissionFallbacks,DeadlineLowerBracketFallbacks,DeadlineUpperBracketFallbacks,DeadlineReplayFallbacks;
         public long Steps, FailedSteps, ActuatorRows, SurfaceRows, ThermalLinks, RegionIntegrations, ObservedTicks;
         public double DeliveredForceNewtonSeconds, DeliveredTorqueNewtonMeterSeconds, PropellantKilograms,
             ElectricUnits, ActuatorHeatJoules;
@@ -245,6 +247,10 @@ namespace KspContinuum
         bool mechanicalCompleted;
         readonly double[] boundaryInitialResources;
         OwnedRuntimeBank boundaryBank;
+        OwnedRuntimeDeadlinePlan deadlinePlan;
+        OwnedRuntimeDeadlineStrategy deadlineStrategy;
+        OwnedRuntimeActuatorBoundary lastActuatorBoundary;
+        bool hasActuatorBoundary;
         int boundaryActuator=-1,boundaryResource=-1;
         string boundaryKind;
         public readonly Rotation ControlOrientation;
@@ -341,6 +347,11 @@ namespace KspContinuum
         public int ThermalLinkCount{get{return links.Length;}}
         public long ConfigurationRevision{get{return configurationRevision;}}
         public OwnedRuntimeExecutionStrategy ExecutionStrategy {get{return executionStrategy;}}
+        public OwnedRuntimeDeadlineStrategy DeadlineStrategy {get{return deadlineStrategy;}}
+        public bool HasActuatorBoundary {get{return hasActuatorBoundary;}}
+        public OwnedRuntimeActuatorBoundary LastActuatorBoundary {get{return lastActuatorBoundary;}}
+        public void SetDeadlineStrategy(OwnedRuntimeStamp expected,OwnedRuntimeDeadlineStrategy strategy)
+        {lock(configurationGate){RequireConfigurationIdle();if(!world.Stamp.Matches(expected)||!Enum.IsDefined(typeof(OwnedRuntimeDeadlineStrategy),strategy))throw new ArgumentException("Deadline selection source/strategy differs.");if(deadlineStrategy!=strategy){long revision=checked(configurationRevision+1);deadlineStrategy=strategy;configurationRevision=revision;deadlinePlan=null;}}}
         public void SetWorkObservation(bool enabled){lock(configurationGate){RequireConfigurationIdle();observeClock=enabled;}}
         internal bool WorkObservation {get{return observeClock;}}
         internal void RecordMechanicalIntegrationTicks(long ticks){if(ticks<0)throw new ArgumentOutOfRangeException("ticks");if(observeClock)Counters.RegionIntegrationTicks+=ticks;}
@@ -357,14 +368,25 @@ namespace KspContinuum
             lock(configurationGate)
             {
                 RequireConfigurationIdle();var s=new OwnedRuntimeSystems(target,actuators,surfaces,links,flowEnabled,observeClock,wheelProviderSlots,ControlOrientation);
-                Array.Copy(enabled,s.enabled,enabled.Length);s.executionStrategy=executionStrategy;s.configurationRevision=configurationRevision;return s;
+                Array.Copy(enabled,s.enabled,enabled.Length);s.executionStrategy=executionStrategy;s.deadlineStrategy=deadlineStrategy;s.configurationRevision=configurationRevision;return s;
             }
         }
         internal void ResetTrialCounters()
-        {Counters.BoundaryProbes=Counters.BoundaryResourceCopies=Counters.BoundaryResourceRowsCopied=Counters.BoundaryTicks=0;Counters.ScalarTicks=Counters.AeroTicks=Counters.ThermalTicks=Counters.RegionIntegrationTicks=Counters.PlanTicks=0;Counters.Steps=Counters.FailedSteps=Counters.ActuatorRows=Counters.SurfaceRows=Counters.ThermalLinks=Counters.RegionIntegrations=Counters.ObservedTicks=0;Counters.ExecutionPlanBuilds=Counters.CompiledActuatorRows=Counters.InactiveActuatorRows=Counters.CompiledSurfaceRows=Counters.VacuumSurfaceRows=Counters.RegionMotionContexts=Counters.RetainedGeometryRows=0;Counters.DeliveredForceNewtonSeconds=Counters.DeliveredTorqueNewtonMeterSeconds=Counters.PropellantKilograms=Counters.ElectricUnits=Counters.ActuatorHeatJoules=0;}
+        {Counters.DeadlineAdmissionFallbacks=Counters.DeadlineLowerBracketFallbacks=Counters.DeadlineUpperBracketFallbacks=Counters.DeadlineReplayFallbacks=0;Counters.DeadlinePlanBuilds=Counters.DeadlinePlanHits=Counters.DeadlineLocalProbes=Counters.DeadlineFallbacks=0;Counters.BoundaryProbes=Counters.BoundaryResourceCopies=Counters.BoundaryResourceRowsCopied=Counters.BoundaryTicks=0;Counters.ScalarTicks=Counters.AeroTicks=Counters.ThermalTicks=Counters.RegionIntegrationTicks=Counters.PlanTicks=0;Counters.Steps=Counters.FailedSteps=Counters.ActuatorRows=Counters.SurfaceRows=Counters.ThermalLinks=Counters.RegionIntegrations=Counters.ObservedTicks=0;Counters.ExecutionPlanBuilds=Counters.CompiledActuatorRows=Counters.InactiveActuatorRows=Counters.CompiledSurfaceRows=Counters.VacuumSurfaceRows=Counters.RegionMotionContexts=Counters.RetainedGeometryRows=0;Counters.DeliveredForceNewtonSeconds=Counters.DeliveredTorqueNewtonMeterSeconds=Counters.PropellantKilograms=Counters.ElectricUnits=Counters.ActuatorHeatJoules=0;}
         internal void AccumulateTrialCounters(OwnedRuntimeSystems s)
-        {Counters.BoundaryProbes+=s.Counters.BoundaryProbes;Counters.BoundaryResourceCopies+=s.Counters.BoundaryResourceCopies;Counters.BoundaryResourceRowsCopied+=s.Counters.BoundaryResourceRowsCopied;Counters.BoundaryTicks+=s.Counters.BoundaryTicks;Counters.ScalarTicks+=s.Counters.ScalarTicks;Counters.AeroTicks+=s.Counters.AeroTicks;Counters.ThermalTicks+=s.Counters.ThermalTicks;Counters.RegionIntegrationTicks+=s.Counters.RegionIntegrationTicks;Counters.PlanTicks+=s.Counters.PlanTicks;Counters.Steps+=s.Counters.Steps;Counters.ActuatorRows+=s.Counters.ActuatorRows;Counters.SurfaceRows+=s.Counters.SurfaceRows;Counters.ThermalLinks+=s.Counters.ThermalLinks;Counters.RegionIntegrations+=s.Counters.RegionIntegrations;Counters.ExecutionPlanBuilds+=s.Counters.ExecutionPlanBuilds;Counters.CompiledActuatorRows+=s.Counters.CompiledActuatorRows;Counters.InactiveActuatorRows+=s.Counters.InactiveActuatorRows;Counters.CompiledSurfaceRows+=s.Counters.CompiledSurfaceRows;Counters.VacuumSurfaceRows+=s.Counters.VacuumSurfaceRows;Counters.RegionMotionContexts+=s.Counters.RegionMotionContexts;Counters.RetainedGeometryRows+=s.Counters.RetainedGeometryRows;Counters.DeliveredForceNewtonSeconds+=s.Counters.DeliveredForceNewtonSeconds;Counters.DeliveredTorqueNewtonMeterSeconds+=s.Counters.DeliveredTorqueNewtonMeterSeconds;Counters.PropellantKilograms+=s.Counters.PropellantKilograms;Counters.ElectricUnits+=s.Counters.ElectricUnits;Counters.ActuatorHeatJoules+=s.Counters.ActuatorHeatJoules;}
+        {Counters.DeadlineAdmissionFallbacks+=s.Counters.DeadlineAdmissionFallbacks;Counters.DeadlineLowerBracketFallbacks+=s.Counters.DeadlineLowerBracketFallbacks;Counters.DeadlineUpperBracketFallbacks+=s.Counters.DeadlineUpperBracketFallbacks;Counters.DeadlineReplayFallbacks+=s.Counters.DeadlineReplayFallbacks;Counters.DeadlinePlanBuilds+=s.Counters.DeadlinePlanBuilds;Counters.DeadlinePlanHits+=s.Counters.DeadlinePlanHits;Counters.DeadlineLocalProbes+=s.Counters.DeadlineLocalProbes;Counters.DeadlineFallbacks+=s.Counters.DeadlineFallbacks;Counters.BoundaryProbes+=s.Counters.BoundaryProbes;Counters.BoundaryResourceCopies+=s.Counters.BoundaryResourceCopies;Counters.BoundaryResourceRowsCopied+=s.Counters.BoundaryResourceRowsCopied;Counters.BoundaryTicks+=s.Counters.BoundaryTicks;Counters.ScalarTicks+=s.Counters.ScalarTicks;Counters.AeroTicks+=s.Counters.AeroTicks;Counters.ThermalTicks+=s.Counters.ThermalTicks;Counters.RegionIntegrationTicks+=s.Counters.RegionIntegrationTicks;Counters.PlanTicks+=s.Counters.PlanTicks;Counters.Steps+=s.Counters.Steps;Counters.ActuatorRows+=s.Counters.ActuatorRows;Counters.SurfaceRows+=s.Counters.SurfaceRows;Counters.ThermalLinks+=s.Counters.ThermalLinks;Counters.RegionIntegrations+=s.Counters.RegionIntegrations;Counters.ExecutionPlanBuilds+=s.Counters.ExecutionPlanBuilds;Counters.CompiledActuatorRows+=s.Counters.CompiledActuatorRows;Counters.InactiveActuatorRows+=s.Counters.InactiveActuatorRows;Counters.CompiledSurfaceRows+=s.Counters.CompiledSurfaceRows;Counters.VacuumSurfaceRows+=s.Counters.VacuumSurfaceRows;Counters.RegionMotionContexts+=s.Counters.RegionMotionContexts;Counters.RetainedGeometryRows+=s.Counters.RetainedGeometryRows;Counters.DeliveredForceNewtonSeconds+=s.Counters.DeliveredForceNewtonSeconds;Counters.DeliveredTorqueNewtonMeterSeconds+=s.Counters.DeliveredTorqueNewtonMeterSeconds;Counters.PropellantKilograms+=s.Counters.PropellantKilograms;Counters.ElectricUnits+=s.Counters.ElectricUnits;Counters.ActuatorHeatJoules+=s.Counters.ActuatorHeatJoules;}
         public OwnedRuntimeActuatorBoundary FindActuatorBoundary(OwnedRuntimeStamp expected,OwnedRuntimeControls controls,double maximumHorizonSeconds)
+        {return deadlineStrategy==OwnedRuntimeDeadlineStrategy.Retained?FindRetainedBoundary(expected,controls,maximumHorizonSeconds):FindActuatorBoundaryExactOracle(expected,controls,maximumHorizonSeconds);}
+        public OwnedRuntimeActuatorBoundary FindActuatorBoundaryExactOracle(OwnedRuntimeStamp expected,OwnedRuntimeControls controls,double maximumHorizonSeconds)
+        {
+            long probes=Counters.BoundaryProbes;var value=FindExactBoundary(expected,controls,maximumHorizonSeconds,true);
+            return PublishBoundary(value,expected,controls,maximumHorizonSeconds,OwnedRuntimeDeadlineStrategy.ExactOracle,"bounded-64-bisection-upper",null,probes);
+        }
+        OwnedRuntimeActuatorBoundary PublishBoundary(OwnedRuntimeActuatorBoundary value,OwnedRuntimeStamp expected,OwnedRuntimeControls controls,double horizon,OwnedRuntimeDeadlineStrategy strategy,string certification,string fallback,long probes)
+        {
+            CheckedBoundary(value,expected);value.Strategy=strategy;value.Certification=certification;value.FallbackReason=fallback;value.ProbeCount=checked((int)(Counters.BoundaryProbes-probes));value.Controls=controls;value.MaximumHorizonSeconds=horizon;lastActuatorBoundary=value;hasActuatorBoundary=true;return value;
+        }
+        OwnedRuntimeActuatorBoundary FindExactBoundary(OwnedRuntimeStamp expected,OwnedRuntimeControls controls,double maximumHorizonSeconds,bool observeBoundaryClock)
         {
             controls.Validate();AssemblyModel.Positive(maximumHorizonSeconds);if(maximumHorizonSeconds>7200)throw new ArgumentOutOfRangeException("maximumHorizonSeconds");
             lock(configurationGate)
@@ -372,7 +394,7 @@ namespace KspContinuum
                 RequireConfigurationIdle();if(!world.Stamp.Matches(expected))throw new InvalidOperationException("Actuator boundary source is stale.");
                 bool compact=executionStrategy==OwnedRuntimeExecutionStrategy.Compiled;
                 if(compact)world.EnterAdmission(expected);
-                long begin=observeClock?Stopwatch.GetTimestamp():0;
+                long begin=observeClock&&observeBoundaryClock?Stopwatch.GetTimestamp():0;
                 try
                 {
                     var result=new OwnedRuntimeActuatorBoundary{Supported=true,Reached=false,DeltaSeconds=maximumHorizonSeconds,Actuator=-1,Resource=-1,Kind="none",SourceStamp=expected,ConfigurationRevision=configurationRevision};
@@ -397,9 +419,80 @@ namespace KspContinuum
                         finally{if(compact){boundaryBank.Members=null;boundaryBank.ProviderState=null;boundaryBank.RegionMotion=null;boundaryBank.Properties=null;}}
                     }
                 }
-                finally{if(compact)world.ExitAdmission();if(observeClock)Counters.BoundaryTicks+=Stopwatch.GetTimestamp()-begin;}
+                finally{if(compact)world.ExitAdmission();if(observeClock&&observeBoundaryClock)Counters.BoundaryTicks+=Stopwatch.GetTimestamp()-begin;}
             }
         }
+        OwnedRuntimeActuatorBoundary FindRetainedBoundary(OwnedRuntimeStamp expected,OwnedRuntimeControls controls,double horizon)
+        {
+            controls.Validate();AssemblyModel.Positive(horizon);if(horizon>7200)throw new ArgumentOutOfRangeException("horizon");
+            lock(configurationGate)
+            {
+                RequireConfigurationIdle();if(!world.Stamp.Matches(expected))throw new InvalidOperationException("Retained deadline source is stale.");
+                long begin=observeClock?Stopwatch.GetTimestamp():0,probes=Counters.BoundaryProbes;string fallback=null,certification=null;
+                var value=new OwnedRuntimeActuatorBoundary{Supported=true,Reached=false,DeltaSeconds=horizon,Actuator=-1,Resource=-1,Kind="none",SourceStamp=expected,ConfigurationRevision=configurationRevision};
+                try
+                {
+                    world.EnterAdmission(expected);
+                    try
+                    {
+                        using(var read=world.AcquireRead())
+                        {
+                            var source=world.CurrentForTrial;if(!read.Stamp.Matches(expected)||!source.Stamp.Matches(expected)||!ReferenceEquals(source.Definition,definition))throw new InvalidOperationException("Retained deadline read changed.");
+                            if(deadlinePlan==null||!deadlinePlan.Matches(source,configurationRevision,controls))
+                            {deadlinePlan=new OwnedRuntimeDeadlinePlan(source,actuators,fuelPools,enabled,flowEnabled,wheelProviderSlots,ControlOrientation,controls,configurationRevision);Counters.DeadlinePlanBuilds++;}
+                            else Counters.DeadlinePlanHits++;
+                            OwnedRuntimeDeadlinePrediction prediction;
+                            if(deadlinePlan.Seed(source.ResourceQuantity,source.ProviderState,horizon,out prediction,out fallback))
+                            {
+                                if(!double.IsNaN(prediction.Delta)&&!double.IsInfinity(prediction.Delta))
+                                {value.PredictionAvailable=true;value.PredictedDelta=prediction.Delta;value.PredictedLowerDelta=prediction.Lower;value.PredictedUpperDelta=prediction.Upper;value.PredictedKind=prediction.Kind;value.PredictedActuator=prediction.Actuator;value.PredictedResource=prediction.Resource;}
+                                PrepareExecutionPlan(source);for(int i=0;i<boundaryInitialResources.Length;i++)boundaryInitialResources[i]=source.ResourceQuantity[i];
+                                if(boundaryBank==null||!ReferenceEquals(boundaryBank.Topology,source.Topology))boundaryBank=new OwnedRuntimeBank(source.Definition,source.Topology);
+                                boundaryBank.Members=source.Members;boundaryBank.ProviderState=source.ProviderState;boundaryBank.RegionMotion=source.RegionMotion;boundaryBank.Properties=source.Properties;
+                                boundaryBank.Input=new OwnedRuntimeInput(controls.Throttle,controls.Attitude.X,controls.Attitude.Y,controls.Attitude.Z,controls.Translation.X,controls.Translation.Y,controls.Translation.Z);
+                                try
+                                {
+                                    double upper=Math.Min(prediction.Upper,horizon),lower=Math.Min(prediction.Lower,upper);
+                                    bool reached=LocalProbe(expected,controls,upper);
+                                    if(!reached&&upper==horizon)certification="full-rate-horizon-unreached";
+                                    else if(!reached)fallback="roundoff-bracket-upper-unreached";
+                                    else if(lower>0&&LocalProbe(expected,controls,lower))fallback="roundoff-bracket-lower-reached";
+                                    else
+                                    {
+                                        long lowBits=BitConverter.DoubleToInt64Bits(lower),highBits=BitConverter.DoubleToInt64Bits(upper);
+                                        for(int iteration=0;highBits-lowBits>1&&iteration<64;iteration++)
+                                        {
+                                            long middle=lowBits+(highBits-lowBits)/2;
+                                            if(LocalProbe(expected,controls,BitConverter.Int64BitsToDouble(middle)))highBits=middle;else lowBits=middle;
+                                        }
+                                        if(highBits-lowBits==1&&LocalProbe(expected,controls,BitConverter.Int64BitsToDouble(highBits)))
+                                        {value.Reached=true;value.DeltaSeconds=BitConverter.Int64BitsToDouble(highBits);value.Actuator=boundaryActuator;value.Resource=boundaryResource;value.Kind=boundaryKind;certification="full-rate-adjacent-original-predicate";}
+                                        else fallback="adjacent-predicate-replay-drift";
+                                    }
+                                }
+                                finally{boundaryBank.Members=null;boundaryBank.ProviderState=null;boundaryBank.RegionMotion=null;boundaryBank.Properties=null;}
+                            }
+                        }
+                    }
+                    finally{world.ExitAdmission();}
+                    if(certification==null)
+                    {
+                        Counters.DeadlineFallbacks++;
+                        if(fallback=="roundoff-bracket-lower-reached")Counters.DeadlineLowerBracketFallbacks++;
+                        else if(fallback=="roundoff-bracket-upper-unreached")Counters.DeadlineUpperBracketFallbacks++;
+                        else if(fallback=="adjacent-predicate-replay-drift")Counters.DeadlineReplayFallbacks++;
+                        else Counters.DeadlineAdmissionFallbacks++;
+                        var original=FindExactBoundary(expected,controls,horizon,false);
+                        original.PredictionAvailable=value.PredictionAvailable;original.PredictedDelta=value.PredictedDelta;original.PredictedLowerDelta=value.PredictedLowerDelta;original.PredictedUpperDelta=value.PredictedUpperDelta;original.PredictedKind=value.PredictedKind;original.PredictedActuator=value.PredictedActuator;original.PredictedResource=value.PredictedResource;
+                        value=original;certification="fallback-bounded-64-bisection-upper";
+                    }
+                    return PublishBoundary(value,expected,controls,horizon,OwnedRuntimeDeadlineStrategy.Retained,certification,fallback,probes);
+                }
+                finally{if(observeClock)Counters.BoundaryTicks+=Stopwatch.GetTimestamp()-begin;}
+            }
+        }
+        bool LocalProbe(OwnedRuntimeStamp expected,OwnedRuntimeControls controls,double delta)
+        {Counters.DeadlineLocalProbes++;return ProbeBoundary(expected,controls,delta,true);}
         OwnedRuntimeActuatorBoundary CheckedBoundary(OwnedRuntimeActuatorBoundary value,OwnedRuntimeStamp expected)
         {if(!world.Stamp.Matches(expected)||value.ConfigurationRevision!=configurationRevision)throw new InvalidOperationException("Boundary source/configuration changed during search.");return value;}
         bool ProbeBoundary(OwnedRuntimeStamp expected,OwnedRuntimeControls controls,double delta,bool compact)
@@ -444,7 +537,7 @@ namespace KspContinuum
         public void SetResourceFlowEnabled(int index,bool value)
         {lock(configurationGate){RequireConfigurationIdle();if(flowEnabled[index]!=value){long next=checked(configurationRevision+1);flowEnabled[index]=value;configurationRevision=next;}}}
         internal void RestoreConfigurationRevision(long value)
-        {lock(configurationGate){RequireConfigurationIdle();if(value<0)throw new ArgumentOutOfRangeException("value");configurationRevision=value;executionPlan=null;}}
+        {lock(configurationGate){RequireConfigurationIdle();if(value<0)throw new ArgumentOutOfRangeException("value");configurationRevision=value;executionPlan=null;deadlinePlan=null;}}
         void RequireConfigurationIdle()
         {world.RequireWriterThread();if(executing||mechanicalToken!=0)throw new InvalidOperationException("Cold system configuration cannot change during schedule execution or an unacknowledged mechanical transaction.");}
         internal void EnterExecution()

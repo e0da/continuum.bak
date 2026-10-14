@@ -43,6 +43,12 @@ static class Program
         public void Step(OwnedRuntimeSystems s,OwnedRuntimeStep step,OwnedRuntimeEnvironment e,OwnedRuntimeControls c){s.Step(step,e,c);}
         public void Step(OwnedRuntimeSystems s,OwnedRuntimeStep step,IOwnedRuntimeEnvironmentField e,OwnedRuntimeControls c){s.Step(step,e,c);}
     }
+    sealed class UnspecifiedScalarSchedule : IOwnedRuntimeTrialSafeSchedule
+    {
+        public string Schema {get{return "continuum-owned-runtime-schedule/v1";}}public string StateSchema {get{return "world-bank-state-only/v1";}}public string ImplementationId {get{return "trial-safe-unqualified-scalar";}}
+        public void Step(OwnedRuntimeSystems s,OwnedRuntimeStep step,OwnedRuntimeEnvironment e,OwnedRuntimeControls c){throw new Exception("Unqualified scalar schedule executed.");}
+        public void Step(OwnedRuntimeSystems s,OwnedRuntimeStep step,IOwnedRuntimeEnvironmentField e,OwnedRuntimeControls c){throw new Exception("Unqualified scalar schedule executed.");}
+    }
     static OwnedRuntimeControls Controls(double throttle=0,Vec attitude=default(Vec))
     {return new OwnedRuntimeControls{Throttle=throttle,Attitude=attitude,EnginesEnabled=true,RcsEnabled=true,WheelsEnabled=true};}
     static void Need(bool x,string reason){if(!x)throw new Exception(reason);}
@@ -53,6 +59,14 @@ static class Program
     static void Reject(Action a){try{a();}catch(ArgumentException){return;}catch(InvalidOperationException){return;}throw new Exception("Unsupported adaptive operation accepted.");}
     static void ConstantForceWheelAndBoundary()
     {
+        var mismatch=new Fixture();mismatch.Adaptive();var untouched=mismatch.World.Stamp;
+        Reject(()=>mismatch.Host.AdvanceAdaptive(.1,new OwnedRuntimeInput(),mismatch.Session,Controls(1)));
+        Need(mismatch.World.Stamp.Matches(untouched)&&mismatch.Fuel==1,"Mismatching deadline controls changed the physical source.");
+        var admission=new Fixture();admission.Adaptive();admission.Systems.SetDeadlineStrategy(admission.World.Stamp,OwnedRuntimeDeadlineStrategy.Retained);untouched=admission.World.Stamp;
+        Reject(()=>admission.Host.SwapSchedule(new UnspecifiedScalarSchedule(),new string('d',64),untouched));
+        Need(admission.World.Stamp.Matches(untouched)&&admission.Host.CodeGeneration==0,"Unqualified scalar HMR changed its owner.");
+        var loaded=new Fixture();loaded.Host.SwapSchedule(new UnspecifiedScalarSchedule(),new string('d',64),loaded.World.Stamp);loaded.Systems.SetDeadlineStrategy(loaded.World.Stamp,OwnedRuntimeDeadlineStrategy.Retained);loaded.Adaptive();untouched=loaded.World.Stamp;
+        Need(!loaded.Host.SupportsAdaptiveMechanical,"Unqualified scalar schedule acquired retained deadline support.");Reject(()=>loaded.Session.AdvanceLocal(loaded.Host,.02,Controls()));Need(loaded.World.Stamp.Matches(untouched),"Unqualified scalar deadline search published state.");
         var f=new Fixture();f.Adaptive(new OwnedRuntimeMechanicalPolicy(true,initialInterval:.1));var before=f.World.Stamp;f.Session.AdvanceLocal(f.Host,.1,Controls(1));
         Near(f.Motion.Velocity.Z,.1);Near(f.Motion.RootPosition.Z,.005);Need(f.World.Stamp.StateRevision==before.StateRevision+1,"Trial commits leaked into live revisions.");
         var snapshot=f.World.CaptureSnapshot();Need(snapshot.InputHistory.Length==1&&snapshot.Mechanical.trialExecutions==3&&snapshot.Mechanical.accepted==1,"Accepted interval history is not one atomic publication.");
@@ -74,7 +88,7 @@ static class Program
             {var actual=read.GetRegion(0).Properties;Near(actual.Mass,independent.Mass);Near(actual.CenterOfMass,independent.CenterOfMass);Near(actual.Inertia.XX,independent.Inertia.XX);Near(actual.Inertia.XY,independent.Inertia.XY);Near(actual.Inertia.XZ,independent.Inertia.XZ);Near(actual.Inertia.YY,independent.Inertia.YY);Near(actual.Inertia.YZ,independent.Inertia.YZ);Near(actual.Inertia.ZZ,independent.Inertia.ZZ);Near(read.GetResourceQuantity(0),1-.5*f.World.Stamp.Time/(1000*9.80665));Near(read.GetResourceQuantity(1),.5-f.World.Stamp.Time/(1000*9.80665));}
         }
         var checkpoint=f.Host.CaptureCheckpoint(f.Imported,controls,f.Session.EvaluateRegion(0),new OwnedRuntimeStepPlan(.02));
-        byte[] binary=OwnedRuntimeCheckpointBinary.Encode(checkpoint);Need(BitConverter.ToInt32(binary,4)==4,"Adaptive codec is not v4.");var decoded=OwnedRuntimeCheckpointBinary.Decode(binary);Need(decoded.state.mechanical!=null,"Mechanical continuation was omitted.");
+        byte[] binary=OwnedRuntimeCheckpointBinary.Encode(checkpoint);Need(BitConverter.ToInt32(binary,4)==OwnedRuntimeCheckpointBinary.Version,"Adaptive codec is not current.");var decoded=OwnedRuntimeCheckpointBinary.Decode(binary);Need(decoded.state.mechanical!=null,"Mechanical continuation was omitted.");
         OwnedRuntimeRestoredState restored;var host=f.Host.RestoreCheckpoint(decoded,Native,Parts,out restored);var session=OwnedFlightSession.Restore(restored.World,f.Session.Capture(),Native,Parts);
         double next=f.World.SuggestedMechanicalInterval;Near(restored.World.SuggestedMechanicalInterval,next);
         f.Session.AdvanceLocal(f.Host,.02,controls);session.AdvanceLocal(host,.02,controls);
@@ -133,7 +147,7 @@ static class Program
     {
         ConstantForceWheelAndBoundary();MultiBodyResourceResetAndContinuation();RejectionAndOriginalReference();NonzeroClockRoundoffBoundaries();
         foreach(string path in args)
-        {byte[] bytes=File.ReadAllBytes(path);int version=BitConverter.ToInt32(bytes,4);Need(version>=1&&version<=3,"Legacy witness must be retained v1/v2/v3.");var c=bytes[1]==70?OwnedRuntimeCheckpointBinary.DecodeFlight(bytes).host:OwnedRuntimeCheckpointBinary.Decode(bytes);Need(version==3?c.state.mechanical!=null&&c.state.mechanical.method==0&&c.state.executionStrategy==0:c.state.mechanical==null,"Legacy decode invented a numerical method or execution strategy.");Console.WriteLine("PASS retained legacy binary version "+version+" "+path);}
+        {byte[] bytes=File.ReadAllBytes(path);int version=BitConverter.ToInt32(bytes,4);Need(version>=1&&version<=4,"Legacy witness must be retained v1-v4.");var c=bytes[1]==70?OwnedRuntimeCheckpointBinary.DecodeFlight(bytes).host:OwnedRuntimeCheckpointBinary.Decode(bytes);Need(c.state.deadlineStrategy==0,"Legacy decode invented retained deadline scheduling.");Need(version>=3?c.state.mechanical!=null&&(version!=3||c.state.mechanical.method==0&&c.state.executionStrategy==0):c.state.mechanical==null,"Legacy decode invented a numerical method or execution strategy.");Console.WriteLine("PASS retained legacy binary version "+version+" "+path);}
         Console.WriteLine("PASS adaptive coupled mechanics: independent force/wheel, original limiter, atomic rejection, retained multi-body mass reset, checkpoint continuation, orbital convergence, nonzero-clock ULP boundaries and reference admission");return 0;
     }
 }

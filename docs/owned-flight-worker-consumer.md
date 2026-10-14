@@ -104,3 +104,12 @@ configuration. Status publishes copied system/bank counters from the worker;
 rendering never reads a live mutable counter object. Checkpoint v4 preserves
 strategy/method, while instrumentation is observation-only and must be enabled
 again after restoring a new world.
+
+`deadlines oracle|retained` selects the bounded original search or retained
+rate/dependency forecasting. `deadline-probe HORIZON selected|oracle` performs
+one explicit paused read-only source-bound query using the shown live controls.
+Status copies the last completed search's source stamp, controls, horizon,
+receiver, certification and probe count; `sourceIsCurrent` distinguishes a past
+search from the present bank. Rendering performs no queries to populate this
+observation. Binary v5 preserves the deadline selector and explicitly decodes
+v1–v4; derived plans/certificates are rebuilt from restored authoritative state.

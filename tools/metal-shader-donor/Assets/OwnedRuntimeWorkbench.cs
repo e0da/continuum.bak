@@ -39,6 +39,16 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
     }
     [Serializable] sealed class Region
     {public long id;public double mass;public double[] position,rotation,velocity,momentum;}
+    [Serializable] sealed class BoundaryData
+    {
+        public bool observed,supported,reached,sourceIsCurrent,enginesEnabled,rcsEnabled,wheelsEnabled,predictionAvailable;
+        public string strategy,certification,fallbackReason,kind,reason;
+        public int probes,actuator,resource;public long configurationRevision;
+        public double horizonSeconds,deltaSeconds,throttle;public double[] attitude,translation;
+        public double predictedDeltaSeconds,predictedLowerDeltaSeconds,predictedUpperDeltaSeconds;
+        public string predictedKind;public int predictedActuator,predictedResource;
+        public StampData source=new StampData();
+    }
     [Serializable] sealed class Receipt
     {
         public string schema="continuum-owned-runtime-workbench/v1",status="starting",unity,graphics,sourceRevision,nativeSha,partSpecsSha,implementation,lastCommand,error;
@@ -61,7 +71,8 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         public DisplayData display=new DisplayData();
         public OwnedRuntimeMechanicalState mechanical;
         public OwnedRuntimeAdaptiveObservation adaptiveObservation;
-        public string executionStrategy;
+        public string executionStrategy,deadlineStrategy;
+        public BoundaryData lastActuatorBoundary;
         public OwnedRuntimeWork bankWork;
         public OwnedRuntimeSystemCounters systemWork;
         public int pendingEvents;public long appliedEvents;public double nextEventRuntimeTime;public bool hasPendingEvent;
@@ -475,7 +486,15 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         var thermal=host.World.CaptureSnapshot().Thermal;receipt.thermalIndependent=thermal.independent;receipt.thermalAdvances=thermal.advances;receipt.thermalDeferredSteps=thermal.deferredSteps;receipt.thermalCausalRevision=thermal.causalRevision;receipt.thermalIntegratedCausalRevision=thermal.integratedCausalRevision;
         receipt.thermalMaximumLagSeconds=thermal.maximumLagSeconds;receipt.thermalMaximumDeferredKelvin=thermal.maximumDeferredKelvin;receipt.thermalAbsoluteKelvinError=thermal.absoluteKelvinError;receipt.thermalRelativeError=thermal.relativeError;
         receipt.mechanical=host.World.Mechanical;receipt.adaptiveObservation=host.AdaptiveObservation;
-        receipt.executionStrategy=host.Systems.ExecutionStrategy.ToString();receipt.bankWork=host.World.Work;receipt.systemWork=host.Systems.Counters.Snapshot();
+        receipt.executionStrategy=host.Systems.ExecutionStrategy.ToString();receipt.deadlineStrategy=host.Systems.DeadlineStrategy.ToString();
+        receipt.lastActuatorBoundary=new BoundaryData{observed=host.Systems.HasActuatorBoundary};
+        if(host.Systems.HasActuatorBoundary)
+        {
+            var b=host.Systems.LastActuatorBoundary;var s=b.SourceStamp;
+            receipt.lastActuatorBoundary=new BoundaryData{observed=true,supported=b.Supported,reached=b.Reached,sourceIsCurrent=s.Matches(host.World.Stamp),strategy=b.Strategy.ToString(),certification=b.Certification,fallbackReason=b.FallbackReason,kind=b.Kind,reason=b.Reason,probes=b.ProbeCount,actuator=b.Actuator,resource=b.Resource,configurationRevision=b.ConfigurationRevision,horizonSeconds=b.MaximumHorizonSeconds,deltaSeconds=b.DeltaSeconds,throttle=b.Controls.Throttle,attitude=A(b.Controls.Attitude),translation=A(b.Controls.Translation),enginesEnabled=b.Controls.EnginesEnabled,rcsEnabled=b.Controls.RcsEnabled,wheelsEnabled=b.Controls.WheelsEnabled,source=new StampData{Epoch=s.Epoch,StateRevision=s.StateRevision,TopologyRevision=s.TopologyRevision,DefinitionRevision=s.DefinitionRevision,FrameRevision=s.FrameRevision,Time=s.Time,FrameId=s.FrameId}};
+            receipt.lastActuatorBoundary.predictionAvailable=b.PredictionAvailable;receipt.lastActuatorBoundary.predictedDeltaSeconds=b.PredictedDelta;receipt.lastActuatorBoundary.predictedLowerDeltaSeconds=b.PredictedLowerDelta;receipt.lastActuatorBoundary.predictedUpperDeltaSeconds=b.PredictedUpperDelta;receipt.lastActuatorBoundary.predictedKind=b.PredictedKind;receipt.lastActuatorBoundary.predictedActuator=b.PredictedActuator;receipt.lastActuatorBoundary.predictedResource=b.PredictedResource;
+        }
+        receipt.bankWork=host.World.Work;receipt.systemWork=host.Systems.Counters.Snapshot();
         if(timeline!=null){receipt.pendingEvents=timeline.PendingEvents;receipt.appliedEvents=timeline.TotalEventsApplied;receipt.hasPendingEvent=timeline.PendingEvents>0;receipt.nextEventRuntimeTime=receipt.hasPendingEvent?timeline.NextEventRuntimeTime:0;}
     }
     void SaveReceipt(){File.WriteAllText(Path.Combine(output,"status.json"),JsonUtility.ToJson(receipt,true));}
@@ -506,7 +525,7 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         {
             var kind=args[0]=="restore"?OwnedFlightWorkerInvocation.CheckpointReplacement:args[0]=="reload"?OwnedFlightWorkerInvocation.SameTimeMutation:
                 args[0]=="step"||args[0]=="timeline"||args[0]=="coast"?OwnedFlightWorkerInvocation.TimelineMutation:
-                args[0]=="orbit"||args[0]=="atmo-flight"||args[0]=="rebase"||args[0]=="pilot"||args[0]=="node"||args[0]=="split"||args[0]=="join"||args[0]=="restore"||args[0]=="execute-node"||args[0]=="thermal"||args[0]=="mechanics"||args[0]=="execution"||args[0]=="work-timing"?OwnedFlightWorkerInvocation.ColdMutation:OwnedFlightWorkerInvocation.ReadOnly;
+                args[0]=="orbit"||args[0]=="atmo-flight"||args[0]=="rebase"||args[0]=="pilot"||args[0]=="node"||args[0]=="split"||args[0]=="join"||args[0]=="restore"||args[0]=="execute-node"||args[0]=="thermal"||args[0]=="mechanics"||args[0]=="execution"||args[0]=="deadlines"||args[0]=="work-timing"?OwnedFlightWorkerInvocation.ColdMutation:OwnedFlightWorkerInvocation.ReadOnly;
             OnWorker(delegate(OwnedFlightWorkerContext context)
             {
                 try
@@ -606,10 +625,14 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         else if(args[0]=="vacuum"&&args.Length==1)environment=new OwnedRuntimeEnvironment("explicit-vacuum-research",environment.Revision+1,host.World.Stamp.Time,0,300,new Vec(),new Vec());
         else if(args[0]=="wind"&&args.Length==4)environment=new OwnedRuntimeEnvironment("explicit-flow-research",environment.Revision+1,host.World.Stamp.Time,environment.Density,environment.Temperature,new Vec(Number(args[1]),Number(args[2]),Number(args[3])),environment.Gravity,environment.ConvectiveCoefficient,environment.RadiationTemperature);
         else if(args[0]=="warp"&&args.Length==2)plan=new OwnedRuntimeStepPlan(.02,Number(args[1]));
-        else if(args[0]=="mechanics"&&(args.Length==2||args.Length==3))
-        {RequireColdTimeline();Need(args[1]=="adaptive"||args[1]=="fixed"||args[1]=="embedded","Mechanics expects fixed, adaptive or embedded [maximum interval].");Need(args[1]!="adaptive"||host.SupportsAdaptiveMechanical,"Current executable schedule does not admit isolated repeated trials.");Need(args[1]!="embedded"||host.SupportsEmbeddedMechanical,"Current executable schedule does not admit builtin staged mechanics.");double maximum=args.Length==3?Number(args[2]):.1;var policy=new OwnedRuntimeMechanicalPolicy(args[1]!="fixed",maximumInterval:maximum,initialInterval:Math.Min(.02,maximum),method:args[1]=="embedded"?OwnedRuntimeMechanicalMethod.EmbeddedMidpoint:OwnedRuntimeMechanicalMethod.StepDoubling);host.Systems.SetMechanicalPolicy(host.World.Stamp,policy);}
+        else if(args[0]=="mechanics"&&(args.Length==2||args.Length==3||args.Length==4))
+        {RequireColdTimeline();Need(args[1]=="adaptive"||args[1]=="fixed"||args[1]=="embedded","Mechanics expects fixed, adaptive or embedded [maximum interval] [minimum interval].");Need(args[1]!="adaptive"||host.SupportsAdaptiveMechanical,"Current executable schedule does not admit isolated repeated trials.");Need(args[1]!="embedded"||host.SupportsEmbeddedMechanical,"Current executable schedule does not admit builtin staged mechanics.");double maximum=args.Length>=3?Number(args[2]):.1,minimum=args.Length==4?Number(args[3]):.0001;var policy=new OwnedRuntimeMechanicalPolicy(args[1]!="fixed",minimumInterval:minimum,maximumInterval:maximum,initialInterval:Math.Min(.02,maximum),method:args[1]=="embedded"?OwnedRuntimeMechanicalMethod.EmbeddedMidpoint:OwnedRuntimeMechanicalMethod.StepDoubling);host.Systems.SetMechanicalPolicy(host.World.Stamp,policy);}
         else if(args[0]=="execution"&&args.Length==2)
         {RequireColdTimeline();Need(args[1]=="reference"||args[1]=="compiled","Execution expects reference or compiled.");host.Systems.SetExecutionStrategy(args[1]=="compiled"?OwnedRuntimeExecutionStrategy.Compiled:OwnedRuntimeExecutionStrategy.Reference);host.Systems.CompileExecutionPlan(host.World.Stamp);}
+        else if(args[0]=="deadlines"&&args.Length==2)
+        {RequireColdTimeline();Need(args[1]=="oracle"||args[1]=="retained","Deadlines expects oracle or retained.");host.Systems.SetDeadlineStrategy(host.World.Stamp,args[1]=="retained"?OwnedRuntimeDeadlineStrategy.Retained:OwnedRuntimeDeadlineStrategy.ExactOracle);}
+        else if(args[0]=="deadline-probe"&&args.Length==3)
+        {Need(timeline==null||receipt.paused&&timeline.Paused,"Deadline probe requires an acknowledged pause.");Need(args[2]=="selected"||args[2]=="oracle","Deadline probe expects HORIZON selected or oracle.");if(args[2]=="oracle")host.Systems.FindActuatorBoundaryExactOracle(host.World.Stamp,controls,Number(args[1]));else host.Systems.FindActuatorBoundary(host.World.Stamp,controls,Number(args[1]));}
         else if(args[0]=="work-timing"&&args.Length==2)
         {RequireColdTimeline();Need(args[1]=="on"||args[1]=="off","Work timing expects on or off.");host.World.SetWorkObservation(host.World.Stamp,args[1]=="on");host.Systems.SetWorkObservation(args[1]=="on");}
         else if(args[0]=="event"&&args.Length==7&&args[1]=="impulse")

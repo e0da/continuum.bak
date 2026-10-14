@@ -11,7 +11,7 @@ static partial class Program
 {
     sealed class ExecutionRow
     {
-        public string scenario="",mode="",physicalSha256="",status="failed";
+        public string scenario="",mode="",deadlineStrategy="",physicalSha256="",status="failed";
         public int repetition,parts,bodies,actuators,surfaces;
         public long preparationTicks,coldTicks,hotTicks,hotAllocatedBytes,acceptedIntervals;
         public double startTime,endTime,energyPerKilogram,angularMomentumMagnitude;
@@ -19,6 +19,7 @@ static partial class Program
         public Dictionary<string,long> systemWork=null!,bankWork=null!;
         public OwnedRuntimeMechanicalState mechanical=null!;
         public OwnedRuntimeAdaptiveObservation adaptive;
+        public OwnedRuntimeActuatorBoundary lastBoundary;
         public bool restoredExactly;
     }
     static Dictionary<string,long> CountFields(object value)
@@ -57,10 +58,12 @@ static partial class Program
         else c.Session.PlaceCircular(c.Host.World.Stamp,100000,radial,normal);
         var controls=new OwnedRuntimeControls{Throttle=powered?.35:0,Attitude=powered?new Vec(.05,-.025,.02):new Vec(),Translation=powered?new Vec(.05,0,.025):new Vec(),EnginesEnabled=powered,RcsEnabled=powered,WheelsEnabled=powered};
         AdvanceTo(c,.2,controls,.02);
-        bool compiled=mode!="reference",adaptive=mode=="trials"||mode=="embedded";
+        bool compiled=mode!="reference",embedded=mode.StartsWith("embedded",StringComparison.Ordinal),adaptive=mode=="trials"||embedded;
         c.Host.Systems.SetExecutionStrategy(compiled?OwnedRuntimeExecutionStrategy.Compiled:OwnedRuntimeExecutionStrategy.Reference);
         if(compiled)c.Host.Systems.CompileExecutionPlan(c.Host.World.Stamp);
-        c.Host.Systems.SetMechanicalPolicy(c.Host.World.Stamp,new OwnedRuntimeMechanicalPolicy(adaptive,method:mode=="embedded"?OwnedRuntimeMechanicalMethod.EmbeddedMidpoint:OwnedRuntimeMechanicalMethod.StepDoubling));
+        c.Host.Systems.SetDeadlineStrategy(c.Host.World.Stamp,mode=="embedded-retained"?OwnedRuntimeDeadlineStrategy.Retained:OwnedRuntimeDeadlineStrategy.ExactOracle);
+        row.deadlineStrategy=c.Host.Systems.DeadlineStrategy.ToString();
+        c.Host.Systems.SetMechanicalPolicy(c.Host.World.Stamp,new OwnedRuntimeMechanicalPolicy(adaptive,method:embedded?OwnedRuntimeMechanicalMethod.EmbeddedMidpoint:OwnedRuntimeMechanicalMethod.StepDoubling));
         c.Host.World.SetWorkObservation(c.Host.World.Stamp,true);c.Host.Systems.SetWorkObservation(true);
         row.preparationTicks=Stopwatch.GetTimestamp()-prepared;
         long begin=Stopwatch.GetTimestamp();AdvanceTo(c,.3,controls,adaptive?.1:.02);row.coldTicks=Stopwatch.GetTimestamp()-begin;
@@ -69,7 +72,7 @@ static partial class Program
         AdvanceTo(c,1.3,controls,adaptive?.1:.02);row.hotTicks=Stopwatch.GetTimestamp()-begin;row.hotAllocatedBytes=GC.GetAllocatedBytesForCurrentThread()-allocated;
         row.endTime=c.Host.World.Stamp.Time;row.acceptedIntervals=c.Host.World.Stamp.StateRevision-revision;
         row.systemWork=Difference(CountFields(c.Host.Systems.Counters),beforeSystems);row.bankWork=Difference(CountFields(c.Host.World.Work),beforeBank);
-        row.mechanical=c.Host.World.Mechanical;row.adaptive=c.Host.AdaptiveObservation;
+        row.mechanical=c.Host.World.Mechanical;row.adaptive=c.Host.AdaptiveObservation;row.lastBoundary=c.Host.Systems.LastActuatorBoundary;
         using(var read=c.Host.World.AcquireRead())
         {
             row.parts=read.PartCount;row.bodies=read.BodyCount;row.actuators=c.Host.Systems.ActuatorCount;row.surfaces=c.Host.Systems.SurfaceCount;
@@ -82,22 +85,28 @@ static partial class Program
         var restored=OwnedFlightCheckpoint.Restore(c.Host,((State)c.State).Imported,OwnedRuntimeCheckpointBinary.DecodeFlight(encoded),input.Pins[0].sha256,input.Pins[1].sha256,input.Pins[2].sha256,"");
         var restoredPacket=OwnedFlightCheckpoint.Capture(restored.Host,restored.Imported,restored.Session,restored.Controls,restored.Plan,restored.Pilot,"");
         row.restoredExactly=encoded.SequenceEqual(OwnedRuntimeCheckpointBinary.EncodeFlight(restoredPacket));Need(row.restoredExactly,"Execution strategy/method checkpoint did not restore exactly.");
-        checkpoint.host.state.executionStrategy=0;checkpoint.host.state.systemsRevision=0;
+        checkpoint.host.state.executionStrategy=0;checkpoint.host.state.deadlineStrategy=0;checkpoint.host.state.systemsRevision=0;
         row.physicalSha256=Hash(OwnedRuntimeCheckpointBinary.EncodeFlight(checkpoint));row.status="passed";return row;
     }
-    static object CompiledExecution(Inputs input,string output,bool adaptiveOnly)
+    static object CompiledExecution(Inputs input,string output,string executionModes)
     {
+        bool adaptiveOnly=executionModes=="adaptive",deadlineOnly=executionModes=="deadlines";
         var rows=new List<ExecutionRow>();var comparisons=new List<object>();
-        foreach(string scenario in new[]{"vacuum-quiet","vacuum-powered","atmosphere-quiet","atmosphere-powered"})
+        foreach(string scenario in deadlineOnly?new[]{"vacuum-powered","atmosphere-powered"}:new[]{"vacuum-quiet","vacuum-powered","atmosphere-quiet","atmosphere-powered"})
         for(int repetition=1;repetition<=2;repetition++)
         {
-            foreach(string mode in adaptiveOnly?new[]{"trials","embedded"}:new[]{"reference","compiled","trials","embedded"})
+            foreach(string mode in deadlineOnly?new[]{"embedded-oracle","embedded-retained"}:adaptiveOnly?new[]{"trials","embedded"}:new[]{"reference","compiled","trials","embedded"})
             {
                 var row=ExecuteCase(input,scenario,mode,repetition,output);rows.Add(row);
                 using var file=new FileStream(Path.Combine(output,scenario+"-"+mode+"-"+repetition+".json"),FileMode.CreateNew,FileAccess.Write);JsonSerializer.Serialize(file,row,Json);
             }
             var group=rows.Where(row=>row.scenario==scenario&&row.repetition==repetition).ToArray();
-            if(adaptiveOnly)comparisons.Add(new{scenario,repetition,embeddedVersusTrialsRatio=(double)group[1].hotTicks/group[0].hotTicks,embeddedVersusTrialsPositionMeters=Distance(group[1].center,group[0].center),embeddedVersusTrialsVelocityMetersPerSecond=Distance(group[1].velocity,group[0].velocity),scope="Changed compact-boundary code qualification; unchanged reference/compiled cases are retained from previous exact-source evidence, not rerun."});
+            if(deadlineOnly)
+            {
+                bool exact=group[0].physicalSha256==group[1].physicalSha256;
+                comparisons.Add(new{scenario,repetition,retainedVersusOracleRatio=(double)group[1].hotTicks/group[0].hotTicks,completePhysicalContinuationExact=exact,positionDifferenceMeters=Distance(group[1].center,group[0].center),velocityDifferenceMetersPerSecond=Distance(group[1].velocity,group[0].velocity),scope="Same compiled embedded numerical operator, deliberate deadline scheduling treatment. Complete normalized equality reported with raw packets retained; only strategy/configuration metadata excluded. No renderer or unchanged matrix rerun."});
+            }
+            else if(adaptiveOnly)comparisons.Add(new{scenario,repetition,embeddedVersusTrialsRatio=(double)group[1].hotTicks/group[0].hotTicks,embeddedVersusTrialsPositionMeters=Distance(group[1].center,group[0].center),embeddedVersusTrialsVelocityMetersPerSecond=Distance(group[1].velocity,group[0].velocity),scope="Changed compact-boundary code qualification; unchanged reference/compiled cases are retained from previous exact-source evidence, not rerun."});
             else
             {
                 Need(group[0].physicalSha256==group[1].physicalSha256,"Compiled fold changed complete physical/resource/provider/thermal continuation.");

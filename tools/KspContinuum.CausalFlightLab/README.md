@@ -68,6 +68,23 @@ Use `--execution-modes adaptive` with `--execution-only true` when only the
 adaptive execution paths changed. It runs the two numerical strategies and
 retains earlier reference/compiled evidence without repeating unchanged cases.
 
+Use `--execution-modes deadlines` with `--execution-only true` for two powered
+captured situations, comparing the bounded oracle and retained scheduler under
+the same compiled embedded mechanical operator. Two observations per case
+record full work/certification/fallback counters and complete checkpoint
+equality, excluding only declared strategy/configuration metadata. Any physical
+difference remains visible in the raw packets and numerical observations.
+
+Use `--mission-situations all|orbital|reentry` to execute the reusable authored
+[mission situations](../../docs/owned-mission-situations.md). `--mission-method
+fixed|trials|embedded` and `--deadline-strategy oracle|retained` select explicit
+treatments. The default mission uses compiled embedded mechanics and retained
+deadlines. Orbital controls, burn/cutoff, reversals, exact impulse,4x/32x demand,
+pending-debt/future-event/thermal restore and acquired split/rejoin run as one
+bounded program. Reentry uses captured atmosphere and an authored airborne
+state. Costs of replay/restore and cold conservation checks stay separate.
+These are executable functional programs, not repeated whole-game FPS runs.
+
 Compare retained runs without simulating again:
 
 ```

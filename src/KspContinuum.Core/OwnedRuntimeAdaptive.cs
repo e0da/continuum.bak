@@ -15,7 +15,7 @@ namespace KspContinuum
             double positionTolerance=1e-4,double velocityTolerance=1e-4,double angleTolerance=1e-6,double scaledStateTolerance=1e-6,double initialInterval=.02,OwnedRuntimeMechanicalMethod method=OwnedRuntimeMechanicalMethod.StepDoubling)
         {
             AssemblyModel.Positive(minimumInterval);AssemblyModel.Positive(maximumInterval);AssemblyModel.Positive(positionTolerance);AssemblyModel.Positive(velocityTolerance);AssemblyModel.Positive(angleTolerance);AssemblyModel.Positive(scaledStateTolerance);AssemblyModel.Positive(initialInterval);
-            if(minimumInterval<.0001||maximumInterval>.1||minimumInterval>maximumInterval||initialInterval<minimumInterval||initialInterval>maximumInterval)
+            if(maximumInterval>.1||minimumInterval>maximumInterval||initialInterval<minimumInterval||initialInterval>maximumInterval)
                 throw new ArgumentException("Mechanical interval bounds differ.");
             if(method!=OwnedRuntimeMechanicalMethod.StepDoubling&&method!=OwnedRuntimeMechanicalMethod.EmbeddedMidpoint)throw new ArgumentOutOfRangeException("method");
             Method=method;Adaptive=adaptive;MinimumInterval=minimumInterval;MaximumInterval=maximumInterval;PositionTolerance=positionTolerance;VelocityTolerance=velocityTolerance;AngleTolerance=angleTolerance;ScaledStateTolerance=scaledStateTolerance;InitialInterval=initialInterval;
@@ -39,7 +39,7 @@ namespace KspContinuum
             if(schema!="continuum-owned-runtime-mechanical-state/v1"||method<0||method>1||accepted<0||rejected<0||trialExecutions<0||policyRevision<0||roundoffCoalescedIntervals<0||roundoffCoalescedIntervals>accepted)throw new ArgumentException("Mechanical continuation metadata differs.");
             AssemblyModel.Positive(minimumInterval);AssemblyModel.Positive(maximumInterval);AssemblyModel.Positive(positionTolerance);AssemblyModel.Positive(velocityTolerance);AssemblyModel.Positive(angleTolerance);AssemblyModel.Positive(scaledStateTolerance);AssemblyModel.Positive(initialInterval);
             AssemblyModel.Finite(nextInterval);AssemblyModel.Finite(lastAcceptedInterval);AssemblyModel.Finite(lastError);
-            if(minimumInterval<.0001||maximumInterval>.1||minimumInterval>maximumInterval||initialInterval<minimumInterval||initialInterval>maximumInterval||nextInterval<minimumInterval||nextInterval>maximumInterval||lastAcceptedInterval<0||lastAcceptedInterval>maximumInterval||lastError<0)throw new ArgumentException("Mechanical controller state differs.");
+            if(maximumInterval>.1||minimumInterval>maximumInterval||initialInterval<minimumInterval||initialInterval>maximumInterval||nextInterval<minimumInterval||nextInterval>maximumInterval||lastAcceptedInterval<0||lastAcceptedInterval>maximumInterval||lastError<0)throw new ArgumentException("Mechanical controller state differs.");
         }
     }
     [Serializable] public struct OwnedRuntimeAdaptiveObservation
@@ -50,8 +50,17 @@ namespace KspContinuum
         public OwnedRuntimeMechanicalAccuracyException(double interval,double error):base("Mechanical estimate exceeds frozen budgets at the minimum interval: dt="+interval+", normalizedError="+error)
         {Interval=interval;NormalizedError=error;}
     }
-    public struct OwnedRuntimeActuatorBoundary
+    [Serializable] public struct OwnedRuntimeActuatorBoundary
     {
+        public OwnedRuntimeDeadlineStrategy Strategy;
+        public string Certification,FallbackReason;
+        public int ProbeCount;
+        public OwnedRuntimeControls Controls;
+        public double MaximumHorizonSeconds;
+        public bool PredictionAvailable;
+        public double PredictedDelta,PredictedLowerDelta,PredictedUpperDelta;
+        public string PredictedKind;
+        public int PredictedActuator,PredictedResource;
         public bool Supported,Reached;
         public double DeltaSeconds;
         public int Actuator,Resource;

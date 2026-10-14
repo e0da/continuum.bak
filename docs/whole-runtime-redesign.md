@@ -139,16 +139,23 @@ data rather than a message or future per part. ECS remains a representation
 option; it does not define causal validity or numerical scheduling. The owned
 implementation now combines worker ownership, atomic presentation metadata,
 checkpointed causal state, bounded thermal history, adaptive mechanical trials
-and exact typed events. Rendering interpolates copied committed poses. The next
-transfer now includes compiled physical dependency plans, retained geometry,
+and exact typed events. Rendering interpolates copied committed poses. The
+implementation also includes compiled physical dependency plans, retained geometry,
 compact scalar deadline probes and a two-wrench embedded mechanical operator.
 The original fold and step-doubling remain selectable references. Complete bank,
 reducer, validation and staged work are observed separately from render pacing;
 independent analytic and continuation checks remain the numerical gates. The
-next scheduling redesign should derive retained resource/control deadlines from
-their actual dependency changes, rather than repeatedly bisecting whole scalar
-folds. Builtin mechanics and current thermal-source quadrature remain explicit
-scopes; this does not confer arbitrary module or contact validity.
+retained scheduler now derives resource/control deadlines from current inventory
+and an ordered dependency/rate plan. Wheel rounding cells and scalar predicate
+brackets distinguish projected times from certified representable frontiers;
+unsupported cases retain visible bounded-search fallback. Explicit events slice
+the same physical timeline. Numerical error budgets still choose smaller steps
+between events, with a positive per-domain refinement floor rather than a global
+hardcoded minimum. Split/join projects local levers and velocities relative to
+a moving frame, avoiding large-origin/orbital cancellation. Executable mission
+situations exercise these boundaries together. Environmental/heat-source validity,
+contacts and arbitrary modules need their own contracts and scheduling terms;
+the original scalar allocation marker does not confer those capabilities.
 
 Live KSP still owns its game clock and stock callback dispatch. Its Planetarium
 advances universal time separately from Unity physics; TimeWarp changes both

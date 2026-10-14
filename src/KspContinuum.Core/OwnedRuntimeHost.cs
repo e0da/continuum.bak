@@ -22,8 +22,10 @@ namespace KspContinuum
 
     // Admission requires an original schedule whose implementation may run without Unity APIs.
     public interface IOwnedRuntimeWorkerSchedule : IOwnedRuntimeSchedule { }
+    // Resource and wheel state follow one original ordered scalar fold with the supplied controls and interval.
+    public interface IOwnedRuntimeScalarActuatorSchedule : IOwnedRuntimeSchedule { }
 
-    public sealed class OwnedRuntimeBuiltinSchedule : IOwnedRuntimePassiveKeplerSchedule, IOwnedRuntimeWorkerSchedule, IOwnedRuntimeTrialSafeSchedule
+    public sealed class OwnedRuntimeBuiltinSchedule : IOwnedRuntimePassiveKeplerSchedule, IOwnedRuntimeWorkerSchedule, IOwnedRuntimeTrialSafeSchedule, IOwnedRuntimeScalarActuatorSchedule
     {
         public string Schema { get { return "continuum-owned-runtime-schedule/v1"; } }
         public string StateSchema { get { return "world-bank-state-only/v1"; } }
@@ -58,7 +60,7 @@ namespace KspContinuum
         public string ScheduleImplementation { get { return implementation; } }
         public long CodeGeneration { get; private set; }
         public bool SupportsPassiveKeplerCoast {get {lock(gate)return schedule is IOwnedRuntimePassiveKeplerSchedule;}}
-        public bool SupportsAdaptiveMechanical {get{lock(gate)return schedule is IOwnedRuntimeTrialSafeSchedule&&(World.MechanicalInternal.method==0||schedule is OwnedRuntimeBuiltinSchedule);}}
+        public bool SupportsAdaptiveMechanical {get{lock(gate)return schedule is IOwnedRuntimeTrialSafeSchedule&&(World.MechanicalInternal.method==0||schedule is OwnedRuntimeBuiltinSchedule)&&(Systems.DeadlineStrategy!=OwnedRuntimeDeadlineStrategy.Retained||schedule is IOwnedRuntimeScalarActuatorSchedule);}}
         public bool SupportsEmbeddedMechanical {get{lock(gate)return schedule is OwnedRuntimeBuiltinSchedule;}}
         public int WorkerThreadId { get { return Volatile.Read(ref workerThread); } }
         public OwnedRuntimeHost(OwnedRuntimeWorld world,OwnedRuntimeSystems systems)
@@ -98,6 +100,8 @@ namespace KspContinuum
                     throw new InvalidOperationException("Adaptive checkpoint requires its isolated-trial-safe schedule.");
                 if(data.state!=null&&data.state.mechanical!=null&&data.state.mechanical.adaptive&&data.state.mechanical.method==1&&!(schedule is OwnedRuntimeBuiltinSchedule))
                     throw new InvalidOperationException("Embedded checkpoint requires the builtin mechanical-stage schedule.");
+                if(data.state!=null&&data.state.mechanical!=null&&data.state.mechanical.adaptive&&data.state.deadlineStrategy==1&&!(schedule is IOwnedRuntimeScalarActuatorSchedule))
+                    throw new InvalidOperationException("Retained deadline checkpoint requires its scalar actuator schedule contract.");
                 state=OwnedRuntimeCheckpoint.Restore(data.state,nativeSha,partSha);
                 var restored=new OwnedRuntimeHost(state.World,state.Systems);
                 restored.schedule=schedule;restored.implementation=implementation;restored.ScheduleSourceSha256=ScheduleSourceSha256;restored.CodeGeneration=CodeGeneration;
@@ -117,6 +121,8 @@ namespace KspContinuum
         public OwnedRuntimeStamp AdvanceAdaptive(double deltaUpper,OwnedRuntimeInput input,OwnedFlightSession session,OwnedRuntimeControls controls)
         {
             if(session==null||!ReferenceEquals(session.Runtime,World))throw new ArgumentException("Adaptive session owner differs.");input.Validate();controls.Validate();AssemblyModel.Positive(deltaUpper);
+            if(input.Throttle!=controls.Throttle||input.Pitch!=controls.Attitude.X||input.Yaw!=controls.Attitude.Y||input.Roll!=controls.Attitude.Z||input.X!=controls.Translation.X||input.Y!=controls.Translation.Y||input.Z!=controls.Translation.Z)
+                throw new ArgumentException("Adaptive input and actuator deadline controls differ.");
             lock(gate)
             {
                 RequireWorkerThread();if(advancing)throw new InvalidOperationException("Adaptive schedule cannot reenter.");
@@ -126,10 +132,14 @@ namespace KspContinuum
                 {
                     if(!(schedule is IOwnedRuntimeTrialSafeSchedule))throw new InvalidOperationException("Schedule has no repeated isolated-trial contract.");
                     if(World.MechanicalInternal.method==1&&!(schedule is OwnedRuntimeBuiltinSchedule))throw new InvalidOperationException("Schedule has no builtin embedded-stage contract.");
+                    if(Systems.DeadlineStrategy==OwnedRuntimeDeadlineStrategy.Retained&&!(schedule is IOwnedRuntimeScalarActuatorSchedule))throw new InvalidOperationException("Schedule has no retained scalar actuator deadline contract.");
                     var frontier=World.Stamp;double semanticEnd=frontier.Time+deltaUpper;AssemblyModel.Finite(semanticEnd);
                     if(!(semanticEnd>frontier.Time))throw new ArgumentException("Adaptive upper interval does not advance representable physical time.");
-                    var boundary=Systems.FindActuatorBoundary(frontier,controls,Math.Min(deltaUpper,World.MaximumMechanicalInterval));
+                    double horizon=Math.Min(deltaUpper,World.MaximumMechanicalInterval);
+                    var boundary=Systems.FindActuatorBoundary(frontier,controls,horizon);
                     if(!boundary.Supported)throw new InvalidOperationException("Actuator boundary is unsupported: "+boundary.Reason);
+                    if(!World.Stamp.Matches(frontier)||!boundary.SourceStamp.Matches(frontier)||boundary.ConfigurationRevision!=Systems.ConfigurationRevision||double.IsNaN(boundary.DeltaSeconds)||double.IsInfinity(boundary.DeltaSeconds)||boundary.DeltaSeconds<=0||boundary.DeltaSeconds>horizon)
+                        throw new InvalidOperationException("Actuator deadline certificate differs from its admitted frontier/horizon.");
                     if(boundary.Reached)
                     {
                         double end=frontier.Time+boundary.DeltaSeconds;
@@ -192,6 +202,7 @@ namespace KspContinuum
                 if(workerThread!=0 && !(replacement is IOwnedRuntimeWorkerSchedule))throw new InvalidOperationException("Schedule has no worker execution admission.");
                 if(World.AdaptiveMechanicalEnabled&&!(replacement is IOwnedRuntimeTrialSafeSchedule))throw new InvalidOperationException("Adaptive mechanics requires an isolated-trial-safe schedule.");
                 if(World.AdaptiveMechanicalEnabled&&World.MechanicalInternal.method==1&&!(replacement is OwnedRuntimeBuiltinSchedule))throw new InvalidOperationException("Embedded mechanics requires the builtin mechanical-stage schedule.");
+                if(World.AdaptiveMechanicalEnabled&&Systems.DeadlineStrategy==OwnedRuntimeDeadlineStrategy.Retained&&!(replacement is IOwnedRuntimeScalarActuatorSchedule))throw new InvalidOperationException("Retained deadlines require the scalar actuator schedule contract.");
                 string nextImplementation=null;bool entered=false;World.EnterAdmission(expected);
                 try
                 {

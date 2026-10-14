@@ -21,6 +21,14 @@ a new path alone is insufficient. Reusing identical bytes to select another
 schedule type in that image is supported. Worker and isolated-trial admissions
 are separate contracts; the executable examples declare both where applicable.
 
+Retained adaptive deadlines additionally require
+`IOwnedRuntimeScalarActuatorSchedule`. Forward, gravity-probe and deliberately
+failed examples preserve one original scalar fold and declare this model.
+Trial-safe code that changes resource/wheel allocation outside that fold cannot
+reuse these forecasts without qualifying another model. Embedded mechanics
+remains builtin-only; switch to full-trial adaptive mechanics before these
+schedule reloads.
+
 The reload consumer now uses `OwnedRuntimeScheduleImages`: it clones and hashes
 the exact image, reads its full identity through a temporary metadata snapshot,
 then deletes that snapshot before executable admission. A process-wide cold
