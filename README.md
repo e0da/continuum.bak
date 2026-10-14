@@ -1,5 +1,12 @@
 # Continuum
 
+[Predictive flight windows](docs/owned-flight-windows.md) combine source-bound
+environment forecasts, thermal lag deadlines and partial atmosphere-entry coast
+with the owned numerical timeline. [Executable situations](docs/owned-forecast-situations.md)
+exercise captured-craft entry and exact pending-state continuation. Native world-mode
+warp scales demand independently of the physical interval; full playable KSP clock
+transfer remains a separate integration gate.
+
 An experimental KSP 1 mechanics and performance lab with an addon, captured workloads, and system replacements. Continuum and Gimbal share a longer-term goal of supporting Kerbal-like, toy and realism experiences. Their [runtime and repository boundary](docs/continuum-gimbal-boundary.md) remains provisional, including a possible complete KSP/Unity replacement. Rigid assembled craft is the primary motion model; optional flexibility and wobble remain research capabilities. `KspContinuum` remains the addon namespace.
 
 **Status: experimental laboratory and opt-in replacements.** Prepared startup providers and batched flight rendering have run in an owned KSP instance. The [delivery ledger](docs/research-delivery.md) records their measured scope and remaining qualification. Complete playable performance, broad mod compatibility and a complete independent game runtime remain open outcomes.

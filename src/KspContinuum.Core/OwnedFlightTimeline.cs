@@ -23,6 +23,7 @@ namespace KspContinuum
     public sealed class OwnedFlightTimeline
     {
         public const int MaximumInputSegments = 128;
+        const double AdvisoryMinimumSliceSeconds=1e-4;
         struct Policy
         {
             public OwnedRuntimeControls Controls;
@@ -240,6 +241,8 @@ namespace KspContinuum
         }
 
         public string LastCoastRejection { get; private set; }
+        public OwnedFlightCoastWindow LastCoastWindow {get;private set;}
+        public OwnedFlightLocalWindow LastLocalWindow {get;private set;}
         public OwnedFlightTimelineState CaptureState()
         {
             Enter();
@@ -298,10 +301,11 @@ namespace KspContinuum
             if(target<expected.Time)throw new InvalidOperationException("A physical event was overshot.");
             if (allowCoast && segment.Input.AllowCoast && segment.Input.Resolver == null && Host.SupportsPassiveKeplerCoast)
             {
-                double targetUt = Session.Context.Epoch + (target - Session.RuntimeEpoch); string reason; OwnedRuntimeMotion[] motions; double time;
+                double targetUt = Session.Context.Epoch + (target - Session.RuntimeEpoch); string reason; OwnedRuntimeMotion[] motions; double time;OwnedFlightCoastWindow window;
                 double eventBarrier=Math.Min(deadline,events.Count==0?double.PositiveInfinity:Universal(events.NextTime));
-                if (Session.PrepareCoast(expected, targetUt, segment.Input.Controls, segment.Input.PassiveFrozen, eventBarrier, coastLead, out motions, out time, out reason) && time <= target && Universal(time) <= eventBarrier)
+                if (Session.PrepareCoastWindow(expected, targetUt, segment.Input.Controls, segment.Input.PassiveFrozen, eventBarrier, coastLead, out motions, out time, out reason,out window,target) && time <= target && Universal(time) <= eventBarrier)
                 {
+                    LastCoastWindow=window;LastCoastRejection=null;
                     var before=expected;Session.PublishCoast(expected, motions, time);events.AcknowledgeCoastAdvance(before,Host.World.Stamp);
                     AcceptCommit(); TotalCoastCommits = checked(TotalCoastCommits + 1); wasCoast = true; return true;
                 }
@@ -315,10 +319,23 @@ namespace KspContinuum
                 !double.IsPositiveInfinity(deadline) && deadline - Session.UniversalTime <= delta;
             if (!semanticBoundary && (delta < quantum || expected.Time + quantum > target))
             { waitingQuantum = true; return false; }
-            double next = expected.Time + delta;
+            if(!(delta>0))return false;
+            var localWindow=new OwnedFlightLocalWindow{SourceStamp=expected,MaximumIntervalSeconds=delta,SelectedIntervalSeconds=delta,Kind="numerical-or-requested",ForecastRegion=-1,ContextSha256=Session.Context.SourceSha256,ConfigurationRevision=configurationRevision,CodeGeneration=codeGeneration};
+            using(var read=Host.World.AcquireRead())
+            {
+                if(!read.Stamp.Matches(expected))throw new InvalidOperationException("Local forecast read is stale.");
+                OwnedFlightForecastRow forecast;
+                if(OwnedFlightForecast.TryFirst(Session,read,delta,out forecast)&&forecast.DeltaSeconds>=Math.Min(quantum,AdvisoryMinimumSliceSeconds)&&forecast.DeltaSeconds<delta)
+                {delta=forecast.DeltaSeconds;localWindow.Kind=forecast.Kind.ToString();localWindow.Advisory=true;localWindow.ForecastRegion=forecast.RegionId;}
+                double thermal=OwnedFlightWindows.ThermalLagInterval(read,delta);
+                if(thermal<delta){delta=thermal;localWindow.Kind="thermal-lag";localWindow.Advisory=false;localWindow.ForecastRegion=-1;}
+            }
+            double admittedDelta=delta,next = expected.Time + delta;
             for (int corrections = 0; corrections < 8 && (next > target || Universal(next) > deadline); corrections++) next = Previous(next);
             delta = next - expected.Time;
+            if(delta>admittedDelta&&expected.Time+admittedDelta==next)delta=admittedDelta;
             if (!(delta > 0) || next > target || Universal(next) > deadline) return false;
+            localWindow.SelectedIntervalSeconds=delta;LastLocalWindow=localWindow;
             OwnedRuntimeControls controls = segment.Input.Controls;
             if (segment.Input.Resolver != null) { controls = segment.Input.Resolver(controls); ControlResolutions = checked(ControlResolutions + 1); controls.Validate(); }
             CheckSource();

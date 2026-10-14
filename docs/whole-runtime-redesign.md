@@ -157,14 +157,15 @@ situations exercise these boundaries together. Environmental/heat-source validit
 contacts and arbitrary modules need their own contracts and scheduling terms;
 the original scalar allocation marker does not confer those capabilities.
 
-Live KSP still owns its game clock and stock callback dispatch. Its Planetarium
-advances universal time separately from Unity physics; TimeWarp changes both
-sets of clocks. A live timing cutover therefore must own universal time, input
-latching, providers/resources/thermal evolution, forces/motion, events,
-rails transitions and frame publication together. Wrapping those callbacks in
-a faster timer does not establish that ownership. Until that adapter exists,
-the playable rigid service replaces motion inside KSP's current schedule while
-the owned runtime provides the new timing implementation and fast research loop.
+Live KSP still owns its game clock and stock callback dispatch. `Planetarium.FixedUpdate` advances universal time; `TimeWarp.updateRate` changes Planetarium's scale, Unity's time scale and Unity's fixed delta. The captured-world worker does not replace these writers. There is currently no plugin binding of `OwnedFlightWorker`, `OwnedFlightSession` or `OwnedFlightTimeline` that transfers ordinary KSP time authority.
+
+`PlayableRigidFlightService` installs the real input, lifecycle and PlayerLoop adapter around `LiveRigidVesselOwner`. Stock and admitted MechJeb providers still execute on the main thread. The owner collects their commands between ScriptRunBehaviourFixedUpdate and PhysicsFixedUpdate, applies them to one native aggregate, reads native motion, and publishes the shared craft pose and query views. Its save/stage/pack/switch boundaries restore stock before original mutations. This is an implemented motion replacement inside KSP's existing schedule, with stock resource/aero/thermal providers authoritative; it is not the independent numeric worker running KSP. `IndependentCoastAdapter` is a separate bounded packed-orbit adapter: its background trajectory is sampled at current stock universal time, while KSP still owns rails, warp and the global clock.
+
+The next coherent playable transfer is one admitted vessel simulation domain connected to the stock UI and scene through a shared clock/provider/publication transaction. Latch the original control chain and ordered actions into typed commands, prepare provider/resource/thermal work at a declared delta and epoch, let the independent owner advance only that admitted state, and publish the committed motion, resource, thermal and universal-time views together. Unity callbacks remain on the main thread; the worker receives copied numeric inputs rather than engine objects or callbacks. If the numeric bank owns motion, the selected native aggregate must stop ordinary native integration instead of applying the same forces a second time. Retained identities, compiled provider bindings, frame/query adapters and the current handback lifecycle are reusable implementation donors.
+
+This transfer also needs a global clock bridge: suppress the original universal-time increment while owned, translate warp and pause into requested progress, and schedule every admitted clock-dependent compatibility consumer against the committed epoch. Lighting, orbit/rails views and other vessel domains cannot silently observe a future vessel at an old world time. Inventory the remaining direct clock, resource and native writers once at admission and bind their ownership; an unadmitted provider stays stock-owned through an explicit synchronized boundary or prevents takeover. The scalar actuator schedule marker qualifies only its resource/wheel fold, not arbitrary module or heat-source evolution.
+
+Save/load, staging, docking, vessel switch, rails and scene changes need one ordered boundary that drains or preserves pending commands and simulation debt, transfers current state, restores stock authority before original side effects, and reacquires a recompiled domain only when ready. User control remains low latency through the live-next-commit policy; deterministic replay retains its recorded history. These requirements define the next implementation package, not an assertion that the bridge already exists. A faster timer around existing fixed callbacks cannot establish the missing ownership or justify skipping unknown providers.
 
 Choose the next transfer using actual computation, waiting and dependency costs.
 A long frame scope can include pacing or synchronization rather than expensive

@@ -77,6 +77,8 @@ namespace KspContinuum
         }
 
         public OwnedFlightCapture Capture() { return Copy(captured); }
+        public int AtmosphereSampleCount {get{return altitudes.Length;}}
+        public double GetAtmosphereAltitude(int index) {return altitudes[index];}
         public double Altitude(Vec position) { Require(position); return Norm(position)-Radius; }
         public Vec Gravity(Vec position)
         {

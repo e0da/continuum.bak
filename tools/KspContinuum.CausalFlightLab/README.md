@@ -87,6 +87,13 @@ These are executable functional programs, not repeated whole-game FPS runs.
 
 Compare retained runs without simulating again:
 
+Use `--forecast-situations all|entry|atmosphere` for the functional
+[forecast situations](../../docs/owned-forecast-situations.md): one admitted
+elliptic atmosphere-entry partial coast followed by local work, and a captured
+table-knot forecast with pending thermal checkpoint continuation. The runner
+retains raw observations and binary checkpoints; complete elapsed costs include
+validation and replay. No unchanged performance trial or speedup is inferred.
+
 ```
 dotnet tools/KspContinuum.CausalFlightLab/bin/Release/net8.0/KspContinuum.CausalFlightLab.dll \
   --compare-execution OLD_ABSOLUTE_DIR NEW_ABSOLUTE_DIR FRESH_ABSOLUTE_RECEIPT

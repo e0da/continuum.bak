@@ -73,6 +73,7 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         public OwnedRuntimeAdaptiveObservation adaptiveObservation;
         public string executionStrategy,deadlineStrategy;
         public BoundaryData lastActuatorBoundary;
+        public WindowData lastLocalWindow=new WindowData();public CoastData lastCoastWindow=new CoastData();public ForecastData flightForecast=new ForecastData();
         public OwnedRuntimeWork bankWork;
         public OwnedRuntimeSystemCounters systemWork;
         public int pendingEvents;public long appliedEvents;public double nextEventRuntimeTime;public bool hasPendingEvent;
@@ -88,6 +89,13 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         public Region[] states;
         public string[] events;
     }
+    [Serializable] sealed class WindowData
+    {public StampData source;public string kind,contextSha;public bool advisory;public double maximumInterval,selectedInterval;public long regionId,codeGeneration,configurationRevision;}
+    [Serializable] sealed class CoastData
+    {public StampData source;public string kind,model,contextSha;public bool limited;public int region;public double requestedUT,reachedUT,runtimeTime,radius,lowerCrossingUT,upperCrossingUT;}
+    [Serializable] sealed class ForecastData
+    {public StampData source;public string model,contextSha,firstKind;public int count;public long regionId;public double horizon,firstDelta;public bool advisory=true,hasCrossing;}
+    bool automaticPassiveCoast;
     sealed class Request {public long Id;public string Text,Reply;public int State;}
     readonly ConcurrentQueue<Request> requests=new ConcurrentQueue<Request>();
     readonly List<string> events=new List<string>();
@@ -108,8 +116,8 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
     double interpolationDelay=.04;
     bool presentationSuspended;
     OwnedRuntimeControls configuredControls;
-    bool timelineConfigured,configuredPaused;
-    double configuredWarp,configuredDeadline,lastWall;
+    bool timelineConfigured,configuredPaused,configuredCoast;
+    double configuredWarp,configuredDeadline,lastWall,timelineWarp=1;
     Func<OwnedRuntimeControls,OwnedRuntimeControls> pilotResolver;
     OwnedFlightPresentation presentation;
     OwnedFlightOverlay overlay;
@@ -332,12 +340,13 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
     void ConfigureTimeline(double wall,bool coast=false)
     {
         if(timeline==null)return;
+        coast=coast||automaticPassiveCoast;
         double deadline=maneuver==null?double.PositiveInfinity:maneuver.EventUniversalTime;
-        if(!timelineConfigured||!SameControls(controls,configuredControls)||receipt.paused!=configuredPaused||plan.WarpRate!=configuredWarp||deadline!=configuredDeadline||coast)
+        if(!timelineConfigured||!SameControls(controls,configuredControls)||receipt.paused!=configuredPaused||timelineWarp!=configuredWarp||deadline!=configuredDeadline||coast!=configuredCoast)
         {
-            if(executingContext!=null)executingContext.Configure(controls,plan.WarpRate,receipt.paused,coast,coast,deadline,0,wall);
-            else timeline.Configure(host.World.Stamp,timeline.InputRevision,wall,controls,plan.WarpRate,receipt.paused,coast,coast,deadline);
-            configuredControls=controls;configuredPaused=receipt.paused;configuredWarp=plan.WarpRate;configuredDeadline=deadline;timelineConfigured=true;
+            if(executingContext!=null)executingContext.Configure(controls,timelineWarp,receipt.paused,coast,coast,deadline,0,wall);
+            else timeline.Configure(host.World.Stamp,timeline.InputRevision,wall,controls,timelineWarp,receipt.paused,coast,coast,deadline);
+            configuredControls=controls;configuredPaused=receipt.paused;configuredWarp=timelineWarp;configuredDeadline=deadline;configuredCoast=coast;timelineConfigured=true;
         }
     }
     void SetPause(bool value)
@@ -496,7 +505,15 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         }
         receipt.bankWork=host.World.Work;receipt.systemWork=host.Systems.Counters.Snapshot();
         if(timeline!=null){receipt.pendingEvents=timeline.PendingEvents;receipt.appliedEvents=timeline.TotalEventsApplied;receipt.hasPendingEvent=timeline.PendingEvents>0;receipt.nextEventRuntimeTime=receipt.hasPendingEvent?timeline.NextEventRuntimeTime:0;}
+        if(timeline!=null)
+        {
+            var local=timeline.LastLocalWindow;var packed=timeline.LastCoastWindow;
+            receipt.lastLocalWindow=new WindowData{source=WindowStamp(local.SourceStamp),kind=local.Kind,contextSha=local.ContextSha256,advisory=local.Advisory,maximumInterval=local.MaximumIntervalSeconds,selectedInterval=local.SelectedIntervalSeconds,regionId=local.ForecastRegion,codeGeneration=local.CodeGeneration,configurationRevision=local.ConfigurationRevision};
+            receipt.lastCoastWindow=new CoastData{source=WindowStamp(packed.SourceStamp),kind=packed.Kind,model=packed.Model,contextSha=packed.ContextSha256,limited=packed.Limited,region=packed.Region,requestedUT=packed.RequestedUniversalTime,reachedUT=packed.ReachedUniversalTime,runtimeTime=packed.RuntimeTime,radius=packed.RadiusMeters,lowerCrossingUT=packed.LowerCrossingUniversalTime,upperCrossingUT=packed.UpperCrossingUniversalTime};
+        }
     }
+    static StampData WindowStamp(OwnedRuntimeStamp stamp)
+    {return new StampData{Epoch=stamp.Epoch,StateRevision=stamp.StateRevision,TopologyRevision=stamp.TopologyRevision,DefinitionRevision=stamp.DefinitionRevision,FrameRevision=stamp.FrameRevision,Time=stamp.Time,FrameId=stamp.FrameId};}
     void SaveReceipt(){File.WriteAllText(Path.Combine(output,"status.json"),JsonUtility.ToJson(receipt,true));}
     string Execute(string text)
     {
@@ -525,7 +542,7 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         {
             var kind=args[0]=="restore"?OwnedFlightWorkerInvocation.CheckpointReplacement:args[0]=="reload"?OwnedFlightWorkerInvocation.SameTimeMutation:
                 args[0]=="step"||args[0]=="timeline"||args[0]=="coast"?OwnedFlightWorkerInvocation.TimelineMutation:
-                args[0]=="orbit"||args[0]=="atmo-flight"||args[0]=="rebase"||args[0]=="pilot"||args[0]=="node"||args[0]=="split"||args[0]=="join"||args[0]=="restore"||args[0]=="execute-node"||args[0]=="thermal"||args[0]=="mechanics"||args[0]=="execution"||args[0]=="deadlines"||args[0]=="work-timing"?OwnedFlightWorkerInvocation.ColdMutation:OwnedFlightWorkerInvocation.ReadOnly;
+                args[0]=="entry-orbit"||args[0]=="coast-mode"||args[0]=="orbit"||args[0]=="atmo-flight"||args[0]=="rebase"||args[0]=="pilot"||args[0]=="node"||args[0]=="split"||args[0]=="join"||args[0]=="restore"||args[0]=="execute-node"||args[0]=="thermal"||args[0]=="mechanics"||args[0]=="execution"||args[0]=="deadlines"||args[0]=="work-timing"?OwnedFlightWorkerInvocation.ColdMutation:OwnedFlightWorkerInvocation.ReadOnly;
             OnWorker(delegate(OwnedFlightWorkerContext context)
             {
                 try
@@ -535,7 +552,7 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
                     {
                         var next=stagedRestore;Need(next!=null,"Missing staged checkpoint restoration.");
                         context.Replace(next.Host,next.Session,next.Imported,next.TimelineState);
-                        host=context.Host;flight=context.Session;timeline=context.Timeline;imported=next.Imported;controls=next.Controls;plan=next.Plan;pilot=next.Pilot;prediction=null;maneuver=next.Maneuver;restoredExecution=next.TimelineState;
+                        host=context.Host;flight=context.Session;timeline=context.Timeline;imported=next.Imported;controls=next.Controls;plan=next.Plan;pilot=next.Pilot;prediction=null;maneuver=next.Maneuver;restoredExecution=next.TimelineState;automaticPassiveCoast=restoredExecution!=null&&timeline.AllowPassiveCoast;configuredCoast=automaticPassiveCoast;
                     }
                 }
                 finally{if(args[0]=="restore")stagedRestore=null;}
@@ -543,10 +560,10 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
             if(kind!=OwnedFlightWorkerInvocation.ReadOnly)OnWorker(delegate(OwnedFlightWorkerContext context)
             {
                 receipt.error=null;
-                if(args[0]=="restore"&&restoredExecution!=null){controls=timeline.HeldControls;receipt.paused=timeline.Paused;plan=new OwnedRuntimeStepPlan(.02,timeline.Warp);configuredControls=controls;configuredPaused=receipt.paused;configuredWarp=timeline.Warp;configuredDeadline=timeline.NextDeadlineUniversalTime;timelineConfigured=true;}
+                if(args[0]=="restore"&&restoredExecution!=null){controls=timeline.HeldControls;receipt.paused=timeline.Paused;timelineWarp=timeline.Warp;plan=new OwnedRuntimeStepPlan(.02,1);configuredControls=controls;configuredPaused=receipt.paused;configuredWarp=timeline.Warp;configuredDeadline=timeline.NextDeadlineUniversalTime;timelineConfigured=true;}
                 else{if(args[0]=="restore")timeline.ControlResolver=pilot.mode=="manual"?null:pilotResolver;timelineConfigured=false;ConfigureTimeline(WallNow());}
             });
-            if(args[0]=="restore"||args[0]=="reload"||args[0]=="orbit"||args[0]=="atmo-flight"||args[0]=="rebase"||args[0]=="split"||args[0]=="join")interpolation.Reset(args[0]);
+            if(args[0]=="restore"||args[0]=="reload"||args[0]=="entry-orbit"||args[0]=="orbit"||args[0]=="atmo-flight"||args[0]=="rebase"||args[0]=="split"||args[0]=="join")interpolation.Reset(args[0]);
             if(args[0]=="restore")presentation.BindSession(flight);
         }
         else ExecutePhysical(text,args);
@@ -602,6 +619,21 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         }
         else if(args[0]=="coast"&&args.Length==3&&args[2]=="freeze-passive")
         {Need(flight!=null&&pilot.mode=="manual"&&host.SupportsPassiveKeplerCoast,"Manual world flight with admitted passive Kepler schedule required.");OwnedFlightTimelineProgress progress;ConfigureTimeline(WallNow(),true);try{progress=timeline.CoastTo(flight.UniversalTime+Number(args[1]));}finally{timelineConfigured=false;ConfigureTimeline(WallNow());}AcceptProgress(progress);Need(progress.CoastCommits==1,progress.CoastRejection??progress.Fault??"Coast rejected.");}
+        else if(args[0]=="coast-mode"&&args.Length==2)
+        {RequireColdTimeline();Need(args[1]=="local"||args[1]=="freeze-passive","Coast mode expects local or explicit freeze-passive.");Need(flight!=null&&pilot.mode=="manual"&&host.SupportsPassiveKeplerCoast,"Admitted manual passive coast required.");automaticPassiveCoast=args[1]=="freeze-passive";timelineConfigured=false;ConfigureTimeline(WallNow());}
+        else if(args[0]=="entry-orbit"&&args.Length==3)
+        {
+            RequireColdTimeline();Need(flight!=null,"World flight required.");double apo=flight.Context.Radius+Number(args[1]),peri=flight.Context.Radius+Number(args[2]);Need(apo>peri&&peri>flight.Context.Radius,"Entry orbit needs apoapsis above periapsis above surface.");
+            Vec radial=flight.Context.SunDirection,tangent=Unit(Vec.Cross(OrbitNormal(),radial));double major=(apo+peri)*.5;
+            flight.Place(host.World.Stamp,radial*apo,tangent*Math.Sqrt(flight.Context.Mu*(2/apo-1/major)));controls=new OwnedRuntimeControls();pilot.mode="manual";
+            events.Add("Engineering treatment: explicitly authored elliptic entry orbit, quiet scalar inputs; spin/providers retained and independently coast-admitted.");
+        }
+        else if(args[0]=="flight-forecast"&&args.Length==2)
+        {
+            Need(flight!=null,"World flight required.");var projection=OwnedFlightForecast.Capture(flight,host.World.Stamp,Number(args[1]));
+            var first=projection.HasPositiveCrossing?projection.GetRow(0):default(OwnedFlightForecastRow);
+            receipt.flightForecast=new ForecastData{source=WindowStamp(projection.SourceStamp),model=projection.Model,contextSha=projection.ContextSha256,count=projection.Count,horizon=projection.HorizonSeconds,hasCrossing=projection.HasPositiveCrossing,firstDelta=projection.FirstPositiveDelta,firstKind=projection.HasPositiveCrossing?first.Kind.ToString():"none",regionId=first.RegionId};
+        }
         else if(args[0]=="forecast"&&args.Length==3)
         {
             Need(flight!=null&&pilot.mode=="manual"&&(args[2]=="local"||args[2]=="coast"),"Manual world prediction mode required.");long id;using(var read=host.World.AcquireRead())id=read.GetRegion(0).Id;
@@ -624,7 +656,8 @@ public sealed class OwnedRuntimeWorkbench : MonoBehaviour
         {environment=new OwnedRuntimeEnvironment("explicit-atmosphere-research",environment.Revision+1,host.World.Stamp.Time,Number(args[1]),Number(args[2]),new Vec(),new Vec(),5);}
         else if(args[0]=="vacuum"&&args.Length==1)environment=new OwnedRuntimeEnvironment("explicit-vacuum-research",environment.Revision+1,host.World.Stamp.Time,0,300,new Vec(),new Vec());
         else if(args[0]=="wind"&&args.Length==4)environment=new OwnedRuntimeEnvironment("explicit-flow-research",environment.Revision+1,host.World.Stamp.Time,environment.Density,environment.Temperature,new Vec(Number(args[1]),Number(args[2]),Number(args[3])),environment.Gravity,environment.ConvectiveCoefficient,environment.RadiationTemperature);
-        else if(args[0]=="warp"&&args.Length==2)plan=new OwnedRuntimeStepPlan(.02,Number(args[1]));
+        else if(args[0]=="warp"&&args.Length==2)
+        {double rate=Number(args[1]);Need(!double.IsNaN(rate)&&!double.IsInfinity(rate)&&rate>0&&rate<=1000000,"Warp must be finite positive demand within the timeline bound.");if(timeline!=null)timelineWarp=rate;else plan=new OwnedRuntimeStepPlan(.02,rate);}
         else if(args[0]=="mechanics"&&(args.Length==2||args.Length==3||args.Length==4))
         {RequireColdTimeline();Need(args[1]=="adaptive"||args[1]=="fixed"||args[1]=="embedded","Mechanics expects fixed, adaptive or embedded [maximum interval] [minimum interval].");Need(args[1]!="adaptive"||host.SupportsAdaptiveMechanical,"Current executable schedule does not admit isolated repeated trials.");Need(args[1]!="embedded"||host.SupportsEmbeddedMechanical,"Current executable schedule does not admit builtin staged mechanics.");double maximum=args.Length>=3?Number(args[2]):.1,minimum=args.Length==4?Number(args[3]):.0001;var policy=new OwnedRuntimeMechanicalPolicy(args[1]!="fixed",minimumInterval:minimum,maximumInterval:maximum,initialInterval:Math.Min(.02,maximum),method:args[1]=="embedded"?OwnedRuntimeMechanicalMethod.EmbeddedMidpoint:OwnedRuntimeMechanicalMethod.StepDoubling);host.Systems.SetMechanicalPolicy(host.World.Stamp,policy);}
         else if(args[0]=="execution"&&args.Length==2)

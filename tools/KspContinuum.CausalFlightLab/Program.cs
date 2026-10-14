@@ -241,11 +241,11 @@ static partial class Program
     static int Main(string[] args)
     {
         if(args.Length>0&&args[0]=="--compare-execution")return CompareExecutionSnapshots(args);
-        string? output=null,failure=null;bool created=false;var input=new Inputs();var runs=new List<Run>();object? autonomous=null,legacy=null,adaptiveComparison=null,executionMatrix=null,missions=null;
+        string? output=null,failure=null;bool created=false;var input=new Inputs();var runs=new List<Run>();object? autonomous=null,legacy=null,adaptiveComparison=null,executionMatrix=null,missions=null,forecasts=null;
         try
         {
             Need(args.Length>=10&&args.Length%2==0,"--native ABS --parts ABS --context ABS --aero ABS --output NEW_ABS [--resource-policy strict|acquired-surplus] [--legacy-checkpoint ABS]");
-            var options=new Dictionary<string,string>();for(int i=0;i<args.Length;i+=2)Need(new[]{"--native","--parts","--context","--aero","--output","--resource-policy","--legacy-checkpoint","--execution-only","--execution-modes","--mission-situations","--mission-method","--deadline-strategy"}.Contains(args[i])&&options.TryAdd(args[i],args[i+1]),"Unknown/duplicate option.");
+            var options=new Dictionary<string,string>();for(int i=0;i<args.Length;i+=2)Need(new[]{"--native","--parts","--context","--aero","--output","--resource-policy","--legacy-checkpoint","--execution-only","--execution-modes","--mission-situations","--mission-method","--deadline-strategy","--forecast-situations"}.Contains(args[i])&&options.TryAdd(args[i],args[i+1]),"Unknown/duplicate option.");
             foreach(string key in new[]{"--native","--parts","--context","--aero","--output"})Need(options.ContainsKey(key)&&Path.IsPathFullyQualified(options[key]),"Absolute required argument missing.");
             output=Path.GetFullPath(options["--output"]);NoLinks(output);Need(!File.Exists(output)&&!Directory.Exists(output),"Fresh output required.");
             foreach(string key in new[]{"--native","--parts","--context","--aero"}){string parent=Path.GetDirectoryName(Path.GetFullPath(options[key]))!;Need(output!=parent&&!output.StartsWith(parent+Path.DirectorySeparatorChar,StringComparison.Ordinal),"Output overlaps inputs.");}
@@ -257,7 +257,9 @@ static partial class Program
             Directory.CreateDirectory(output);created=true;
             bool executionOnly=options.GetValueOrDefault("--execution-only","false")=="true";Need(!options.ContainsKey("--execution-only")||options["--execution-only"]=="true"||options["--execution-only"]=="false","Execution-only accepts true or false.");
             string executionModes=options.GetValueOrDefault("--execution-modes","all");Need(executionModes=="all"||executionModes=="adaptive"||executionModes=="deadlines","Execution modes accepts all, adaptive or deadlines.");
-            if(options.TryGetValue("--mission-situations",out string? missionSelector))
+            if(options.TryGetValue("--forecast-situations",out string? forecastSelector))
+            {Need(!executionOnly&&!options.ContainsKey("--mission-situations"),"Forecast situations are a separate consumer.");forecasts=ForecastSituations(input,output,forecastSelector);}
+            else if(options.TryGetValue("--mission-situations",out string? missionSelector))
             {Need(!executionOnly,"Mission situations and execution-only are separate consumers.");missions=MissionSituations(input,output,missionSelector,options.GetValueOrDefault("--mission-method","embedded"),deadlineStrategy:options.GetValueOrDefault("--deadline-strategy","retained"));}
             else if(executionOnly)executionMatrix=CompiledExecution(input,output,executionModes);
             else
@@ -278,7 +280,7 @@ static partial class Program
             Need(input.Pins.All(p=>HashFile(p.path)==p.sha256),"Acquired inputs changed.");
         }
         catch(Exception error){failure=error.ToString();}
-        if(created){using var file=new FileStream(Path.Combine(output!,"receipt.json"),FileMode.CreateNew,FileAccess.Write);JsonSerializer.Serialize(file,new{schema="continuum-causal-flight-lab/v1",status=failure==null?"passed":"failed",failure,inputs=input.Pins,runs,autonomous,legacy,adaptiveComparison,executionMatrix,missions,clockFrequency=Stopwatch.Frequency,assemblySha256=HashFile(Assembly.GetExecutingAssembly().Location),coreSha256=HashFile(typeof(OwnedFlightWorker).Assembly.Location),scope="Actual acquired craft. Separate worker execution/presentation, bounded physical quanta and causal thermal ledger, pending-energy binary checkpoint continuation, rejected corruption and source-bound schedule replacement. Costs include initialization/acks/checkpoint/scenario; allocations report worker thread only. Not native-render FPS, original KSP behavior or universal multirate parity."},Json);}
+        if(created){using var file=new FileStream(Path.Combine(output!,"receipt.json"),FileMode.CreateNew,FileAccess.Write);JsonSerializer.Serialize(file,new{schema="continuum-causal-flight-lab/v1",status=failure==null?"passed":"failed",failure,inputs=input.Pins,runs,autonomous,legacy,adaptiveComparison,executionMatrix,missions,forecasts,clockFrequency=Stopwatch.Frequency,assemblySha256=HashFile(Assembly.GetExecutingAssembly().Location),coreSha256=HashFile(typeof(OwnedFlightWorker).Assembly.Location),scope="Actual acquired craft. Separate worker execution/presentation, bounded physical quanta and causal thermal ledger, pending-energy binary checkpoint continuation, rejected corruption and source-bound schedule replacement. Costs include initialization/acks/checkpoint/scenario; allocations report worker thread only. Not native-render FPS, original KSP behavior or universal multirate parity."},Json);}
         if(failure!=null){Console.Error.WriteLine(failure);return 2;}Console.WriteLine("Actual acquired worker continuation and pending thermal state passed.");return 0;
     }
 }

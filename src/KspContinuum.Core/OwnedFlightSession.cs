@@ -187,7 +187,17 @@ namespace KspContinuum
         public bool PrepareCoast(OwnedRuntimeStamp expected,double targetUniversalTime,OwnedRuntimeControls controls,bool passiveStateFrozen,
             double nextEventUniversalTime,double guardLeadSeconds,out OwnedRuntimeMotion[] motions,out double targetRuntimeTime,out string reason)
         {
+            OwnedFlightCoastWindow ignored;
+            return PrepareCoastCore(expected,targetUniversalTime,controls,passiveStateFrozen,nextEventUniversalTime,guardLeadSeconds,false,double.PositiveInfinity,out motions,out targetRuntimeTime,out reason,out ignored);
+        }
+        public bool PrepareCoastWindow(OwnedRuntimeStamp expected,double targetUniversalTime,OwnedRuntimeControls controls,bool passiveStateFrozen,
+            double nextEventUniversalTime,double guardLeadSeconds,out OwnedRuntimeMotion[] motions,out double targetRuntimeTime,out string reason,out OwnedFlightCoastWindow window,double maximumRuntimeTime=double.PositiveInfinity)
+        {return PrepareCoastCore(expected,targetUniversalTime,controls,passiveStateFrozen,nextEventUniversalTime,guardLeadSeconds,true,maximumRuntimeTime,out motions,out targetRuntimeTime,out reason,out window);}
+        bool PrepareCoastCore(OwnedRuntimeStamp expected,double targetUniversalTime,OwnedRuntimeControls controls,bool passiveStateFrozen,
+            double nextEventUniversalTime,double guardLeadSeconds,bool partial,double maximumRuntimeTime,out OwnedRuntimeMotion[] motions,out double targetRuntimeTime,out string reason,out OwnedFlightCoastWindow window)
+        {
             motions=null;targetRuntimeTime=0;reason=null;
+            window=new OwnedFlightCoastWindow{SourceStamp=expected,ContextSha256=Context.SourceSha256,RequestedUniversalTime=targetUniversalTime,Region=-1,Kind="requested",Model="elliptic-kepler/numeric-bracket"};
             try
             {
                 controls.Validate();CheckFrame(expected);EnsureExtents(expected);AssemblyModel.Finite(targetUniversalTime);OwnedFlightWorld.Nonnegative(guardLeadSeconds);
@@ -197,7 +207,10 @@ namespace KspContinuum
                 OwnedFlightWorld.Need(passiveStateFrozen,"Coast requires an explicit passive resource/thermal freeze policy.");
                 OwnedFlightWorld.Need(controls.Throttle==0&&Zero(controls.Attitude)&&Zero(controls.Translation),"Powered/attitude/RCS input requires local stepping.");
                 OwnedFlightWorld.Need(!double.IsNaN(nextEventUniversalTime)&&nextEventUniversalTime!=double.NegativeInfinity,"Coast event time is invalid.");
-                OwnedFlightWorld.Need(targetUniversalTime<nextEventUniversalTime-guardLeadSeconds,"Coast target reaches a pending event guard.");
+                double selectedUniversal=targetUniversalTime;
+                if(partial&&selectedUniversal>=nextEventUniversalTime-guardLeadSeconds)
+                {selectedUniversal=PreviousTime(nextEventUniversalTime-guardLeadSeconds);window.Limited=true;window.Kind="planned-event";}
+                else OwnedFlightWorld.Need(targetUniversalTime<nextEventUniversalTime-guardLeadSeconds,"Coast target reaches a pending event guard.");
                 using(var read=Runtime.AcquireRead())
                 {
                     OwnedFlightWorld.Need(read.Stamp.Matches(expected)&&read.RegionCount<=SimulationBatch.MaxBodies,"Coast revision/region bound differs.");
@@ -231,22 +244,43 @@ namespace KspContinuum
                             var crossing=CoastingEventScheduler.FindFirst(eventEngine,new RadiusCrossingSearch(startUniversal,endSearch,
                                 guardRadius,RadiusCrossingDirection.Inward));
                             OwnedFlightWorld.Need(crossing!=null,"The guaranteed inward entry event could not be resolved; use local stepping.");
-                            OwnedFlightWorld.Need(targetUniversalTime<crossing.TimeSeconds-guardLeadSeconds,"Coast interval reaches the atmosphere/surface entry guard.");
+                            if(partial)
+                            {
+                                double safe=PreviousTime(crossing.LowerTimeSeconds-Math.Max(.02,guardLeadSeconds));
+                                if(safe<selectedUniversal)
+                                {
+                                    selectedUniversal=safe;window.Limited=true;window.Kind="atmosphere-entry";window.Region=r;window.RadiusMeters=guardRadius;
+                                    window.LowerCrossingUniversalTime=crossing.LowerTimeSeconds;window.UpperCrossingUniversalTime=crossing.TimeSeconds;
+                                }
+                            }
+                            else OwnedFlightWorld.Need(targetUniversalTime<crossing.TimeSeconds-guardLeadSeconds,"Coast interval reaches the atmosphere/surface entry guard.");
                         }
+                    }
+                    if(partial)
+                    {
+                        OwnedFlightWorld.Need(selectedUniversal>startUniversal&&(!window.Limited||selectedUniversal-startUniversal>=.02),"Coast handoff window requires local stepping.");
+                        double selectedLimit=selectedUniversal;
+                        OwnedFlightWorld.Need(!double.IsNaN(maximumRuntimeTime)&&maximumRuntimeTime>expected.Time,"Coast runtime bound does not advance.");
+                        targetRuntimeTime=Math.Min(maximumRuntimeTime,expected.Time+(selectedUniversal-startUniversal));
+                        for(int correction=0;correction<8&&Context.Epoch+(targetRuntimeTime-RuntimeEpoch)>selectedUniversal;correction++)targetRuntimeTime=PreviousTime(targetRuntimeTime);
+                        selectedUniversal=Context.Epoch+(targetRuntimeTime-RuntimeEpoch);
+                        OwnedFlightWorld.Need(targetRuntimeTime>expected.Time&&selectedUniversal>startUniversal&&selectedUniversal<=selectedLimit&&selectedUniversal<=targetUniversalTime&&selectedUniversal<nextEventUniversalTime-guardLeadSeconds,"Coast handoff does not advance within its representable boundaries.");
                     }
                     var candidate=new OwnedRuntimeMotion[seeds.Length];
                     for(int r=0;r<candidate.Length;r++)
                     {
-                        var state=read.GetRegion(r);var final=engine.SampleBodyAt(r,targetUniversalTime);
+                        var state=read.GetRegion(r);var final=engine.SampleBodyAt(r,selectedUniversal);
                         OwnedFlightWorld.Need(OwnedFlightWorld.Norm(final.Position)>Context.Radius+Context.AtmosphereDepth+GuardExtent(r,state.Properties),"Coast endpoint reaches atmosphere/surface guard.");
                         candidate[r]=state.Motion;candidate[r].RootPosition=final.Position+origin*-1+candidate[r].Orientation.Rotate(state.Properties.CenterOfMass)*-1;candidate[r].Velocity=final.Velocity;
                     }
-                    motions=candidate;return true;
+                    window.ReachedUniversalTime=selectedUniversal;window.RuntimeTime=targetRuntimeTime;motions=candidate;return true;
                 }
             }
             catch(ArgumentException error){reason=error.Message;motions=null;targetRuntimeTime=0;return false;}
             catch(InvalidOperationException error){reason=error.Message;motions=null;targetRuntimeTime=0;return false;}
         }
+        static double PreviousTime(double value)
+        {AssemblyModel.Finite(value);if(value==0)return -double.Epsilon;long bits=BitConverter.DoubleToInt64Bits(value);return BitConverter.Int64BitsToDouble(bits+(value>0?-1:1));}
         public bool TryCoast(OwnedRuntimeStamp expected,double targetUniversalTime,OwnedRuntimeControls controls,bool passiveStateFrozen,
             double nextEventUniversalTime,double guardLeadSeconds,out string reason)
         {
@@ -286,6 +320,11 @@ namespace KspContinuum
         }
         double GuardExtent(int region,RigidAssemblyProperties properties)
         {double result=extents[region]+OwnedFlightWorld.Norm(properties.CenterOfMass);AssemblyModel.Finite(result);return result;}
+        internal double GuardExtentForRead(OwnedRuntimeReadLease read,int region)
+        {
+            if(read==null||!read.Stamp.Matches(Runtime.Stamp))throw new InvalidOperationException("Forecast extent read is stale.");
+            CheckFrame(read.Stamp);EnsureExtents(read.Stamp);return GuardExtent(region,read.GetRegion(region).Properties);
+        }
         void ClearSamples(){if(sampled!=null)Array.Clear(sampled,0,sampled.Length);}
         static bool Zero(Vec vector){return vector.X==0&&vector.Y==0&&vector.Z==0;}
     }

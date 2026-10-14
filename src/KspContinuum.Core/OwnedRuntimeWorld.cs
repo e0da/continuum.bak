@@ -45,6 +45,7 @@ namespace KspContinuum
         internal OwnedRuntimeReadLease(OwnedRuntimeWorld world, OwnedRuntimeBank bank) { this.world = world; this.bank = bank; }
         void Check() { if (Volatile.Read(ref disposed) != 0) throw new ObjectDisposedException("OwnedRuntimeReadLease"); }
         public OwnedRuntimeStamp Stamp { get { Check(); return bank.Stamp; } }
+        internal object SourceIdentity {get {Check();return bank;}}
         public OwnedRuntimeDefinition Definition { get { Check(); return bank.Definition; } }
         public OwnedRuntimeTopology Topology { get { Check(); return bank.Topology; } }
         public int PartCount { get { Check(); return bank.Definition.PartCount; } }
@@ -60,6 +61,8 @@ namespace KspContinuum
         public double GetTemperature(int part) { Check(); return bank.Temperature[part]; }
         public double ThermalIntegratedTime {get {Check();return bank.Thermal.integratedTime;}}
         public double ThermalPendingDuration {get {Check();return bank.Thermal.pendingDuration;}}
+        public bool ThermalIndependent {get {Check();return bank.Thermal.independent;}}
+        public double ThermalMaximumLagSeconds {get {Check();return bank.Thermal.maximumLagSeconds;}}
         public double GetProviderState(int slot) { Check(); return bank.ProviderState[slot]; }
         public void Dispose()
         {
