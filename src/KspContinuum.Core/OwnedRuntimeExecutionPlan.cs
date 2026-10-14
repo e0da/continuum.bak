@@ -27,6 +27,7 @@ namespace KspContinuum
             Actuators=new ActuatorRow[actuators.Length];Surfaces=new SurfaceRow[surfaces.Length];SurfaceCounts=new int[topology.RegionCount];
             FuelRoutes=new int[actuators.Length][][];ResourceMassPerUnit=new double[definition.ResourceCount];
             for(int r=0;r<ResourceMassPerUnit.Length;r++)ResourceMassPerUnit[r]=definition.GetResource(r).MassPerUnit;
+            var routedPools=new OwnedRuntimeResourceRoutes(bank,flows);
             for(int i=0;i<Actuators.Length;i++)
             {
                 var spec=actuators[i];var part=definition.GetPart(spec.Part);int body=definition.BodySlot(part.BodyId);var member=bank.Members[body];
@@ -35,9 +36,7 @@ namespace KspContinuum
                 FuelRoutes[i]=new int[fuelPools[i].Length][];
                 for(int f=0;f<fuelPools[i].Length;f++)
                 {
-                    var pool=fuelPools[i][f];int count=0;for(int j=0;j<pool.Length;j++)if(flows[pool[j]]&&topology.BodyRegions[definition.ResourceBodies[pool[j]]]==Actuators[i].Region)count++;
-                    var route=new int[count];int next=0;for(int j=0;j<pool.Length;j++)if(flows[pool[j]]&&topology.BodyRegions[definition.ResourceBodies[pool[j]]]==Actuators[i].Region)route[next++]=pool[j];
-                    FuelRoutes[i][f]=route;
+                    FuelRoutes[i][f]=routedPools.Get(fuelPools[i][f],Actuators[i].Region);
                 }
             }
             for(int i=0;i<Surfaces.Length;i++)

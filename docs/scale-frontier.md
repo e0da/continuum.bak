@@ -1,5 +1,8 @@
 # Scale frontier and ambitious builds
 
+The [capacity runtime](capacity-runtime.md) now provides generated consumers,
+measured replacements, larger lifecycle proofs and preserved frontier failures.
+
 The program discovers practical capacity by pushing representative builds and
 adversarial workloads beyond their current limits. 256 parts is a comparison
 checkpoint, not a ceiling. 4,096 authored parts is the first large stress target,

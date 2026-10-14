@@ -52,7 +52,12 @@ namespace KspContinuum
         static byte[] VersionDigest(Type[] types,Dictionary<Type,FieldInfo[]> fields)
         {return Digest(Utf8.GetBytes(string.Join("\n",types.Where(type=>fields.ContainsKey(type)).OrderBy(type=>type.FullName,StringComparer.Ordinal).Select(type=>type.FullName+":"+string.Join(",",fields[type].Select(field=>field.Name+"="+field.FieldType.FullName))))));}
         static readonly byte[] FlightMagic={79,70,67,66};
-        sealed class Budget {public long Elements;}
+        sealed class Budget
+        {
+            public long Elements;
+            byte[] scratch;
+            public byte[] Scratch {get{return scratch??(scratch=new byte[65536]);}}
+        }
         static void Need(bool ok,string message){if(!ok)throw new InvalidDataException(message);}
         static Dictionary<Type,FieldInfo[]> BuildFields()
         {
@@ -84,47 +89,148 @@ namespace KspContinuum
         static void Elements(Budget budget,int count)
         {Need(count>=0&&count<=MaximumArrayLength,"Checkpoint binary array length exceeds its bound.");budget.Elements+=count;Need(budget.Elements<=MaximumArrayElements,"Checkpoint binary aggregate element bound exceeded.");}
         public static byte[] Encode(OwnedRuntimeHostCheckpoint checkpoint)
-        {return Encode(typeof(OwnedRuntimeHostCheckpoint),checkpoint,Magic,SchemaDigest);}
+        {using(var stream=new MemoryStream()){EncodeTo(stream,checkpoint);return stream.ToArray();}}
         public static byte[] EncodeFlight(OwnedFlightCheckpointData checkpoint)
-        {return Encode(typeof(OwnedFlightCheckpointData),checkpoint,FlightMagic,FlightSchemaDigest);}
-        static byte[] Encode(Type type,object checkpoint,byte[] magic,byte[] schemaDigest)
+        {using(var stream=new MemoryStream()){EncodeFlightTo(stream,checkpoint);return stream.ToArray();}}
+        public static void EncodeTo(Stream stream,OwnedRuntimeHostCheckpoint checkpoint)
+        {EncodeTo(stream,typeof(OwnedRuntimeHostCheckpoint),checkpoint,Magic,SchemaDigest);}
+        public static void EncodeFlightTo(Stream stream,OwnedFlightCheckpointData checkpoint)
+        {EncodeTo(stream,typeof(OwnedFlightCheckpointData),checkpoint,FlightMagic,FlightSchemaDigest);}
+        static void EncodeTo(Stream stream,Type type,object checkpoint,byte[] magic,byte[] schemaDigest)
         {
-            byte[] payload;
-            using(var stream=new MemoryStream())
+            Need(stream!=null&&stream.CanWrite&&stream.CanSeek,"Checkpoint output must be writable and seekable.");
+            Need(stream.Position==0&&stream.Length==0,"Checkpoint output must be fresh and empty.");
+            stream.Write(new byte[HeaderBytes],0,HeaderBytes);
+            using(var payload=new PayloadWriter(stream))
             {
-                using(var writer=new BinaryWriter(stream,Utf8,true))Write(writer,type,checkpoint,new Budget(),0);
-                payload=stream.ToArray();
-            }
-            using(var stream=new MemoryStream(HeaderBytes+payload.Length))
-            {
-                using(var writer=new BinaryWriter(stream,Utf8,true))
-                {writer.Write(magic);writer.Write(Version);writer.Write(schemaDigest);writer.Write(payload.Length);writer.Write(Digest(payload));writer.Write(payload);}
-                return stream.ToArray();
+                using(var writer=new BinaryWriter(payload,Utf8,true))Write(writer,type,checkpoint,new Budget(),0);
+                byte[] hash=payload.Finish();int length=checked((int)payload.Length);
+                stream.Position=0;
+                using(var header=new BinaryWriter(stream,Utf8,true))
+                {header.Write(magic);header.Write(Version);header.Write(schemaDigest);header.Write(length);header.Write(hash);}
+                stream.Position=HeaderBytes+(long)length;
             }
         }
         public static OwnedRuntimeHostCheckpoint Decode(byte[] bytes)
-        {return (OwnedRuntimeHostCheckpoint)Decode(typeof(OwnedRuntimeHostCheckpoint),bytes,Magic,SchemaDigest);}
+        {Need(bytes!=null,"Checkpoint binary size invalid.");using(var stream=new MemoryStream(bytes,false))return DecodeFrom(stream);}
         public static OwnedFlightCheckpointData DecodeFlight(byte[] bytes)
-        {return (OwnedFlightCheckpointData)Decode(typeof(OwnedFlightCheckpointData),bytes,FlightMagic,FlightSchemaDigest);}
-        static object Decode(Type type,byte[] bytes,byte[] magic,byte[] schemaDigest)
+        {Need(bytes!=null,"Checkpoint binary size invalid.");using(var stream=new MemoryStream(bytes,false))return DecodeFlightFrom(stream);}
+        public static OwnedRuntimeHostCheckpoint DecodeFrom(Stream stream)
+        {return (OwnedRuntimeHostCheckpoint)DecodeFrom(stream,typeof(OwnedRuntimeHostCheckpoint),Magic,SchemaDigest);}
+        public static OwnedFlightCheckpointData DecodeFlightFrom(Stream stream)
+        {return (OwnedFlightCheckpointData)DecodeFrom(stream,typeof(OwnedFlightCheckpointData),FlightMagic,FlightSchemaDigest);}
+        static object DecodeFrom(Stream stream,Type type,byte[] magic,byte[] schemaDigest)
         {
-            Need(bytes!=null&&bytes.Length>=HeaderBytes+1&&bytes.Length<=HeaderBytes+MaximumPayloadBytes,"Checkpoint binary size invalid.");
+            Need(stream!=null&&stream.CanRead&&stream.CanSeek,"Checkpoint input must be readable and seekable.");
+            Need(stream.Position==0&&stream.Length>=HeaderBytes+1&&stream.Length<=HeaderBytes+(long)MaximumPayloadBytes,"Checkpoint binary size invalid.");
             try
             {
-                using(var stream=new MemoryStream(bytes,false))using(var reader=new BinaryReader(stream,Utf8,true))
+                using(var reader=new BinaryReader(stream,Utf8,true))
                 {
                     Need(Same(reader.ReadBytes(4),magic),"Checkpoint binary magic differs.");int version=reader.ReadInt32();Need(version>=1&&version<=Version,"Checkpoint binary version differs.");
                     byte[] admitted=version==1?(Same(magic,Magic)?LegacySchemaDigest:LegacyFlightSchemaDigest):version==2?(Same(magic,Magic)?Version2SchemaDigest:Version2FlightSchemaDigest):version==3?(Same(magic,Magic)?Version3SchemaDigest:Version3FlightSchemaDigest):version==4?(Same(magic,Magic)?Version4SchemaDigest:Version4FlightSchemaDigest):version==5?(Same(magic,Magic)?Version5SchemaDigest:Version5FlightSchemaDigest):schemaDigest;
                     Need(Same(reader.ReadBytes(32),admitted),"Checkpoint binary typed schema differs.");
-                    int length=reader.ReadInt32();Need(length>0&&length<=MaximumPayloadBytes&&bytes.Length==HeaderBytes+length,"Checkpoint binary payload length/trailing bytes differ.");
-                    byte[] expected=reader.ReadBytes(32),actual;using(var sha=SHA256.Create())actual=sha.ComputeHash(bytes,HeaderBytes,length);
+                    int length=reader.ReadInt32();Need(length>0&&length<=MaximumPayloadBytes&&stream.Length==HeaderBytes+(long)length,"Checkpoint binary payload length/trailing bytes differ.");
+                    byte[] expected=reader.ReadBytes(32),actual=DigestPayload(stream,length);
                     Need(Same(expected,actual),"Checkpoint binary digest differs.");
-                    var value=Read(reader,type,new Budget(),0,version);
-                    Need(stream.Position==stream.Length,"Checkpoint binary payload has trailing fields.");return value;
+                    stream.Position=HeaderBytes;
+                    using(var payload=new PayloadReader(stream,length))using(var bodyReader=new BinaryReader(payload,Utf8,true))
+                    {
+                        var value=Read(bodyReader,type,new Budget(),0,version);
+                        Need(payload.Position==payload.Length&&stream.Length==HeaderBytes+(long)length,"Checkpoint binary payload has trailing fields.");
+                        Need(Same(expected,payload.Finish()),"Checkpoint binary changed during decoding.");return value;
+                    }
                 }
             }
             catch(EndOfStreamException ex){throw new InvalidDataException("Checkpoint binary is truncated.",ex);}
             catch(DecoderFallbackException ex){throw new InvalidDataException("Checkpoint binary UTF8 is invalid.",ex);}
+        }
+        static byte[] DigestPayload(Stream stream,int length)
+        {
+            var buffer=new byte[65536];int remaining=length;
+            using(var sha=SHA256.Create())
+            {
+                while(remaining>0)
+                {int read=stream.Read(buffer,0,Math.Min(buffer.Length,remaining));Need(read>0,"Checkpoint binary payload is truncated.");sha.TransformBlock(buffer,0,read,buffer,0);remaining-=read;}
+                sha.TransformFinalBlock(buffer,0,0);return sha.Hash;
+            }
+        }
+        sealed class PayloadWriter : Stream
+        {
+            readonly Stream target;readonly SHA256 sha=SHA256.Create();readonly byte[] buffer=new byte[65536];
+            int buffered,count;bool finished;
+            internal PayloadWriter(Stream target){this.target=target;}
+            public override bool CanRead{get{return false;}}public override bool CanSeek{get{return false;}}public override bool CanWrite{get{return !finished;}}
+            public override long Length{get{return count;}}public override long Position{get{return count;}set{throw new NotSupportedException();}}
+            public override void Write(byte[] bytes,int offset,int length)
+            {
+                Need(!finished&&bytes!=null&&offset>=0&&length>=0&&offset<=bytes.Length-length,"Checkpoint payload write differs.");
+                Need(count<=MaximumPayloadBytes-length,"Checkpoint binary payload exceeds its byte bound.");
+                count+=length;
+                while(length>0){int take=Math.Min(buffer.Length-buffered,length);Buffer.BlockCopy(bytes,offset,buffer,buffered,take);buffered+=take;offset+=take;length-=take;if(buffered==buffer.Length)Drain();}
+            }
+#if NET8_0_OR_GREATER
+            public override void Write(ReadOnlySpan<byte> bytes)
+            {
+                Need(!finished&&count<=MaximumPayloadBytes-bytes.Length,"Checkpoint binary payload exceeds its byte bound.");
+                count+=bytes.Length;
+                while(!bytes.IsEmpty)
+                {
+                    int take=Math.Min(buffer.Length-buffered,bytes.Length);
+                    bytes.Slice(0,take).CopyTo(buffer.AsSpan(buffered,take));buffered+=take;bytes=bytes.Slice(take);
+                    if(buffered==buffer.Length)Drain();
+                }
+            }
+#endif
+            public override void WriteByte(byte value)
+            {Need(!finished&&count<MaximumPayloadBytes,"Checkpoint binary payload exceeds its byte bound.");buffer[buffered++]=value;count++;if(buffered==buffer.Length)Drain();}
+            void Drain(){if(buffered==0)return;target.Write(buffer,0,buffered);sha.TransformBlock(buffer,0,buffered,buffer,0);buffered=0;}
+            public override void Flush(){Drain();target.Flush();}
+            internal byte[] Finish(){Need(!finished,"Checkpoint payload already finished.");Drain();sha.TransformFinalBlock(buffer,0,0);finished=true;return sha.Hash;}
+            protected override void Dispose(bool disposing){if(disposing)sha.Dispose();base.Dispose(disposing);}
+            public override int Read(byte[] bytes,int offset,int length){throw new NotSupportedException();}
+            public override long Seek(long offset,SeekOrigin origin){throw new NotSupportedException();}
+            public override void SetLength(long length){throw new NotSupportedException();}
+        }
+        sealed class PayloadReader : Stream
+        {
+            readonly Stream source;readonly SHA256 sha=SHA256.Create();readonly byte[] buffer=new byte[65536];readonly int length;
+            int buffered,offset,fetched,consumed;
+            internal PayloadReader(Stream source,int length){this.source=source;this.length=length;}
+            public override bool CanRead{get{return true;}}public override bool CanSeek{get{return false;}}public override bool CanWrite{get{return false;}}
+            public override long Length{get{return HeaderBytes+(long)length;}}
+            public override long Position{get{return HeaderBytes+(long)consumed;}set{throw new NotSupportedException();}}
+            bool Fill()
+            {
+                if(offset<buffered)return true;if(fetched==length)return false;
+                buffered=source.Read(buffer,0,Math.Min(buffer.Length,length-fetched));offset=0;
+                Need(buffered>0,"Checkpoint binary payload is truncated.");fetched+=buffered;
+                sha.TransformBlock(buffer,0,buffered,buffer,0);return true;
+            }
+            public override int Read(byte[] bytes,int start,int count)
+            {
+                if(bytes==null||start<0||count<0||start>bytes.Length-count)throw new ArgumentOutOfRangeException();
+                int copied=0;while(copied<count&&Fill()){int take=Math.Min(count-copied,buffered-offset);Buffer.BlockCopy(buffer,offset,bytes,start+copied,take);offset+=take;consumed+=take;copied+=take;}return copied;
+            }
+#if NET8_0_OR_GREATER
+            public override int Read(Span<byte> bytes)
+            {
+                int copied=0;
+                while(copied<bytes.Length&&Fill())
+                {
+                    int take=Math.Min(bytes.Length-copied,buffered-offset);
+                    buffer.AsSpan(offset,take).CopyTo(bytes.Slice(copied,take));offset+=take;consumed+=take;copied+=take;
+                }
+                return copied;
+            }
+#endif
+            public override int ReadByte(){if(!Fill())return -1;consumed++;return buffer[offset++];}
+            internal byte[] Finish(){Need(consumed==length,"Checkpoint binary payload is incomplete.");sha.TransformFinalBlock(buffer,0,0);return sha.Hash;}
+            protected override void Dispose(bool disposing){if(disposing)sha.Dispose();base.Dispose(disposing);}
+            public override void Flush(){}
+            public override void Write(byte[] bytes,int offset,int count){throw new NotSupportedException();}
+            public override long Seek(long offset,SeekOrigin origin){throw new NotSupportedException();}
+            public override void SetLength(long length){throw new NotSupportedException();}
         }
         static void Write(BinaryWriter writer,Type type,object value,Budget budget,int depth)
         {
@@ -143,6 +249,7 @@ namespace KspContinuum
             {
                 Space(stream,4);if(value==null){writer.Write(-1);return;}Need(value.GetType()==type,"Checkpoint binary array type differs.");
                 var array=(Array)value;Elements(budget,array.Length);writer.Write(array.Length);Type element=type.GetElementType();
+                if(WritePrimitiveArray(writer,element,array,depth,budget))return;
                 for(int i=0;i<array.Length;i++)Write(writer,element,array.GetValue(i),budget,depth+1);return;
             }
             FieldInfo[] fields;Need(Fields.TryGetValue(type,out fields),"Checkpoint binary DTO is not whitelisted.");Space(stream,1);
@@ -166,10 +273,66 @@ namespace KspContinuum
                 int length=reader.ReadInt32();if(length==-1)return null;Elements(budget,length);Type element=type.GetElementType();
                 // Every element needs at least one encoded byte, even a null DTO/string/array.
                 Need(length<=reader.BaseStream.Length-reader.BaseStream.Position,"Checkpoint binary array cannot fit payload.");
+                object primitive=ReadPrimitiveArray(reader,element,length,depth,budget);if(primitive!=null)return primitive;
                 var array=Array.CreateInstance(element,length);for(int i=0;i<length;i++)array.SetValue(Read(reader,element,budget,depth+1,version),i);return array;
             }
             FieldInfo[] fields;Need((version==1?LegacyFields:version==2?Version2Fields:version==3?Version3Fields:version==4?Version4Fields:version==5?Version5Fields:Fields).TryGetValue(type,out fields),"Checkpoint binary DTO is not whitelisted.");byte presence=reader.ReadByte();Need(presence<=1,"Checkpoint binary DTO marker differs.");if(presence==0)return null;
             object value=Activator.CreateInstance(type);foreach(var field in fields)field.SetValue(value,Read(reader,field.FieldType,budget,depth+1,version));return value;
+        }
+        static int PrimitiveBytes(Type element)
+        {return element==typeof(double)||element==typeof(long)?8:element==typeof(int)||element==typeof(uint)?4:element==typeof(bool)?1:0;}
+        static bool WritePrimitiveArray(BinaryWriter writer,Type element,Array array,int depth,Budget budget)
+        {
+            int stride=PrimitiveBytes(element);if(stride==0)return false;
+            Need(array.Length==0||depth<MaximumDepth,"Checkpoint binary depth exceeded.");Space(writer.BaseStream,checked(array.Length*stride));
+            if(array.Length>=1024&&(BitConverter.IsLittleEndian||element==typeof(bool)))
+            {
+                byte[] scratch=budget.Scratch;int bytes=checked(array.Length*stride);
+                for(int offset=0;offset<bytes;)
+                {
+                    int count=Math.Min(scratch.Length,bytes-offset);
+                    if(element==typeof(bool)){var flags=(bool[])array;for(int i=0;i<count;i++)scratch[i]=(byte)(flags[offset+i]?1:0);}
+                    else Buffer.BlockCopy(array,offset,scratch,0,count);
+                    writer.Write(scratch,0,count);offset+=count;
+                }
+                return true;
+            }
+            if(element==typeof(double)){foreach(double value in (double[])array)writer.Write(BitConverter.DoubleToInt64Bits(value));}
+            else if(element==typeof(long)){foreach(long value in (long[])array)writer.Write(value);}
+            else if(element==typeof(int)){foreach(int value in (int[])array)writer.Write(value);}
+            else if(element==typeof(uint)){foreach(uint value in (uint[])array)writer.Write(value);}
+            else {foreach(bool value in (bool[])array)writer.Write((byte)(value?1:0));}
+            return true;
+        }
+        static object ReadPrimitiveArray(BinaryReader reader,Type element,int length,int depth,Budget budget)
+        {
+            int stride=PrimitiveBytes(element);if(stride==0)return null;
+            Need(length==0||depth<MaximumDepth,"Checkpoint binary depth exceeded.");
+            Need((long)length*stride<=reader.BaseStream.Length-reader.BaseStream.Position,"Checkpoint binary array cannot fit payload.");
+            if(length>=1024&&(BitConverter.IsLittleEndian||element==typeof(bool)))
+            {
+                Array values=element==typeof(double)?(Array)new double[length]:element==typeof(long)?new long[length]:
+                    element==typeof(int)?new int[length]:element==typeof(uint)?new uint[length]:(Array)new bool[length];
+                byte[] scratch=budget.Scratch;int bytes=checked(length*stride);
+                for(int offset=0;offset<bytes;)
+                {
+                    int count=Math.Min(scratch.Length,bytes-offset);ReadInto(reader.BaseStream,scratch,count);
+                    if(element==typeof(bool))
+                    {var decodedFlags=(bool[])values;for(int i=0;i<count;i++){Need(scratch[i]<=1,"Checkpoint binary bool encoding differs.");decodedFlags[offset+i]=scratch[i]==1;}}
+                    else Buffer.BlockCopy(scratch,0,values,offset,count);
+                    offset+=count;
+                }
+                return values;
+            }
+            if(element==typeof(double)){var values=new double[length];for(int i=0;i<length;i++)values[i]=BitConverter.Int64BitsToDouble(reader.ReadInt64());return values;}
+            if(element==typeof(long)){var values=new long[length];for(int i=0;i<length;i++)values[i]=reader.ReadInt64();return values;}
+            if(element==typeof(int)){var values=new int[length];for(int i=0;i<length;i++)values[i]=reader.ReadInt32();return values;}
+            if(element==typeof(uint)){var values=new uint[length];for(int i=0;i<length;i++)values[i]=reader.ReadUInt32();return values;}
+            var flags=new bool[length];for(int i=0;i<length;i++){byte flag=reader.ReadByte();Need(flag<=1,"Checkpoint binary bool encoding differs.");flags[i]=flag==1;}return flags;
+        }
+        static void ReadInto(Stream stream,byte[] buffer,int count)
+        {
+            int read=0;while(read<count){int next=stream.Read(buffer,read,count-read);if(next==0)throw new EndOfStreamException();read+=next;}
         }
     }
 }

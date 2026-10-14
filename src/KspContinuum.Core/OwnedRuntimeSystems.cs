@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
@@ -230,6 +231,14 @@ namespace KspContinuum
         readonly string thermalPlanId;
         readonly bool[] enabled, flowEnabled;
         readonly int[][][] fuelPools;
+        readonly HashSet<AvailabilityRoute> validatedAvailability=new HashSet<AvailabilityRoute>();
+        struct AvailabilityRoute : IEquatable<AvailabilityRoute>
+        {
+            internal int[] Pool;internal int Region;
+            public bool Equals(AvailabilityRoute other){return ReferenceEquals(Pool,other.Pool)&&Region==other.Region;}
+            public override bool Equals(object value){return value is AvailabilityRoute&&Equals((AvailabilityRoute)value);}
+            public override int GetHashCode(){return System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(Pool)^Region;}
+        }
         readonly int[] resourceParts,partBodies;
         readonly int[] wheelProviderSlots;
         readonly Vec[] forces, torques, oldCenters, oldWheel, newWheel;
@@ -286,6 +295,17 @@ namespace KspContinuum
             resourceParts=new int[flowEnabled.Length];
             for(int i=0;i<resourceParts.Length;i++)resourceParts[i]=definition.PartSlot(definition.GetResource(i).PartId);
             fuelPools=new int[actuators.Length][][];
+            var poolRows=new Dictionary<string,List<int>>(StringComparer.Ordinal);
+            var nonpositiveKinds=new HashSet<string>(StringComparer.Ordinal);
+            for(int r=0;r<definition.ResourceCount;r++)
+            {
+                var resource=definition.GetResource(r);List<int> rows;
+                if(!poolRows.TryGetValue(resource.Kind,out rows)){rows=new List<int>();poolRows.Add(resource.Kind,rows);}
+                rows.Add(r);if(resource.MassPerUnit<=0)nonpositiveKinds.Add(resource.Kind);
+            }
+            var sharedPools=new Dictionary<string,int[]>(StringComparer.Ordinal);
+            var singlePools=new Dictionary<int,int[]>();
+            var wheelReservoirs=new HashSet<int>();
             for(int i=0;i<actuators.Length;i++)
             {
                 var a=this.actuators[i];if(a==null)throw new ArgumentException("Null actuator.");Part(a.Part);
@@ -293,7 +313,7 @@ namespace KspContinuum
                 if(a.Kind==OwnedRuntimeActuatorKind.ReactionWheel)
                 {
                     if(provider<0 || provider>=definition.ProviderStateCount)throw new ArgumentException("Wheel requires a captured provider-state slot.");
-                    for(int j=0;j<i;j++)if(this.wheelProviderSlots[j]==provider)throw new ArgumentException("Wheels require unique momentum reservoirs.");
+                    if(!wheelReservoirs.Add(provider))throw new ArgumentException("Wheels require unique momentum reservoirs.");
                 }
                 else if(provider!=-1)throw new ArgumentException("Nonwheel cannot claim a momentum reservoir.");
                 if(a.ElectricResource>=definition.ResourceCount)throw new ArgumentException("Invalid electric resource.");
@@ -304,20 +324,16 @@ namespace KspContinuum
                     {
                         if(a.FuelResource>=definition.ResourceCount || definition.GetResource(a.FuelResource).MassPerUnit<=0)
                             throw new ArgumentException("Fuel must have positive declared mass.");
-                        fuelPools[i][f]=new[]{a.FuelResource};
+                        int[] single;if(!singlePools.TryGetValue(a.FuelResource,out single)){single=new[]{a.FuelResource};singlePools.Add(a.FuelResource,single);}
+                        fuelPools[i][f]=single;
                     }
                     else
                     {
-                        int count=0;
-                        for(int r=0;r<definition.ResourceCount;r++)if(definition.GetResource(r).Kind==a.FuelKind(f))count++;
-                        if(count==0)throw new ArgumentException("Fuel kind has no recorded resource pool: "+a.FuelKind(f));
-                        var pool=new int[count];count=0;
-                        for(int r=0;r<definition.ResourceCount;r++)if(definition.GetResource(r).Kind==a.FuelKind(f))
-                        {
-                            if(definition.GetResource(r).MassPerUnit<=0)throw new ArgumentException("Propellant density must be positive.");
-                            if(r==a.ElectricResource)throw new ArgumentException("Fuel and electrical pools overlap.");
-                            pool[count++]=r;
-                        }
+                        string kind=a.FuelKind(f);List<int> rows;
+                        if(!poolRows.TryGetValue(kind,out rows))throw new ArgumentException("Fuel kind has no recorded resource pool: "+kind);
+                        if(nonpositiveKinds.Contains(kind))throw new ArgumentException("Propellant density must be positive.");
+                        if(a.ElectricResource>=0&&definition.GetResource(a.ElectricResource).Kind==kind)throw new ArgumentException("Fuel and electrical pools overlap.");
+                        int[] pool;if(!sharedPools.TryGetValue(kind,out pool)){pool=rows.ToArray();sharedPools.Add(kind,pool);}
                         fuelPools[i][f]=pool;
                     }
                 }
@@ -767,6 +783,7 @@ namespace KspContinuum
         {ActuateBank(step.Bank,step.DeltaTime,controls,observe,false);}
         void ActuateBank(OwnedRuntimeBank bank,double dt,OwnedRuntimeControls controls,bool observe,bool boundaryOnly)
         {
+            validatedAvailability.Clear();
             var input=bank.Input;
             Vec translation=ControlOrientation.Rotate(new Vec(input.X,input.Y,input.Z)),
                 attitude=ControlOrientation.Rotate(new Vec(input.Pitch,input.Yaw,input.Roll));
@@ -798,7 +815,7 @@ namespace KspContinuum
                 }
                 for(int f=0;f<a.FuelCount;f++)
                 {
-                    double demand=fuelMass*a.FuelMassFraction(f),available=Available(bank,compiled?executionPlan.FuelRoutes[i][f]:fuelPools[i][f],region,compiled);
+                    double demand=fuelMass*a.FuelMassFraction(f),available=Available(bank,compiled?executionPlan.FuelRoutes[i][f]:fuelPools[i][f],region,compiled,demand);
                     if(demand>0)fraction=Math.Min(fraction,available/demand);
                 }
                 if(electric>0)
@@ -833,10 +850,15 @@ namespace KspContinuum
             }
         }
 
-        double Available(OwnedRuntimeBank bank,int[] pool,int region,bool compiled=false)
+        double Available(OwnedRuntimeBank bank,int[] pool,int region,bool compiled,double demand)
         {
+            bool first=validatedAvailability.Add(new AvailabilityRoute{Pool=pool,Region=region});
+            if(!first&&demand==0)return 0;
             double sum=0;for(int i=0;i<pool.Length;i++){int r=pool[i];if(compiled||(flowEnabled[r] && bank.Topology.PartRegions[resourceParts[r]]==region))
-                sum+=bank.ResourceQuantity[r]*(compiled?executionPlan.ResourceMassPerUnit[r]:definition.GetResource(r).MassPerUnit);}AssemblyModel.Finite(sum);return sum;
+            {
+                sum+=bank.ResourceQuantity[r]*(compiled?executionPlan.ResourceMassPerUnit[r]:definition.GetResource(r).MassPerUnit);
+                if(!first&&sum>=demand){AssemblyModel.Finite(sum);return sum;}
+            }}AssemblyModel.Finite(sum);return sum;
         }
         void Withdraw(OwnedRuntimeBank bank,int[] pool,int region,double mass,int boundaryRow=-1,bool compiled=false)
         {

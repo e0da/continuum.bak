@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace KspContinuum
 {
@@ -23,12 +24,15 @@ namespace KspContinuum
         readonly double[] rates,densities;
         readonly int[] consumers,firstConsumers;
         readonly string unsupported;
+        struct Inventory {internal double Mass;internal int First;}
+        readonly Dictionary<int[],Inventory> inventories=new Dictionary<int[],Inventory>();
         internal OwnedRuntimeDeadlinePlan(OwnedRuntimeBank bank,OwnedRuntimeActuatorSpec[] actuators,int[][][] pools,bool[] enabled,bool[] flows,int[] providers,Rotation orientation,OwnedRuntimeControls controls,long configuration)
         {
             definition=bank.Definition;topology=bank.Topology;this.configuration=configuration;this.controls=controls;
             rows=new Row[actuators.Length];rates=new double[definition.ResourceCount];densities=new double[rates.Length];consumers=new int[rates.Length];firstConsumers=new int[rates.Length];
             for(int r=0;r<densities.Length;r++)densities[r]=definition.GetResource(r).MassPerUnit;
             Vec translation=orientation.Rotate(controls.Translation),attitude=orientation.Rotate(controls.Attitude);
+            var routedPools=new OwnedRuntimeResourceRoutes(bank,flows);
             for(int i=0;i<rows.Length;i++)
             {
                 var a=actuators[i];var part=definition.GetPart(a.Part);int body=definition.BodySlot(part.BodyId),region=topology.BodyRegions[body];
@@ -46,9 +50,7 @@ namespace KspContinuum
                 }
                 for(int f=0;f<row.Routes.Length;f++)
                 {
-                    var source=pools[i][f];int count=0;for(int j=0;j<source.Length;j++)if(flows[source[j]]&&topology.BodyRegions[definition.ResourceBodies[source[j]]]==region)count++;
-                    var route=new int[count];int next=0;for(int j=0;j<source.Length;j++)if(flows[source[j]]&&topology.BodyRegions[definition.ResourceBodies[source[j]]]==region)route[next++]=source[j];
-                    row.Routes[f]=route;row.Fractions[f]=a.FuelMassFraction(f);
+                    row.Routes[f]=routedPools.Get(pools[i][f],region);row.Fractions[f]=a.FuelMassFraction(f);
                 }
                 if(row.Electric>=0&&(!flows[row.Electric]||topology.BodyRegions[definition.ResourceBodies[row.Electric]]!=region))row.Electric=-1;
                 rows[i]=row;
@@ -58,7 +60,7 @@ namespace KspContinuum
         {return ReferenceEquals(definition,bank.Definition)&&ReferenceEquals(topology,bank.Topology)&&configuration==revision&&Same(controls,value);}
         internal bool Seed(double[] quantities,double[] providers,double horizon,out OwnedRuntimeDeadlinePrediction prediction,out string reason)
         {
-            prediction=new OwnedRuntimeDeadlinePrediction{Delta=double.PositiveInfinity,Lower=double.PositiveInfinity,Upper=double.PositiveInfinity,Kind="none",Actuator=-1,Resource=-1};reason=unsupported;if(reason!=null)return false;Array.Clear(rates,0,rates.Length);Array.Clear(consumers,0,consumers.Length);
+            prediction=new OwnedRuntimeDeadlinePrediction{Delta=double.PositiveInfinity,Lower=double.PositiveInfinity,Upper=double.PositiveInfinity,Kind="none",Actuator=-1,Resource=-1};reason=unsupported;if(reason!=null)return false;Array.Clear(rates,0,rates.Length);Array.Clear(consumers,0,consumers.Length);inventories.Clear();
             for(int i=0;i<rows.Length;i++)
             {
                 var row=rows[i];if(row.Request==0)continue;bool active=true;
@@ -72,7 +74,7 @@ namespace KspContinuum
                 }
                 for(int f=0;f<row.Routes.Length;f++)
                 {
-                    double available=0;var route=row.Routes[f];for(int j=0;j<route.Length;j++)available+=quantities[route[j]]*densities[route[j]];
+                    double available=ReadInventory(row.Routes[f],quantities).Mass;
                     if(!Finite(available)){reason="nonfinite-availability";return false;}if(available==0)active=false;
                 }
                 if(!active)continue;
@@ -88,7 +90,7 @@ namespace KspContinuum
                 }
                 for(int f=0;f<row.Routes.Length;f++)
                 {
-                    var route=row.Routes[f];int first=-1;for(int j=0;j<route.Length;j++)if(quantities[route[j]]>0){first=route[j];break;}
+                    int first=ReadInventory(row.Routes[f],quantities).First;
                     double rate=row.FuelRate*row.Fractions[f]/densities[first];if(!PositiveNormal(rate)||!PositiveNormal(quantities[first])){reason="nonrepresentable-resource-rate";return false;}if(consumers[first]++==0)firstConsumers[first]=i;rates[first]+=rate;
                 }
                 if(row.ElectricRate>0){if(!PositiveNormal(row.ElectricRate)||!PositiveNormal(quantities[row.Electric])){reason="nonrepresentable-electric-rate";return false;}if(consumers[row.Electric]++==0)firstConsumers[row.Electric]=i;rates[row.Electric]+=row.ElectricRate;}
@@ -96,6 +98,13 @@ namespace KspContinuum
             for(int r=0;r<rates.Length;r++)if(rates[r]>0)
             {double time=quantities[r]/rates[r];if(!PositiveNormal(time)||!Finite(rates[r])){reason="nonrepresentable-resource-root";return false;}double radius=Gamma(12+2*consumers[r])*time+2*Ulp(time);if(!Finite(radius)||!Finite(time+radius)||!Finite(Next(time+radius))){reason="nonrepresentable-resource-bracket";return false;}AdmitPrediction(ref prediction,time,radius,"resource-empty",consumers[r]==1?firstConsumers[r]:-1,r);}
             reason=null;return true;
+        }
+        Inventory ReadInventory(int[] route,double[] quantities)
+        {
+            Inventory value;if(inventories.TryGetValue(route,out value))return value;
+            value=new Inventory{First=-1};for(int j=0;j<route.Length;j++)
+            {int resource=route[j];value.Mass+=quantities[resource]*densities[resource];if(value.First<0&&quantities[resource]>0)value.First=resource;}
+            inventories.Add(route,value);return value;
         }
         static void AdmitPrediction(ref OwnedRuntimeDeadlinePrediction prediction,double time,double radius,string kind,int actuator,int resource)
         {
