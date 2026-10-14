@@ -88,7 +88,10 @@ Native09's exact word-block comparison passed the actual loaded-Mono foreign, sa
 
 Same-frame lighting facts falsified the stale-anchor explanation for the observed dark view: sunlight intensity was .9, no body eclipse was reported, the Sun direction aligned, and scaled-space anchor errors were zero. Camera-to-Sun angle drifted from approximately 157 to 111 degrees; explicit sunlight reframe produced approximately 160 degrees, a 20-degree solar phase view. Craft and planet pixels were inspected. This resolves that observed framing case; it does not establish every lighting condition or high-warp interpolation.
 
-The next qualification remains focused on the real consumer:
+The next qualification remains focused on the real consumer. The
+[scale frontier](scale-frontier.md) sets 4,096 authored parts as the first large
+stress target, with larger probes through million-part craft and collisions.
+Small comparison cases are checkpoints, not the program's capacity ceiling.
 
 1. Qualify actual mouse buttons, stock warp-key handling and broader control-reference transitions. Observed keypad and protocol operations do not establish every ordinary control mode.
 2. Qualify smooth presentation interpolation and broader lighting/camera conditions. Render interpolation is an observation projection and must not alter committed physics or hide debt.

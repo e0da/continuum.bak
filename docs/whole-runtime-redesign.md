@@ -243,6 +243,13 @@ even when their speedup is masked by a different gate.
 
 ## Whole-program profiling and qualification
 
+Use the [scale frontier and ambitious build families](scale-frontier.md) to
+discover capacity. 256 parts is a retained comparison point; 4,096 parts is the
+first large stress target. Grow useful missions and adversarial cases beyond it
+until the failure mechanism changes, including standalone million-part and
+collision investigations. Record actual mechanical, provider, contact and
+rendering complexity separately from authored part count.
+
 Consolidate source-bound evidence before launching another test. Use a few
 distinct sessions covering orbit/control/warp/handback/reload, atmospheric
 aero/thermal/visual effects, and editor/staging/contact/docking/scene changes.
