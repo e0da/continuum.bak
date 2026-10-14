@@ -47,7 +47,7 @@ internal static class BinaryCheckpointTests
         foreach(int length in new[]{0,4,75,wire.Length-1})Reject(()=>OwnedRuntimeCheckpointBinary.Decode(wire.Take(length).ToArray()),"Truncated binary accepted.");
         var corrupt=(byte[])wire.Clone();corrupt[corrupt.Length-1]^=1;Reject(()=>OwnedRuntimeCheckpointBinary.Decode(corrupt),"Payload digest corruption accepted.");
         corrupt=(byte[])wire.Clone();corrupt[8]^=1;Reject(()=>OwnedRuntimeCheckpointBinary.Decode(corrupt),"Foreign schema accepted.");
-        corrupt=(byte[])wire.Clone();corrupt[4]=2;Reject(()=>OwnedRuntimeCheckpointBinary.Decode(corrupt),"Foreign version accepted.");
+        corrupt=(byte[])wire.Clone();corrupt[4]=3;Reject(()=>OwnedRuntimeCheckpointBinary.Decode(corrupt),"Foreign version accepted.");
         Reject(()=>OwnedRuntimeCheckpointBinary.Decode(wire.Concat(new byte[]{0}).ToArray()),"Trailing bytes accepted.");
         corrupt=(byte[])wire.Clone();corrupt[OwnedRuntimeCheckpointBinary.HeaderBytes]=2;Redigest(corrupt);Reject(()=>OwnedRuntimeCheckpointBinary.Decode(corrupt),"Malformed typed marker with valid digest accepted.");
         var oversized=new OwnedRuntimeHostCheckpoint{implementation=new string('x',OwnedRuntimeCheckpointBinary.MaximumStringBytes+1)};

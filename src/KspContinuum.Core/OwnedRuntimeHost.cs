@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Security.Cryptography;
+using System.Threading;
 
 namespace KspContinuum
 {
@@ -18,7 +19,10 @@ namespace KspContinuum
         void Step(OwnedRuntimeSystems systems,OwnedRuntimeStep step,OwnedRuntimeEnvironment environment,OwnedRuntimeControls controls);
     }
 
-    public sealed class OwnedRuntimeBuiltinSchedule : IOwnedRuntimePassiveKeplerSchedule
+    // Admission requires an original schedule whose implementation may run without Unity APIs.
+    public interface IOwnedRuntimeWorkerSchedule : IOwnedRuntimeSchedule { }
+
+    public sealed class OwnedRuntimeBuiltinSchedule : IOwnedRuntimePassiveKeplerSchedule, IOwnedRuntimeWorkerSchedule
     {
         public string Schema { get { return "continuum-owned-runtime-schedule/v1"; } }
         public string StateSchema { get { return "world-bank-state-only/v1"; } }
@@ -42,21 +46,36 @@ namespace KspContinuum
         IOwnedRuntimeSchedule schedule;
         string implementation;
         bool advancing;
+        int workerThread;
         public readonly OwnedRuntimeWorld World;
         public readonly OwnedRuntimeSystems Systems;
         public string ScheduleSourceSha256 { get; private set; }
         public string ScheduleImplementation { get { return implementation; } }
         public long CodeGeneration { get; private set; }
         public bool SupportsPassiveKeplerCoast {get {lock(gate)return schedule is IOwnedRuntimePassiveKeplerSchedule;}}
+        public int WorkerThreadId { get { return Volatile.Read(ref workerThread); } }
         public OwnedRuntimeHost(OwnedRuntimeWorld world,OwnedRuntimeSystems systems)
         {
             if(world==null||systems==null)throw new ArgumentNullException("world/systems");
             World=world;Systems=systems;schedule=new OwnedRuntimeBuiltinSchedule();implementation=schedule.ImplementationId;ScheduleSourceSha256=BuiltinSourceSha256;
         }
+        public void BindWorkerThread()
+        {
+            lock(gate)
+            {
+                RequireWorkerThread();
+                if(advancing || !(schedule is IOwnedRuntimeWorkerSchedule))throw new InvalidOperationException("Worker binding requires an idle worker-admitted schedule.");
+                World.BindWriterThread();
+                workerThread=Thread.CurrentThread.ManagedThreadId;
+            }
+        }
+        void RequireWorkerThread()
+        {if(workerThread!=0 && workerThread!=Thread.CurrentThread.ManagedThreadId)throw new InvalidOperationException("The simulation worker owns this runtime host.");}
         public OwnedRuntimeHostCheckpoint CaptureCheckpoint(OwnedRuntimeImportResult imported,OwnedRuntimeControls controls,OwnedRuntimeEnvironment environment,OwnedRuntimeStepPlan plan)
         {
             lock(gate)
             {
+                RequireWorkerThread();
                 if(advancing||!ReferenceEquals(imported.World,World)||!ReferenceEquals(imported.Systems,Systems))throw new InvalidOperationException("Checkpoint owner differs or is advancing.");
                 return new OwnedRuntimeHostCheckpoint {implementation=implementation,sourceSha256=ScheduleSourceSha256,codeGeneration=CodeGeneration,state=OwnedRuntimeCheckpoint.Capture(imported,controls,environment,plan)};
             }
@@ -65,11 +84,13 @@ namespace KspContinuum
         {
             lock(gate)
             {
+                RequireWorkerThread();
                 if(advancing||data==null||data.schema!="continuum-owned-runtime-host-checkpoint/v1"||data.implementation!=implementation||data.sourceSha256!=ScheduleSourceSha256||data.codeGeneration!=CodeGeneration)
                     throw new InvalidOperationException("Checkpoint requires its exact loaded executable schedule generation.");
                 state=OwnedRuntimeCheckpoint.Restore(data.state,nativeSha,partSha);
                 var restored=new OwnedRuntimeHost(state.World,state.Systems);
                 restored.schedule=schedule;restored.implementation=implementation;restored.ScheduleSourceSha256=ScheduleSourceSha256;restored.CodeGeneration=CodeGeneration;
+                if(workerThread!=0)restored.BindWorkerThread();
                 return restored;
             }
         }
@@ -81,6 +102,7 @@ namespace KspContinuum
         {
             lock(gate)
             {
+                RequireWorkerThread();
                 if(advancing)throw new InvalidOperationException("Runtime schedule cannot reenter.");
                 var fieldSchedule=schedule as IOwnedRuntimeFieldSchedule;
                 if(field!=null&&fieldSchedule==null)throw new InvalidOperationException("Loaded schedule has no environment-field execution contract.");
@@ -108,7 +130,9 @@ namespace KspContinuum
             foreach(char value in sha256)if(!((value>='0'&&value<='9')||(value>='a'&&value<='f')))throw new ArgumentException("Schedule digest is invalid.");
             lock(gate)
             {
+                RequireWorkerThread();
                 if(advancing||!World.Stamp.Matches(expected))throw new InvalidOperationException("Schedule reload epoch is stale.");
+                if(workerThread!=0 && !(replacement is IOwnedRuntimeWorkerSchedule))throw new InvalidOperationException("Schedule has no worker execution admission.");
                 string nextImplementation=null;bool entered=false;World.EnterAdmission(expected);
                 try
                 {

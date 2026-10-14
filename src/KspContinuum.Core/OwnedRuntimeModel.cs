@@ -186,6 +186,7 @@ namespace KspContinuum
         public long[] RegionIds;
         public OwnedRuntimeMotion[] RegionMotion;
         public double[] ResourceQuantity, Temperature, ProviderState;
+        public OwnedRuntimeThermalState Thermal;
         public OwnedRuntimeInput Input;
         public OwnedRuntimeInputRecord[] InputHistory;
     }
@@ -196,6 +197,7 @@ namespace KspContinuum
         internal RigidAssemblyProperties[] Properties;
         internal RigidAssemblyMember[] Members;
         internal double[] ResourceQuantity, Temperature, ProviderState;
+        internal OwnedRuntimeThermalState Thermal;
         internal OwnedRuntimeInput Input;
         internal OwnedRuntimeInputRecord[] History;
         internal double[] LastResourceQuantity;
@@ -213,6 +215,7 @@ namespace KspContinuum
             RegionMotion = new OwnedRuntimeMotion[topology.RegionCount]; Properties = new RigidAssemblyProperties[topology.RegionCount];
             Members = new RigidAssemblyMember[definition.BodyCount]; ResourceQuantity = new double[definition.ResourceCount];
             Temperature = new double[definition.PartCount]; ProviderState = new double[definition.ProviderStateCount];
+            Thermal = new OwnedRuntimeThermalState(definition.PartCount);
             History = new OwnedRuntimeInputRecord[256];
             LastResourceQuantity = new double[definition.ResourceCount]; BodyDirty = new bool[definition.BodyCount];
             RegionDirty = new bool[topology.RegionCount];
@@ -226,6 +229,7 @@ namespace KspContinuum
             Array.Copy(source.Members, Members, Members.Length); Array.Copy(source.ResourceQuantity, ResourceQuantity, ResourceQuantity.Length);
             Array.Copy(source.LastResourceQuantity, LastResourceQuantity, LastResourceQuantity.Length);
             Array.Copy(source.Temperature, Temperature, Temperature.Length); Array.Copy(source.ProviderState, ProviderState, ProviderState.Length);
+            Thermal.CopyFrom(source.Thermal);
             Array.Copy(source.History, History, History.Length); Input = source.Input; HistoryCount = source.HistoryCount; HistoryHead = source.HistoryHead;
             Definition = source.Definition; Topology = source.Topology; Stamp = source.Stamp;
         }

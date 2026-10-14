@@ -1,5 +1,8 @@
 using System;
 using System.Diagnostics;
+using System.Globalization;
+using System.Text;
+using System.Security.Cryptography;
 
 namespace KspContinuum
 {
@@ -217,6 +220,8 @@ namespace KspContinuum
         readonly OwnedRuntimeSurfaceSpec[] surfaces;
         readonly OwnedRuntimeEnvironmentSample[] environments;
         readonly OwnedRuntimeThermalLink[] links;
+        readonly OwnedRuntimeThermalSolver thermalSolver;
+        readonly string thermalPlanId;
         readonly bool[] enabled, flowEnabled;
         readonly int[][][] fuelPools;
         readonly int[] resourceParts,partBodies;
@@ -234,7 +239,7 @@ namespace KspContinuum
 
         public OwnedRuntimeSystems(OwnedRuntimeWorld world, OwnedRuntimeActuatorSpec[] actuators,
             OwnedRuntimeSurfaceSpec[] surfaces, OwnedRuntimeThermalLink[] thermalLinks=null,
-            bool[] resourceFlowEnabled=null, bool observeClock=false, int[] wheelProviderSlots=null, Rotation? controlOrientation=null)
+            bool[] resourceFlowEnabled=null, bool observeClock=false, int[] wheelProviderSlots=null, Rotation? controlOrientation=null, OwnedRuntimeThermalPolicy thermalPolicy=null)
         {
             if(world==null || actuators==null || surfaces==null)throw new ArgumentNullException("systems");
             if(actuators.Length>MaximumRows || surfaces.Length>MaximumRows || (thermalLinks!=null && thermalLinks.Length>MaximumRows))
@@ -297,7 +302,19 @@ namespace KspContinuum
             oldWheel=new Vec[definition.BodyCount];newWheel=new Vec[definition.BodyCount];
             heat=new double[definition.PartCount];wheelMomentum=new double[actuators.Length];stagedWheelMomentum=new double[actuators.Length];
             this.observeClock=observeClock;
+            thermalSolver=new OwnedRuntimeThermalSolver(definition,links);
+            var text=new StringBuilder();foreach(var surface in this.surfaces)text.Append(surface.Part).Append(':').Append(surface.ThermalArea.ToString("R",CultureInfo.InvariantCulture)).Append(':').Append(surface.Emissivity.ToString("R",CultureInfo.InvariantCulture)).Append(';');
+            foreach(var link in links)text.Append(link.A).Append(':').Append(link.B).Append(':').Append(link.ConductanceWattsPerKelvin.ToString("R",CultureInfo.InvariantCulture)).Append(';');
+            using(var sha=SHA256.Create())thermalPlanId=BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(text.ToString()))).Replace("-","").ToLowerInvariant();
+            if(thermalPolicy!=null)SetThermalPolicy(world.Stamp,thermalPolicy);
         }
+        public OwnedRuntimeThermalPolicy ThermalPolicy {get{return world.ThermalPolicy;}}
+        public OwnedRuntimeStamp SetThermalPolicy(OwnedRuntimeStamp expected,OwnedRuntimeThermalPolicy policy)
+        {if(policy==null)throw new ArgumentNullException("policy");RequireConfigurationIdle();return world.MutateThermal(expected,bank=>{if(bank.Thermal.pendingDuration!=0)throw new InvalidOperationException("Flush pending thermal interval before policy replacement.");bank.Thermal.Apply(policy);bank.Thermal.planId=thermalPlanId;});}
+        public OwnedRuntimeStamp FlushThermal(OwnedRuntimeStamp expected)
+        {RequireConfigurationIdle();return world.MutateThermal(expected,bank=>{RequireThermalPlan(bank);thermalSolver.Flush(bank);});}
+        void RequireThermalPlan(OwnedRuntimeBank bank)
+        {if(bank.Thermal.pendingDuration!=0&&bank.Thermal.planId!=thermalPlanId)throw new InvalidOperationException("Pending thermal model belongs to a different system plan.");}
 
         public int ActuatorCount{get{return actuators.Length;}}
         public int SurfaceCount{get{return surfaces.Length;}}
@@ -326,7 +343,7 @@ namespace KspContinuum
         internal void RestoreConfigurationRevision(long value)
         {lock(configurationGate){RequireConfigurationIdle();if(value<0)throw new ArgumentOutOfRangeException("value");configurationRevision=value;}}
         void RequireConfigurationIdle()
-        {if(executing)throw new InvalidOperationException("Cold system configuration cannot change during schedule execution.");}
+        {world.RequireWriterThread();if(executing)throw new InvalidOperationException("Cold system configuration cannot change during schedule execution.");}
         internal void EnterExecution()
         {lock(configurationGate){RequireConfigurationIdle();executing=true;executionThread=System.Threading.Thread.CurrentThread.ManagedThreadId;}}
         internal void ExitExecution()
@@ -515,6 +532,35 @@ namespace KspContinuum
         }
 
         void Thermal(OwnedRuntimeStep step)
+        {
+            var bank=step.Bank;var state=bank.Thermal;RequireThermalPlan(bank);
+            state.causalRevision=checked(state.causalRevision+1);
+            if(!state.independent)
+            {
+                ThermalReference(step);state.integratedTime=step.ExpectedStamp.Time+step.DeltaTime;
+                state.integratedCausalRevision=state.causalRevision;state.advances++;state.lastSubsteps=1;
+                for(int p=0;p<heat.Length;p++)state.sourceJoules+=heat[p];return;
+            }
+            if(state.pendingDuration==0){state.planId=thermalPlanId;state.topologyRevision=bank.Topology.Revision;}
+            int segment=state.segmentCount;if(segment>=OwnedRuntimeThermalState.SegmentCapacity)throw new InvalidOperationException("Thermal forcing segment capacity exceeded.");
+            int offset=segment*heat.Length;state.segmentDuration[segment]=step.DeltaTime;state.segmentCount++;
+            state.pendingDuration=step.ExpectedStamp.Time+step.DeltaTime-state.integratedTime;
+            AssemblyModel.Positive(state.pendingDuration);
+            for(int p=0;p<heat.Length;p++){state.heatJoules[p]+=heat[p];state.segmentHeat[offset+p]=heat[p];AssemblyModel.Finite(state.heatJoules[p]);}
+            foreach(var surface in surfaces)
+            {
+                int p=surface.Part;var environment=environments[bank.Topology.PartRegions[p]];double dt=step.DeltaTime;
+                double convection=environment.ConvectiveCoefficient*surface.ThermalArea*dt,radiation=StefanBoltzmann*surface.Emissivity*surface.ThermalArea*dt;
+                double ambient=environment.RadiationTemperature,ambient2=ambient*ambient;
+                state.segmentConvection[offset+p]+=convection;state.segmentConvectionSource[offset+p]+=convection*environment.Temperature;
+                state.segmentRadiation[offset+p]+=radiation;state.segmentRadiationSource[offset+p]+=radiation*ambient2*ambient2;
+            }
+            for(int p=0;p<heat.Length;p++){state.convectionExposure[p]+=state.segmentConvection[offset+p];state.convectionSource[p]+=state.segmentConvectionSource[offset+p];state.radiationExposure[p]+=state.segmentRadiation[offset+p];state.radiationSource[p]+=state.segmentRadiationSource[offset+p];}
+            state.lastDeferredBoundKelvin=thermalSolver.DeferredBound(bank);
+            if(state.segmentCount==OwnedRuntimeThermalState.SegmentCapacity || state.pendingDuration>=state.maximumLagSeconds || state.lastDeferredBoundKelvin>=state.maximumDeferredKelvin)thermalSolver.Flush(bank);
+            else state.deferredSteps++;
+        }
+        void ThermalReference(OwnedRuntimeStep step)
         {
             var bank=step.Bank;double dt=step.DeltaTime;
             for(int p=0;p<heat.Length;p++)bank.Temperature[p]+=heat[p]/definition.GetPart(p).HeatCapacity;

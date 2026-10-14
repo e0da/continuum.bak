@@ -23,15 +23,15 @@ public sealed class OwnedFlightOverlay : IDisposable
     static ScientificVector3 Sub(ScientificVector3 a,ScientificVector3 b){return new ScientificVector3(a.x-b.x,a.y-b.y,a.z-b.z);}
     static ScientificVector3 Scale(ScientificVector3 p,double s){return new ScientificVector3(p.x*s,p.y*s,p.z*s);}
     static double Dot(ScientificVector3 a,ScientificVector3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
-    public void Draw(Camera camera,Vec cameraOriginBodyMeters,OwnedFlightSession session,OwnedFlightPredictionResult prediction,bool grid,string parent="root")
+    public void Draw(Camera camera,Vec cameraOriginBodyMeters,OwnedFlightPresentationLease frame,OwnedFlightPredictionResult prediction,bool grid,string parent="root")
     {
-        if(disposed)throw new ObjectDisposedException("OwnedFlightOverlay");if(camera==null||session==null)return;
+        if(disposed)throw new ObjectDisposedException("OwnedFlightOverlay");if(camera==null||frame==null)return;
         if(parent!="root"&&parent!="com")throw new ArgumentException("Overlay parent must be root or com.");
         if(Event.current!=null&&Event.current.type!=EventType.Repaint)return;
         if(pixel==null){pixel=new Texture2D(1,1,TextureFormat.RGBA32,false,true);pixel.SetPixel(0,0,Color.white);pixel.Apply(false,true);label=new GUIStyle(GUI.skin.label){fontSize=13};label.normal.textColor=Color.white;}
         Vector3 right=camera.transform.right,up=camera.transform.up,forward=camera.transform.forward;
         double cameraRadius=Math.Sqrt(cameraOriginBodyMeters.X*cameraOriginBodyMeters.X+cameraOriginBodyMeters.Y*cameraOriginBodyMeters.Y+cameraOriginBodyMeters.Z*cameraOriginBodyMeters.Z);
-        Status.overlayNear=Math.Max(.001,camera.nearClipPlane);Status.overlayFar=Math.Max(camera.farClipPlane,cameraRadius+session.Context.Radius*4);
+        Status.overlayNear=Math.Max(.001,camera.nearClipPlane);Status.overlayFar=Math.Max(camera.farClipPlane,cameraRadius+frame.Context.Radius*4);
         var view=new ScientificView(Point(cameraOriginBodyMeters),new ScientificVector3(right.x,right.y,right.z),new ScientificVector3(up.x,up.y,up.z),new ScientificVector3(forward.x,forward.y,forward.z),camera.pixelWidth,camera.pixelHeight,camera.orthographic?ScientificProjectionKind.Orthographic:ScientificProjectionKind.Perspective,camera.fieldOfView,camera.orthographicSize*2,Status.overlayNear,Status.overlayFar);
         Status.drawnSegments=Status.gridLines=0;Status.grid=grid;Status.parent=parent;
         Color prior=GUI.color;Matrix4x4 matrix=GUI.matrix;
@@ -40,7 +40,7 @@ public sealed class OwnedFlightOverlay : IDisposable
             if(prediction!=null)
             {
                 Status.trajectoryPoints=prediction.Count;Status.trajectoryStride=Math.Max(1,(prediction.Count-1+MaximumTrajectorySegments-1)/MaximumTrajectorySegments);
-                Status.sourceStateMatches=prediction.SourceUnchanged&&prediction.ContextSha256==session.Context.SourceSha256&&prediction.SourceStamp.Matches(session.Runtime.Stamp);
+                Status.sourceStateMatches=prediction.SourceUnchanged&&prediction.ContextSha256==frame.Context.SourceSha256&&prediction.SourceStamp.Matches(frame.Read.Stamp);
                 Status.trajectoryStatus=prediction.Status+(Status.sourceStateMatches?" [state/context match]":" [stale/source mismatch]");
                 GUI.color=prediction.Status!="completed"?new Color(1,.3f,.25f):Status.sourceStateMatches?new Color(.2f,.95f,1):new Color(1,.65f,.15f);
                 if(prediction.Count>8193)throw new ArgumentException("Prediction overlay exceeds bounded point count.");
@@ -50,10 +50,10 @@ public sealed class OwnedFlightOverlay : IDisposable
             else{Status.trajectoryPoints=0;Status.trajectoryStride=1;Status.trajectoryStatus="none";Status.sourceStateMatches=false;}
             if(grid)
             {
-                using(var read=session.Runtime.AcquireRead())
+                var read=frame.Read;
                 {
                     var region=read.GetRegion(0);Status.regionId=region.Id;var motion=region.Motion;
-                    Vec focus=session.Origin+motion.RootPosition;if(parent=="com")focus+=motion.Orientation.Rotate(region.Properties.CenterOfMass);
+                    Vec focus=frame.Origin+motion.RootPosition;if(parent=="com")focus+=motion.Orientation.Rotate(region.Properties.CenterOfMass);
                     ScientificVector3 origin=Point(focus),u=Point(motion.Orientation.Rotate(new Vec(1,0,0))),v=Point(motion.Orientation.Rotate(new Vec(0,1,0))),axis=Point(motion.Orientation.Rotate(new Vec(0,0,1)));
                     double depth=Dot(Sub(origin,view.origin),view.forward);if(depth>0)
                     {

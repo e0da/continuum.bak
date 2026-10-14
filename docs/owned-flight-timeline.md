@@ -8,7 +8,7 @@ The owner retains `requested - committed` debt. A pump stops after its commit co
 
 Open held-input segments retain sub-quantum debt instead of integrating a different fractional render tail on every presentation callback. A genuine input change closes its prior segment; its exact boundary, a hard event deadline, or an explicit manual step can shorten a physical quantum. Unchanged held policies coalesce. The bounded 128-entry FIFO rejects new demand on overflow while preserving all previously accepted demand. Drain at the last accepted wall timestamp before retrying the rejected request.
 
-This FIFO is an explicit historical input policy. Controls accepted while simulation is behind apply after the older owed controls. It is suitable for deterministic recording and replay; it can delay live input during sustained overload. A future low-latency policy must explicitly define supersession and cannot silently erase history. The current consumer uses this declared policy.
+This FIFO is an explicit historical input policy. Controls accepted while simulation is behind apply after the older owed controls. It is suitable for deterministic recording and replay; it can delay live input during sustained overload. `SetLiveControls` instead supersedes only unapplied control values at the committed frontier, retaining time debt and the other policy boundaries. The independent workbench uses live controls; the captured replay lab retains the historical FIFO.
 
 ## Interface and ownership
 

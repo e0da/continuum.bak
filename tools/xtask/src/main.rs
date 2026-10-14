@@ -24,6 +24,7 @@ const DOTNET_TESTS: &[&str] = &[
     "tests/KspContinuum.RetainedIngress.Tests",
     "tests/KspContinuum.RetainedValidation.Tests",
     "tests/KspContinuum.OwnedFlightTimeline.Tests",
+    "tests/KspContinuum.OwnedFlightWorker.Tests",
     "tests/KspContinuum.WriterCensus.Tests",
     "tests/KspContinuum.ForceObservation.Tests",
     "tests/KspContinuum.AeroCapture.Tests",
@@ -182,7 +183,7 @@ fn portable(root: &Path) -> Result {
         "dotnet",
         &["build", "tools/KspContinuum.FlightFixture", "-c", "Release"],
     )?;
-    for project in ["tools/KspContinuum.RuntimeMap", "tools/KspContinuum.SourceAtlas", "tools/KspContinuum.OwnedFlightLab", "tools/KspContinuum.OwnedFlightTimelineLab"] {
+    for project in ["tools/KspContinuum.RuntimeMap", "tools/KspContinuum.SourceAtlas", "tools/KspContinuum.OwnedFlightLab", "tools/KspContinuum.OwnedFlightTimelineLab", "tools/KspContinuum.CausalFlightLab"] {
         checked(root, "dotnet", &["build", project, "-c", "Release"])?;
     }
     checked(root, "dotnet", &["run", "--project", "tools/KspContinuum.SourceAtlas", "-c", "Release", "--", "self-test"])?;

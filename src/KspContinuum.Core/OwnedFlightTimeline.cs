@@ -9,6 +9,8 @@ namespace KspContinuum
         public OwnedRuntimeStamp Stamp;
         public string SourceId, ContextSha256, ScheduleSha256, Status, Fault, CoastRejection;
         public long InputRevision, CodeGeneration, ConfigurationRevision, TotalLocalCommits, TotalCoastCommits, ControlResolutions;
+        public long SupersededPendingControlSegments;
+        public double LastLiveInputRuntimeTime;
         public int LocalCommits, CoastCommits, PendingInputSegments;
         public double WallSeconds, RequestedRuntimeTime, CommittedRuntimeTime, DebtSeconds, UniversalTime, Warp;
         public bool Paused, DeadlineReached, BudgetExhausted;
@@ -44,6 +46,8 @@ namespace KspContinuum
         public long TotalLocalCommits { get; private set; }
         public long TotalCoastCommits { get; private set; }
         public long ControlResolutions { get; private set; }
+        public long SupersededPendingControlSegments { get; private set; }
+        public double LastLiveInputRuntimeTime { get; private set; }
         public double RequestedRuntimeTime { get { return requested; } }
         public double CommittedRuntimeTime { get { return expected.Time; } }
         public double DebtSeconds { get { return Math.Max(0, requested - expected.Time); } }
@@ -96,6 +100,28 @@ namespace KspContinuum
             Status = paused ? "paused" : DebtSeconds > 0 ? "owed" : "caught-up";
         }
 
+        public void SetLiveControls(OwnedRuntimeStamp sourceStamp, long expectedRevision, double wallNowSeconds, OwnedRuntimeControls controls)
+        {
+            Enter(); CheckSource(); controls.Validate(); ValidateWall(wallNowSeconds);
+            if (!sourceStamp.Matches(expected) || expectedRevision != InputRevision)
+                throw new ArgumentException("Live input source/revision differs.");
+            long revision = checked(InputRevision + 1);
+            if (SupersededPendingControlSegments > long.MaxValue - count - 1)
+                throw new OverflowException("Live input supersession counter exhausted.");
+            Accrue(wallNowSeconds);
+            int replaced = 0;
+            for (int i = 0; i < count; i++)
+            {
+                int slot = (head + i) % segments.Length; Segment segment = segments[slot];
+                if (!SameControls(segment.Input.Controls, controls)) replaced++;
+                segment.Input.Controls = controls; segments[slot] = segment;
+            }
+            policy.Controls = controls;
+            SupersededPendingControlSegments += replaced;
+            LastLiveInputRuntimeTime = expected.Time; InputRevision = revision;
+            Status = Paused ? "paused" : DebtSeconds > 0 ? "owed" : "caught-up";
+        }
+
         public OwnedFlightTimelineProgress Pump(double wallNowSeconds, int maximumCommits, double wallBudgetSeconds = double.PositiveInfinity)
         {
             Enter(); ValidateBudget(maximumCommits, wallBudgetSeconds); ValidateWall(wallNowSeconds);
@@ -115,6 +141,7 @@ namespace KspContinuum
                 }
                 if (DebtSeconds == 0) Status = "caught-up";
             }
+            catch (OwnedRuntimeReadPressureException) { Status = "blocked-readers"; }
             catch (Exception error) { StopFault(error); }
             finally { pumping = false; }
             return Progress(local, coast, reached, budget, begin);
@@ -132,6 +159,7 @@ namespace KspContinuum
                 if (!CommitNext(deltaSeconds, false, out wasCoast, out waitingQuantum)) { Status = "deadline"; return Progress(0, 0, true, false, begin); }
                 Status = "paused"; return Progress(1, 0, false, false, begin);
             }
+            catch (OwnedRuntimeReadPressureException) { Status = "blocked-readers"; return Progress(0, 0, false, false, begin); }
             catch (Exception error) { StopFault(error); return Progress(0, 0, false, false, begin); }
             finally { pumping = false; }
         }
@@ -262,16 +290,19 @@ namespace KspContinuum
         static bool Same(Policy a, Policy b)
         {
             return a.AllowCoast == b.AllowCoast && a.PassiveFrozen == b.PassiveFrozen && ReferenceEquals(a.Resolver, b.Resolver) &&
-                a.Controls.Throttle == b.Controls.Throttle && a.Controls.Translation.X == b.Controls.Translation.X && a.Controls.Translation.Y == b.Controls.Translation.Y && a.Controls.Translation.Z == b.Controls.Translation.Z &&
-                a.Controls.Attitude.X == b.Controls.Attitude.X && a.Controls.Attitude.Y == b.Controls.Attitude.Y && a.Controls.Attitude.Z == b.Controls.Attitude.Z &&
-                a.Controls.EnginesEnabled == b.Controls.EnginesEnabled && a.Controls.RcsEnabled == b.Controls.RcsEnabled && a.Controls.WheelsEnabled == b.Controls.WheelsEnabled;
+                SameControls(a.Controls, b.Controls);
         }
+        static bool SameControls(OwnedRuntimeControls a, OwnedRuntimeControls b)
+        { return a.Throttle == b.Throttle && a.Translation.X == b.Translation.X && a.Translation.Y == b.Translation.Y && a.Translation.Z == b.Translation.Z &&
+            a.Attitude.X == b.Attitude.X && a.Attitude.Y == b.Attitude.Y && a.Attitude.Z == b.Attitude.Z &&
+            a.EnginesEnabled == b.EnginesEnabled && a.RcsEnabled == b.RcsEnabled && a.WheelsEnabled == b.WheelsEnabled; }
         OwnedFlightTimelineProgress Progress(int local, int coast, bool reached, bool exhausted, long begin)
         {
             return new OwnedFlightTimelineProgress { Stamp = expected, SourceId = SourceId, ContextSha256 = Session.Context.SourceSha256,
                 ScheduleSha256 = scheduleSha, InputRevision = InputRevision, CodeGeneration = codeGeneration, ConfigurationRevision = configurationRevision,
                 Status = Status, Fault = Fault, CoastRejection = LastCoastRejection, TotalLocalCommits = TotalLocalCommits, TotalCoastCommits = TotalCoastCommits,
                 ControlResolutions = ControlResolutions, LocalCommits = local, CoastCommits = coast, PendingInputSegments = count,
+                SupersededPendingControlSegments = SupersededPendingControlSegments, LastLiveInputRuntimeTime = LastLiveInputRuntimeTime,
                 WallSeconds = wall, RequestedRuntimeTime = requested, CommittedRuntimeTime = expected.Time, DebtSeconds = DebtSeconds,
                 UniversalTime = Universal(expected.Time), Warp = Warp, Paused = Paused, DeadlineReached = reached, BudgetExhausted = exhausted,
                 WorkTicks = Stopwatch.GetTimestamp() - begin, ClockFrequency = Stopwatch.Frequency };

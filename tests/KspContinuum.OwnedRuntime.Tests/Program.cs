@@ -44,7 +44,7 @@ class Program
     }
     static void Main()
     {
-        FoundationCases.Run();SystemsTests.Run();CheckpointTests.Run();BinaryCheckpointTests.Run();Host();
+        FoundationCases.Run();SystemsTests.Run();CheckpointTests.Run();BinaryCheckpointTests.Run();ThermalTests.Run();Host();
         FlightWorldTests.Run();FlightControlTests.Run();FlightPresentationTests.Run();
         var captured=new OwnedRuntimeCapturedParts {parts=new[]{new OwnedRuntimeCapturedPart {partId=1,name="export",resources=new[]{new OwnedRuntimeCapturedResource {name="Fuel",amount=2,capacity=1,densityKilogramsPerUnit=3}},actuators=new[]{new OwnedRuntimeCapturedActuator {kind="rcs",thrusters=new[]{new OwnedRuntimeCapturedThruster {positionInRoot=new double[3],forceDirectionInRoot=new[]{1.0,0,0}}},propellants=new[]{new OwnedRuntimeCapturedPropellant {resource="Fuel",ratio=1}},resourceRates=new[]{new OwnedRuntimeCapturedResourceRate {resource="EC",unitsPerSecond=1,varyTime=true}}}}}}};
         using(var json=System.Text.Json.JsonDocument.Parse(ReportJson.Encode(captured)))

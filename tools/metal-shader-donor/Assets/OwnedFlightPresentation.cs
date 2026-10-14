@@ -97,7 +97,7 @@ public sealed class OwnedFlightPresentation : IDisposable
         catch{Dispose();throw;}
     }
     public void BindSession(OwnedFlightSession next)
-    {Need(!disposed&&next!=null&&next.Context.NativeManifestSha256==imported.Source.nativeManifestSha256&&next.Context.PartSpecsSha256==imported.Source.partSpecsSha256&&next.Context.BodyId==Scene.bodyId,"Owned visual session has foreign source/context.");using(var read=next.Runtime.AcquireRead())bindings.Fill(read,next.Origin,next.Origin,doubles);flight=next;matrixSet=false;Status.contextSha256=next.Context.SourceSha256;}
+    {Need(!disposed&&next!=null&&next.Context.NativeManifestSha256==imported.Source.nativeManifestSha256&&next.Context.PartSpecsSha256==imported.Source.partSpecsSha256&&next.Context.BodyId==Scene.bodyId,"Owned visual session has foreign source/context.");flight=next;matrixSet=false;Status.contextSha256=next.Context.SourceSha256;}
     public void SetWorldScale(float scale){Need(Finite(scale)&&scale>=.25f&&scale<=1,"Owned render scale must be .25..1.");Status.worldScale=scale;}
     public void SetDebugView(string value)
     {
@@ -119,24 +119,24 @@ public sealed class OwnedFlightPresentation : IDisposable
     }
     static void Configure(Camera source,Camera target,RenderTexture color,int mask,bool depth)
     {target.CopyFrom(source);target.enabled=false;target.transform.SetPositionAndRotation(Vector3.zero,source.transform.rotation);target.targetTexture=color;target.renderingPath=RenderingPath.Forward;target.cullingMask=mask;target.clearFlags=CameraClearFlags.SolidColor;target.backgroundColor=Color.clear;target.allowHDR=false;target.allowMSAA=false;target.depthTextureMode=depth?DepthTextureMode.Depth:DepthTextureMode.None;target.rect=new Rect(0,0,1,1);target.ResetProjectionMatrix();}
-    public void Render(Camera view,Vec cameraBodyOriginMeters,RenderTexture destination)
+    public void Render(Camera view,Vec cameraBodyOriginMeters,RenderTexture destination,OwnedFlightPresentationLease frame)
     {
-        Need(!disposed&&view!=null&&flight!=null,"Owned visual render owner unavailable.");long start=System.Diagnostics.Stopwatch.GetTimestamp();var previous=RenderTexture.active;
+        Need(!disposed&&view!=null&&frame!=null&&frame.Context.SourceSha256==Status.contextSha256,"Owned visual render owner/source unavailable.");long start=System.Diagnostics.Stopwatch.GetTimestamp();var previous=RenderTexture.active;
         try
         {
             int width=destination==null?view.pixelWidth:destination.width,height=destination==null?view.pixelHeight:destination.height;Need(width>0&&height>0&&width<=8192&&height<=8192&&(long)width*height<=16777216,"Owned visual viewport exceeds bounds.");int w=Math.Max(1,(int)Math.Ceiling(width*Status.worldScale)),h=Math.Max(1,(int)Math.Ceiling(height*Status.worldScale));Resize(w,h);
             Configure(view,craftCamera,craftTargets.Color,craft.LayerMask,false);Configure(view,bodyCamera,bodyTargets.Color,1<<29,true);
-            using(var read=flight.Runtime.AcquireRead())
+            var read=frame.Read;
             {
-                Vec origin=flight.Origin+read.GetRegion(0).Motion.RootPosition;
-                if(!matrixSet||!matrixStamp.Matches(read.Stamp)||!Same(lastWorldOrigin,flight.Origin))
+                Vec origin=frame.Origin+read.GetRegion(0).Motion.RootPosition;
+                if(!matrixSet||!matrixStamp.Matches(read.Stamp)||!Same(lastWorldOrigin,frame.Origin))
                 {
-                    long t=System.Diagnostics.Stopwatch.GetTimestamp();bindings.Fill(read,flight.Origin,origin,doubles);for(int i=0;i<matrices.Length;i++)for(int r=0;r<4;r++)for(int c=0;c<4;c++)matrices[i][r,c]=(float)doubles[i*16+r*4+c];craft.ApplyPresentationMatrices(matrices);matrixOrigin=origin;lastWorldOrigin=flight.Origin;matrixStamp=read.Stamp;matrixSet=true;Status.matrixUpdates++;Status.matrixTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-t;
+                    long t=System.Diagnostics.Stopwatch.GetTimestamp();bindings.Fill(read,frame.Origin,origin,doubles);for(int i=0;i<matrices.Length;i++)for(int r=0;r<4;r++)for(int c=0;c<4;c++)matrices[i][r,c]=(float)doubles[i*16+r*4+c];craft.ApplyPresentationMatrices(matrices);matrixOrigin=origin;lastWorldOrigin=frame.Origin;matrixStamp=read.Stamp;matrixSet=true;Status.matrixUpdates++;Status.matrixTicks+=System.Diagnostics.Stopwatch.GetTimestamp()-t;
                 }
                 craft.SetPresentationAnchor(F(Sub(matrixOrigin,cameraBodyOriginMeters)));Status.worldEpoch=read.Stamp.Epoch;Status.worldTime=read.Stamp.Time;
             }
             var bounds=craft.Bounds;float radius=Math.Max(.01f,bounds.extents.magnitude),distance=bounds.center.magnitude;craftCamera.nearClipPlane=Math.Max(.001f,(distance-radius)*.5f);craftCamera.farClipPlane=Math.Max(craftCamera.nearClipPlane*2,distance+radius*2);
-            double utc=flight.UniversalTime;Rotation rotation=flight.Context.BodyRotationAt(utc)*sourceBodyRotation.Inverse;var bodyMatrix=Matrix4x4.Rotate(new Quaternion((float)rotation.X,(float)rotation.Y,(float)rotation.Z,(float)rotation.W))*sourceBodyMatrix;
+            double utc=frame.UniversalTime;Rotation rotation=frame.Context.BodyRotationAt(utc)*sourceBodyRotation.Inverse;var bodyMatrix=Matrix4x4.Rotate(new Quaternion((float)rotation.X,(float)rotation.Y,(float)rotation.Z,(float)rotation.W))*sourceBodyMatrix;
             Vec offset=rotation.Rotate(new Vec(Scene.bodyLocalToMeters[3],Scene.bodyLocalToMeters[7],Scene.bodyLocalToMeters[11]));Vector3 position=F(Sub(offset,cameraBodyOriginMeters));bodyMatrix.m03=position.x;bodyMatrix.m13=position.y;bodyMatrix.m23=position.z;
             double bodyDistance=Math.Sqrt(cameraBodyOriginMeters.X*cameraBodyOriginMeters.X+cameraBodyOriginMeters.Y*cameraBodyOriginMeters.Y+cameraBodyOriginMeters.Z*cameraBodyOriginMeters.Z);bodyCamera.nearClipPlane=(float)Math.Max(1,(bodyDistance-Scene.bodyRadiusMeters)*.5);bodyCamera.farClipPlane=(float)Math.Max(bodyCamera.nearClipPlane*2,bodyDistance+Scene.bodyRadiusMeters*2);
             bool bodyDiagnostic=Status.view.StartsWith("body-")&&!Status.view.EndsWith("depth")&&Status.view!="body-color";Graphics.DrawMesh(body,bodyMatrix,bodyDiagnostic?bodyDebug:bodyMaterial,29,bodyCamera,0,null,ShadowCastingMode.Off,false);bodyCamera.Render();craft.Submit(craftCamera);

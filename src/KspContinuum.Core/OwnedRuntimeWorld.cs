@@ -23,7 +23,7 @@ namespace KspContinuum
         }
         public double GetResourceQuantity(int slot) { World.CheckStep(this); return Bank.ResourceQuantity[slot]; }
         public void SetTemperature(int part, double kelvin)
-        { World.CheckStep(this); AssemblyModel.Positive(kelvin); Bank.Temperature[part] = kelvin; }
+        { World.CheckStep(this); if(Bank.Thermal.pendingDuration!=0)throw new InvalidOperationException("Flush pending thermal energy before a temperature overwrite."); AssemblyModel.Positive(kelvin); Bank.Temperature[part] = kelvin; }
         public void SetProviderState(int slot, double value)
         { World.CheckStep(this); AssemblyModel.Finite(value); Bank.ProviderState[slot] = value; }
         public void SetRegionMotion(int region, OwnedRuntimeMotion motion)
@@ -56,6 +56,8 @@ namespace KspContinuum
         public RigidAssemblyMember GetBodyMember(int slot) { Check(); return bank.Members[slot]; }
         public double GetResourceQuantity(int slot) { Check(); return bank.ResourceQuantity[slot]; }
         public double GetTemperature(int part) { Check(); return bank.Temperature[part]; }
+        public double ThermalIntegratedTime {get {Check();return bank.Thermal.integratedTime;}}
+        public double ThermalPendingDuration {get {Check();return bank.Thermal.pendingDuration;}}
         public double GetProviderState(int slot) { Check(); return bank.ProviderState[slot]; }
         public void Dispose()
         {
@@ -70,6 +72,7 @@ namespace KspContinuum
         OwnedRuntimeBank current, writing;
         long token, activeToken, hostedToken;
         int writerThread, readLeases;
+        int boundWriterThread;
         bool admitting;
         int admissionThread;
         public double LastTopologyRemovedEnergy { get; private set; }
@@ -92,6 +95,7 @@ namespace KspContinuum
             ValidateMotion(initialMotion);
             banks = NewBanks(definition, topology); current = banks[0];
             current.Stamp = new OwnedRuntimeStamp(0, 0, topology.Revision, definition.Revision, 0, time, frameId);
+            current.Thermal.integratedTime=time;
             for (int b = 0; b < definition.BodyCount; b++) current.Members[b] = ReId(definition.GetBody(b).Member, b);
             for (int i = 0; i < definition.ResourceCount; i++) current.ResourceQuantity[i] = definition.GetResource(i).InitialQuantity;
             for (int i = 0; i < definition.PartCount; i++) current.Temperature[i] = definition.GetPart(i).InitialTemperature;
@@ -113,10 +117,10 @@ namespace KspContinuum
             AssemblyModel.Positive(deltaTime); input.Validate();
             lock (gate)
             {
-                RequireCurrent(expected); if (writing != null || hostedToken != 0 || admitting) throw new InvalidOperationException("A world step, hosted schedule, or admission already owns mutation.");
+                RequireWriterThread();RequireCurrent(expected); if (writing != null || hostedToken != 0 || admitting) throw new InvalidOperationException("A world step, hosted schedule, or admission already owns mutation.");
                 OwnedRuntimeBank available = null;
                 foreach (var bank in banks) if (!ReferenceEquals(bank, current) && bank.Readers == 0) { available = bank; break; }
-                if (available == null) throw new InvalidOperationException("All retained write banks are leased by readers.");
+                if (available == null) throw new OwnedRuntimeReadPressureException("All retained write banks are leased by readers.");
                 available.CopyFrom(current); available.Input = input; available.SystemsExecuted = false;
                 writing = available; activeToken = checked(++token); writerThread = Thread.CurrentThread.ManagedThreadId;
                 if (hosted) hostedToken = activeToken;
@@ -128,12 +132,18 @@ namespace KspContinuum
         {
             lock (gate)
             {
-                if (readLeases >= 64) throw new InvalidOperationException("Read lease bound exceeded.");
+                if (readLeases >= 64) throw new OwnedRuntimeReadPressureException("Read lease bound exceeded.");
                 current.Readers++; readLeases++; return new OwnedRuntimeReadLease(this, current);
             }
         }
         internal void Release(OwnedRuntimeBank bank)
         { lock (gate) { if (bank.Readers <= 0 || readLeases <= 0) throw new InvalidOperationException("Read lease accounting underflow."); bank.Readers--; readLeases--; } }
+        public bool TryAcquireRead(OwnedRuntimeStamp expected,out OwnedRuntimeReadLease lease)
+        {lock(gate){lease=null;if(!current.Stamp.Matches(expected))return false;if(readLeases>=64)throw new OwnedRuntimeReadPressureException("Read lease bound exceeded.");current.Readers++;readLeases++;lease=new OwnedRuntimeReadLease(this,current);return true;}}
+        public void BindWriterThread()
+        {lock(gate){int thread=Thread.CurrentThread.ManagedThreadId;if(boundWriterThread!=0&&boundWriterThread!=thread)throw new InvalidOperationException("World writer already bound to another thread.");if(writing!=null||hostedToken!=0||admitting)throw new InvalidOperationException("Cannot bind world during active mutation.");boundWriterThread=thread;}}
+        internal void RequireWriterThread()
+        {if(boundWriterThread!=0&&boundWriterThread!=Thread.CurrentThread.ManagedThreadId)throw new InvalidOperationException("World mutation belongs to its bound writer thread.");}
         internal void CheckStep(OwnedRuntimeStep step)
         {
             if (!ReferenceEquals(step.World, this) || writing == null || !ReferenceEquals(writing, step.Bank)
@@ -163,6 +173,9 @@ namespace KspContinuum
                     RefreshMass(writing, true); ValidateBank(writing);
                     double nextTime = current.Stamp.Time + step.DeltaTime; AssemblyModel.Finite(nextTime);
                     if (!(nextTime > current.Stamp.Time)) throw new ArgumentException("Step must advance representable physical time.");
+                    if(!writing.SystemsExecuted)
+                    {if(writing.Thermal.pendingDuration!=0)throw new InvalidOperationException("Manual motion step cannot skip pending thermal evolution.");writing.Thermal.integratedTime=nextTime;writing.Thermal.passiveFrozenSeconds+=step.DeltaTime;}
+                    writing.Thermal.ValidateClock(nextTime);
                     var stamp = new OwnedRuntimeStamp(current.Stamp.Epoch, checked(current.Stamp.StateRevision + 1),
                         current.Stamp.TopologyRevision, current.Stamp.DefinitionRevision, current.Stamp.FrameRevision, nextTime, current.Stamp.FrameId);
                     writing.History[writing.HistoryHead] = new OwnedRuntimeInputRecord {
@@ -195,7 +208,10 @@ namespace KspContinuum
         void RequireCurrent(OwnedRuntimeStamp expected)
         { if (!current.Stamp.Matches(expected)) throw new InvalidOperationException("World revision/frame/time is stale."); }
         void RequireMutation(OwnedRuntimeStamp expected)
-        { RequireCurrent(expected); if (writing != null || hostedToken != 0 || admitting) throw new InvalidOperationException("Topology/frame/definition cannot change during a step, hosted schedule, or admission."); }
+        { RequireWriterThread();RequireCurrent(expected); if (writing != null || hostedToken != 0 || admitting) throw new InvalidOperationException("Topology/frame/definition cannot change during a step, hosted schedule, or admission."); }
+        internal OwnedRuntimeStamp MutateThermal(OwnedRuntimeStamp expected,Action<OwnedRuntimeBank> mutation)
+        {lock(gate){RequireMutation(expected);var candidate=new OwnedRuntimeBank(current.Definition,current.Topology);candidate.CopyFrom(current);mutation(candidate);ValidateBank(candidate);candidate.Thermal.ValidateClock(expected.Time);candidate.Stamp=new OwnedRuntimeStamp(expected.Epoch,checked(expected.StateRevision+1),expected.TopologyRevision,expected.DefinitionRevision,expected.FrameRevision,expected.Time,expected.FrameId);PublishCold(candidate);return current.Stamp;}}
+        public OwnedRuntimeThermalPolicy ThermalPolicy {get{lock(gate)return current.Thermal.Policy;}}
         internal void EnterAdmission(OwnedRuntimeStamp expected)
         {
             lock (gate) { RequireMutation(expected); admitting = true; admissionThread = Thread.CurrentThread.ManagedThreadId; }
@@ -328,6 +344,7 @@ namespace KspContinuum
             bank.Input.Validate();
             for (int r = 0; r < bank.RegionMotion.Length; r++) { ValidateMotion(bank.RegionMotion[r]); RequireCondition(bank.Properties[r]); }
             foreach (double value in bank.Temperature) AssemblyModel.Positive(value);
+            bank.Thermal.Validate(bank.Temperature.Length);
             foreach (double value in bank.ProviderState) AssemblyModel.Finite(value);
         }
         static RigidAssemblyMember ReId(RigidAssemblyMember member, int id)
@@ -347,7 +364,9 @@ namespace KspContinuum
             {
                 RequireMutation(expected);
                 if(motions.Length!=current.RegionMotion.Length||time<expected.Time)throw new ArgumentException("Cold motion shape/time is incompatible.");
+                if(time>expected.Time&&current.Thermal.pendingDuration!=0)throw new InvalidOperationException("Flush pending thermal interval before a clock jump.");
                 var candidate=new OwnedRuntimeBank(current.Definition,current.Topology);candidate.CopyFrom(current);
+                if(time>expected.Time){candidate.Thermal.passiveFrozenSeconds+=time-expected.Time;candidate.Thermal.integratedTime=time;}
                 for(int r=0;r<motions.Length;r++){ValidateMotion(motions[r]);candidate.RegionMotion[r]=motions[r];}
                 ValidateBank(candidate);
                 candidate.Stamp=new OwnedRuntimeStamp(checked(expected.Epoch+1),checked(expected.StateRevision+1),expected.TopologyRevision,expected.DefinitionRevision,
@@ -358,6 +377,7 @@ namespace KspContinuum
 
         OwnedRuntimeStamp ChangeTopology(OwnedRuntimeTopology topology)
         {
+            if(current.Thermal.pendingDuration!=0)throw new InvalidOperationException("Flush pending thermal interval before topology mutation.");
             OwnedRuntimeBank before = current, candidate = new OwnedRuntimeBank(before.Definition, topology);
             CopyCommon(before, candidate); double removedEnergy = 0;
             for (int r = 0; r < topology.RegionCount; r++)
@@ -402,6 +422,7 @@ namespace KspContinuum
             Array.Copy(source.ResourceQuantity, target.ResourceQuantity, source.ResourceQuantity.Length);
             Array.Copy(source.LastResourceQuantity, target.LastResourceQuantity, source.LastResourceQuantity.Length);
             Array.Copy(source.Temperature, target.Temperature, source.Temperature.Length);
+            target.Thermal.CopyFrom(source.Thermal);
             Array.Copy(source.ProviderState, target.ProviderState, source.ProviderState.Length);
             Array.Copy(source.History, target.History, source.History.Length);
             target.HistoryCount = source.HistoryCount; target.HistoryHead = source.HistoryHead; target.Input = source.Input;
@@ -434,6 +455,7 @@ namespace KspContinuum
             lock (gate)
             {
                 RequireMutation(expected); var old = current.Definition;
+                if(current.Thermal.pendingDuration!=0)throw new InvalidOperationException("Flush pending thermal interval before definition mutation.");
                 if (definition.Id != old.Id || definition.Revision <= old.Revision || definition.PartCount != old.PartCount
                     || definition.BodyCount != old.BodyCount || definition.ResourceCount != old.ResourceCount
                     || definition.ProviderStateCount != old.ProviderStateCount) throw new ArgumentException("HMR requires the same stable identity/storage schema and a newer revision.");
@@ -480,6 +502,7 @@ namespace KspContinuum
                     Stamp = current.Stamp, BodyMembers = (RigidAssemblyMember[])current.Members.Clone(),
                     RegionMotion = (OwnedRuntimeMotion[])current.RegionMotion.Clone(), RegionIds = new long[current.Topology.RegionCount],
                     ResourceQuantity = (double[])current.ResourceQuantity.Clone(), Temperature = (double[])current.Temperature.Clone(),
+                    Thermal = current.Thermal.Clone(),
                     ProviderState = (double[])current.ProviderState.Clone(), Input = current.Input, InputHistory = new OwnedRuntimeInputRecord[current.HistoryCount] };
                 for (int r = 0; r < snapshot.RegionIds.Length; r++) snapshot.RegionIds[r] = current.Topology.GetRegionId(r);
                 for (int i = 0; i < current.HistoryCount; i++) snapshot.InputHistory[i] = current.History[(current.HistoryHead - current.HistoryCount + i + current.History.Length) % current.History.Length];
@@ -503,6 +526,8 @@ namespace KspContinuum
             Array.Copy(snapshot.BodyMembers, bank.Members, bank.Members.Length); Array.Copy(snapshot.RegionMotion, bank.RegionMotion, bank.RegionMotion.Length);
             Array.Copy(snapshot.ResourceQuantity, bank.ResourceQuantity, bank.ResourceQuantity.Length); Array.Copy(snapshot.Temperature, bank.Temperature, bank.Temperature.Length);
             Array.Copy(snapshot.ProviderState, bank.ProviderState, bank.ProviderState.Length);
+            if(snapshot.Thermal==null)bank.Thermal.integratedTime=stamp.Time;
+            else {snapshot.Thermal.Validate(definition.PartCount);bank.Thermal.CopyFrom(snapshot.Thermal);}
             for (int r = 0; r < topology.RegionCount; r++) if (snapshot.RegionIds[r] != topology.GetRegionId(r)) throw new ArgumentException("Snapshot region identities differ.");
             for (int b = 0; b < definition.BodyCount; b++)
             {
@@ -510,7 +535,7 @@ namespace KspContinuum
             }
             bank.PropertyOwners = null; EnsurePropertyOwners(bank);
             for (int r = 0; r < topology.RegionCount; r++) { bank.Properties[r] = bank.PropertyOwners[r].Combine(); RequireCondition(bank.Properties[r]); }
-            ValidateRestoredMass(bank); ValidateBank(bank);
+            ValidateRestoredMass(bank); ValidateBank(bank);bank.Thermal.ValidateClock(stamp.Time);
             long lastSequence = -1; double lastEnd = double.NegativeInfinity;
             foreach (var record in snapshot.InputHistory)
             {

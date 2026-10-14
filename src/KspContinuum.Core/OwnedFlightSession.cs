@@ -66,10 +66,21 @@ namespace KspContinuum
         {
             using(var read=Runtime.AcquireRead())
             {
-                var state=read.GetRegion(region);var sample=Sample(read.Stamp,region,state.Motion,state.Properties);
+                var sample=CaptureReadDescriptor(read).Sample(read,region);
                 return new OwnedRuntimeEnvironment(sample.SourceId,sample.Revision,sample.Epoch,sample.Density,sample.Temperature,
                     sample.WindVelocity,sample.Gravity,sample.ConvectiveCoefficient,sample.RadiationTemperature);
             }
+        }
+        public OwnedFlightReadDescriptor CaptureReadDescriptor(OwnedRuntimeReadLease read)
+        {
+            if(read==null)throw new ArgumentNullException("read");
+            if(!ReferenceEquals(read.Definition,Runtime.Definition))throw new InvalidOperationException("Read descriptor requires its current session definition.");
+            return CaptureReadDescriptor(read.Stamp);
+        }
+        internal OwnedFlightReadDescriptor CaptureReadDescriptor(OwnedRuntimeStamp stamp)
+        {
+            CheckFrame(stamp);if(!stamp.Matches(Runtime.Stamp))throw new InvalidOperationException("Read descriptor requires its current session bank.");
+            return new OwnedFlightReadDescriptor(stamp,origin,RuntimeEpoch,Mode,Context);
         }
         public OwnedRuntimeEnvironmentSample Sample(OwnedRuntimeStamp stamp,int region,OwnedRuntimeMotion motion,RigidAssemblyProperties properties)
         {
@@ -151,6 +162,7 @@ namespace KspContinuum
                 using(var read=Runtime.AcquireRead())
                 {
                     OwnedFlightWorld.Need(read.Stamp.Matches(expected)&&read.RegionCount<=SimulationBatch.MaxBodies,"Coast revision/region bound differs.");
+                    OwnedFlightWorld.Need(read.ThermalPendingDuration==0,"Pending thermal evolution requires local work before passive coast.");
                     for(int i=0;i<read.Definition.ProviderStateCount;i++)OwnedFlightWorld.Need(read.GetProviderState(i)==0,"Nonzero retained provider state requires local stepping.");
                     var seeds=new CoastingBody[read.RegionCount];
                     for(int r=0;r<seeds.Length;r++)
