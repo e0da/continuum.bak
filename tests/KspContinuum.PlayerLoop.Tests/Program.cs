@@ -5,6 +5,10 @@ using UnityEngine.LowLevel;
 using Fixed = UnityEngine.PlayerLoop.FixedUpdate;
 using Update = UnityEngine.PlayerLoop.Update;
 using Late = UnityEngine.PlayerLoop.PreLateUpdate;
+using Initialization = UnityEngine.PlayerLoop.Initialization;
+using Early = UnityEngine.PlayerLoop.EarlyUpdate;
+using Pre = UnityEngine.PlayerLoop.PreUpdate;
+using Render = UnityEngine.PlayerLoop.PostLateUpdate;
 
 static class Program
 {
@@ -20,39 +24,61 @@ static class Program
     static void Check(bool ok) { checks++; if (!ok) throw new Exception("PlayerLoop assertion " + checks); }
     static PlayerLoopSystem Native(Type type) { return new PlayerLoopSystem { type = type, updateFunction = (IntPtr)37, loopConditionFunction = (IntPtr)42 }; }
     static PlayerLoopSystem Tree() { return new PlayerLoopSystem { subSystemList = new[] {
+        Native(typeof(Initialization)), Native(typeof(Early)),
         new PlayerLoopSystem { type = typeof(Fixed), subSystemList = new[] { Native(typeof(Fixed.ScriptRunBehaviourFixedUpdate)), Native(typeof(Fixed.PhysicsFixedUpdate)) } },
-        new PlayerLoopSystem { type = typeof(Update), subSystemList = new[] { Native(typeof(Update.ScriptRunBehaviourUpdate)) } },
-        new PlayerLoopSystem { type = typeof(Late), subSystemList = new[] { Native(typeof(Late.ScriptRunBehaviourLateUpdate)) } }
+        Native(typeof(Pre)),
+        new PlayerLoopSystem { type = typeof(Update), subSystemList = new[] { Native(typeof(Update.ScriptRunBehaviourUpdate)), Native(typeof(Update.ScriptRunDelayedDynamicFrameRate)), Native(typeof(Update.ScriptRunDelayedTasks)) } },
+        new PlayerLoopSystem { type = typeof(Late), subSystemList = new[] { Native(typeof(Late.ScriptRunBehaviourLateUpdate)) } },
+        new PlayerLoopSystem { type = typeof(Render), subSystemList = new[] { Native(typeof(Render.UpdateAllRenderers)), Native(typeof(Render.UpdateAllSkinnedMeshes)), Native(typeof(Render.PlayerUpdateCanvases)), Native(typeof(Render.FinishFrameRendering)), Native(typeof(Render.PresentAfterDraw)) } }
     } }; }
-    static void Dispatch(PlayerLoopSystem node) { if (node.updateDelegate != null) node.updateDelegate(); if (node.subSystemList != null) foreach (var child in node.subSystemList) Dispatch(child); }
-    static void DispatchPhysics(PlayerLoopSystem node) { if (node.updateDelegate != null) node.updateDelegate(); if (node.type == typeof(Fixed.PhysicsFixedUpdate)) UnityEngine.Rigidbody.Integrate(); if (node.subSystemList != null) foreach (var child in node.subSystemList) DispatchPhysics(child); }
+    static void Dispatch(PlayerLoopSystem node) { if (node.updateDelegate != null) node.updateDelegate(); if (node.type == typeof(Initialization)) UnityEngine.Time.frameCount++; if (node.subSystemList != null) foreach (var child in node.subSystemList) Dispatch(child); }
+    static void DispatchPhysics(PlayerLoopSystem node) { if (node.updateDelegate != null) node.updateDelegate(); if (node.type == typeof(Initialization)) UnityEngine.Time.frameCount++; if (node.type == typeof(Fixed.PhysicsFixedUpdate)) UnityEngine.Rigidbody.Integrate(); if (node.subSystemList != null) foreach (var child in node.subSystemList) DispatchPhysics(child); }
     static PlayerLoopSystem Find(PlayerLoopSystem node, Type type) { if (node.type == type) return node; if (node.subSystemList != null) foreach (var child in node.subSystemList) { try { return Find(child, type); } catch (InvalidOperationException) { } } throw new InvalidOperationException(); }
+    static PlayerLoopSystem Replace(PlayerLoopSystem node, Type type, PlayerLoopSystem replacement) { if (node.type == type) return replacement; if (node.subSystemList != null) for (int i = 0; i < node.subSystemList.Length; i++) node.subSystemList[i] = Replace(node.subSystemList[i], type, replacement); return node; }
+    static bool SameTree(PlayerLoopSystem left, PlayerLoopSystem right)
+    {
+        if (left.type != right.type || left.updateDelegate != right.updateDelegate || left.updateFunction != right.updateFunction || left.loopConditionFunction != right.loopConditionFunction) return false;
+        if ((left.subSystemList == null) != (right.subSystemList == null)) return false;
+        if (left.subSystemList == null) return true;
+        if (left.subSystemList.Length != right.subSystemList.Length) return false;
+        for (int i = 0; i < left.subSystemList.Length; i++) if (!SameTree(left.subSystemList[i], right.subSystemList[i])) return false;
+        return true;
+    }
 
     static void Main()
     {
         var before = Tree(); PlayerLoop.Current = before; var capture = new PlayerLoopTiming(); capture.Start();
-        Check(before.subSystemList.Length == 3 && before.subSystemList[0].subSystemList.Length == 2);
-        Check(PlayerLoop.Current.subSystemList.Length == 5); Check(Find(PlayerLoop.Current, typeof(Fixed)).subSystemList.Length == 6);
-        Check(Find(PlayerLoop.Current, typeof(Update)).subSystemList.Length == 3); Check(Find(PlayerLoop.Current, typeof(Late)).subSystemList.Length == 3);
+        Check(before.subSystemList.Length == 7 && Find(before, typeof(Fixed)).subSystemList.Length == 2);
+        Check(PlayerLoop.Current.subSystemList.Length == 21); Check(Find(PlayerLoop.Current, typeof(Fixed)).subSystemList.Length == 6);
+        Check(Find(PlayerLoop.Current, typeof(Update)).subSystemList.Length == 9); Check(Find(PlayerLoop.Current, typeof(Late)).subSystemList.Length == 3); Check(Find(PlayerLoop.Current, typeof(Render)).subSystemList.Length == 15);
+        int initialFrame = UnityEngine.Time.frameCount;
         Dispatch(PlayerLoop.Current); capture.Audit(); capture.Dispose(); var report = capture.Report;
-        Check(report.schema == "ksp-continuum-playerloop/v2"); Check(report.integrityStatus == "verified-at-boundaries" && report.cleanupStatus == "removed-owned-hooks"); Check(report.scopes.Length == 5);
-        string[] names = { typeof(Fixed).FullName, typeof(Fixed.PhysicsFixedUpdate).FullName, typeof(Fixed.ScriptRunBehaviourFixedUpdate).FullName, typeof(Update.ScriptRunBehaviourUpdate).FullName, typeof(Late.ScriptRunBehaviourLateUpdate).FullName };
-        for (int i = 0; i < names.Length; i++) { Check(report.scopes[i].name == names[i]); Check(report.scopes[i].samples.Length == 1); Check(report.scopes[i].milliseconds.count == 1); Check(report.scopes[i].timeDomain == (i < 3 ? "fixed" : "frame")); }
-        Check(report.scopes[0].overlap == "contains-fixed-children" && report.scopes[1].overlap == "contained-by-fixed" && report.scopes[4].overlap == "separate-frame-phase");
-        Check(PlayerLoop.Current.subSystemList.Length == 3 && Find(PlayerLoop.Current, typeof(Fixed)).subSystemList.Length == 2);
+        Check(report.schema == "ksp-continuum-playerloop/v2"); Check(report.integrityStatus == "verified-at-boundaries" && report.cleanupStatus == "removed-owned-hooks"); Check(report.scopes.Length == 18);
+        string[] names = {
+            typeof(Initialization).FullName, typeof(Early).FullName, typeof(Pre).FullName,
+            typeof(Fixed).FullName, typeof(Fixed.PhysicsFixedUpdate).FullName, typeof(Fixed.ScriptRunBehaviourFixedUpdate).FullName,
+            typeof(Update).FullName, typeof(Update.ScriptRunBehaviourUpdate).FullName, typeof(Update.ScriptRunDelayedDynamicFrameRate).FullName, typeof(Update.ScriptRunDelayedTasks).FullName,
+            typeof(Late).FullName, typeof(Late.ScriptRunBehaviourLateUpdate).FullName,
+            typeof(Render).FullName, typeof(Render.UpdateAllRenderers).FullName, typeof(Render.UpdateAllSkinnedMeshes).FullName,
+            typeof(Render.PlayerUpdateCanvases).FullName, typeof(Render.FinishFrameRendering).FullName, typeof(Render.PresentAfterDraw).FullName
+        };
+        for (int i = 0; i < names.Length; i++) { Check(report.scopes[i].name == names[i]); Check(report.scopes[i].samples.Length == 1); Check(report.scopes[i].milliseconds.count == 1); Check(report.scopes[i].timeDomain == (i == 0 ? "frame-turnover" : i >= 3 && i <= 5 ? "fixed" : "frame")); Check(report.scopes[i].samples[0].frame == initialFrame + 1); }
+        Check(report.scopes[3].overlap == "contains-fixed-children" && report.scopes[4].overlap == "contained-by-fixed" && report.scopes[11].overlap == "contained-by-pre-late");
+        Check(report.scopes[12].overlap == "contains-post-late-children-do-not-sum-with-children" && report.scopes[17].overlap == "contained-by-post-late");
+        Check(SameTree(PlayerLoop.Current, before));
         int writes = PlayerLoop.Writes; capture.Dispose(); Check(writes == PlayerLoop.Writes);
-        using (var json = JsonDocument.Parse(ReportJson.Encode(report))) Check(json.RootElement.GetProperty("scopes").GetArrayLength() == 5);
+        using (var json = JsonDocument.Parse(ReportJson.Encode(report))) Check(json.RootElement.GetProperty("scopes").GetArrayLength() == 18);
 
         PlayerLoop.Current = Tree(); capture = new PlayerLoopTiming(); capture.Start(); var current = PlayerLoop.Current;
         var expanded = new PlayerLoopSystem[current.subSystemList.Length + 1]; Array.Copy(current.subSystemList, expanded, current.subSystemList.Length); expanded[expanded.Length - 1] = Native(typeof(Program)); current.subSystemList = expanded; PlayerLoop.Current = current;
-        capture.Audit(); capture.Dispose(); Check(capture.Report.integrityStatus == "verified-at-boundaries"); Check(PlayerLoop.Current.subSystemList.Length == 4 && PlayerLoop.Current.subSystemList[3].type == typeof(Program));
+        capture.Audit(); capture.Dispose(); Check(capture.Report.integrityStatus == "verified-at-boundaries"); Check(PlayerLoop.Current.subSystemList.Length == 8 && PlayerLoop.Current.subSystemList[7].type == typeof(Program));
 
         PlayerLoop.Current = Tree(); capture = new PlayerLoopTiming(); capture.Start(); current = PlayerLoop.Current; var fixedNode = Find(current, typeof(Fixed));
-        expanded = new PlayerLoopSystem[fixedNode.subSystemList.Length + 1]; Array.Copy(fixedNode.subSystemList, expanded, fixedNode.subSystemList.Length); expanded[expanded.Length - 1] = Native(typeof(decimal)); fixedNode.subSystemList = expanded; current.subSystemList[1] = fixedNode; PlayerLoop.Current = current;
+        expanded = new PlayerLoopSystem[fixedNode.subSystemList.Length + 1]; Array.Copy(fixedNode.subSystemList, expanded, fixedNode.subSystemList.Length); expanded[expanded.Length - 1] = Native(typeof(decimal)); fixedNode.subSystemList = expanded; PlayerLoop.Current = Replace(current, typeof(Fixed), fixedNode);
         capture.Audit(); capture.Dispose(); Check(capture.Report.integrityStatus == "verified-at-boundaries"); Check(Find(PlayerLoop.Current, typeof(Fixed)).subSystemList.Length == 3);
 
         PlayerLoop.Current = Tree(); capture = new PlayerLoopTiming(); capture.Start(); current = PlayerLoop.Current;
-        fixedNode = Find(current, typeof(Fixed)); var swap = fixedNode.subSystemList[1]; fixedNode.subSystemList[1] = fixedNode.subSystemList[4]; fixedNode.subSystemList[4] = swap; current.subSystemList[1] = fixedNode; PlayerLoop.Current = current;
+        fixedNode = Find(current, typeof(Fixed)); var swap = fixedNode.subSystemList[1]; fixedNode.subSystemList[1] = fixedNode.subSystemList[4]; fixedNode.subSystemList[4] = swap; PlayerLoop.Current = Replace(current, typeof(Fixed), fixedNode);
         capture.Audit(); capture.Dispose(); Check(capture.Report.integrityStatus == "invalidated"); foreach (var scope in capture.Report.scopes) Check(scope.status == "invalid" && scope.milliseconds == null);
 
         PlayerLoop.Current = Tree(); capture = new PlayerLoopTiming(); capture.Start(); current = PlayerLoop.Current; int calls = 0; PlayerLoopSystem.UpdateFunction extra = () => calls++;
@@ -61,9 +87,21 @@ static class Program
 
         PlayerLoop.Current = Tree(); capture = new PlayerLoopTiming(); capture.Start(); PlayerLoop.Current.subSystemList[0].updateDelegate(); capture.Dispose(); Check(capture.Report.status == "invalid"); foreach (var scope in capture.Report.scopes) Check(scope.status == "invalid" && scope.milliseconds == null);
 
-        PlayerLoop.Current = Tree(); capture = new PlayerLoopTiming(); PlayerLoop.FailAfterWrite = true; capture.Start(); capture.Dispose(); Check(capture.Report.status == "unavailable" && PlayerLoop.Current.subSystemList.Length == 3);
-        PlayerLoop.Current = Tree(); current = PlayerLoop.Current; current.subSystemList[1].subSystemList = Array.Empty<PlayerLoopSystem>(); PlayerLoop.Current = current; writes = PlayerLoop.Writes; capture = new PlayerLoopTiming(); capture.Start(); capture.Dispose(); Check(capture.Report.status == "unavailable" && PlayerLoop.Writes == writes);
-        PlayerLoop.Current = Tree(); current = PlayerLoop.Current; current.subSystemList[0].subSystemList = new[] { Native(typeof(Fixed.PhysicsFixedUpdate)), Native(typeof(Fixed.PhysicsFixedUpdate)), Native(typeof(Fixed.ScriptRunBehaviourFixedUpdate)) }; PlayerLoop.Current = current; writes = PlayerLoop.Writes; capture = new PlayerLoopTiming(); capture.Start(); capture.Dispose(); Check(capture.Report.status == "unavailable" && PlayerLoop.Writes == writes);
+        before = Tree(); PlayerLoop.Current = before; capture = new PlayerLoopTiming(); PlayerLoop.FailAfterWrite = true; capture.Start();
+        Check(PlayerLoop.Current.subSystemList.Length == 21 && Find(PlayerLoop.Current, typeof(Render)).subSystemList.Length == 15);
+        capture.Dispose(); Check(capture.Report.status == "unavailable" && capture.Report.cleanupStatus == "removed-owned-hooks" && SameTree(PlayerLoop.Current, before));
+        PlayerLoop.Current = Tree(); current = PlayerLoop.Current; var updateNode = Find(current, typeof(Update)); updateNode.subSystemList = Array.Empty<PlayerLoopSystem>(); PlayerLoop.Current = Replace(current, typeof(Update), updateNode); writes = PlayerLoop.Writes; capture = new PlayerLoopTiming(); capture.Start(); capture.Dispose(); Check(capture.Report.status == "unavailable" && PlayerLoop.Writes == writes);
+        PlayerLoop.Current = Tree(); current = PlayerLoop.Current; fixedNode = Find(current, typeof(Fixed)); fixedNode.subSystemList = new[] { Native(typeof(Fixed.PhysicsFixedUpdate)), Native(typeof(Fixed.PhysicsFixedUpdate)), Native(typeof(Fixed.ScriptRunBehaviourFixedUpdate)) }; PlayerLoop.Current = Replace(current, typeof(Fixed), fixedNode); writes = PlayerLoop.Writes; capture = new PlayerLoopTiming(); capture.Start(); capture.Dispose(); Check(capture.Report.status == "unavailable" && PlayerLoop.Writes == writes);
+
+        PlayerLoop.Current = Tree(); capture = new PlayerLoopTiming(); capture.Start(); current = PlayerLoop.Current; var renderNode = Find(current, typeof(Render));
+        var foreignChild = Native(typeof(Guid)); renderNode.subSystemList[0].updateDelegate = null; renderNode.subSystemList[0].subSystemList = new[] { foreignChild }; PlayerLoop.Current = Replace(current, typeof(Render), renderNode);
+        capture.Audit(); capture.Dispose(); Check(capture.Report.integrityStatus == "invalidated" && capture.Report.cleanupStatus == "removed-owned-hooks");
+        renderNode = Find(PlayerLoop.Current, typeof(Render)); Check(renderNode.subSystemList.Length == 6 && SameTree(renderNode.subSystemList[0].subSystemList[0], foreignChild));
+        Check(Find(PlayerLoop.Current, typeof(Render.PresentAfterDraw)).updateFunction == (IntPtr)37);
+
+        before = Tree(); var initialization = Find(before, typeof(Initialization)); initialization.updateDelegate = () => UnityEngine.Time.frameCount++; before = Replace(before, typeof(Initialization), initialization);
+        PlayerLoop.Current = before; capture = new PlayerLoopTiming(); capture.Start(); Dispatch(PlayerLoop.Current); capture.Dispose();
+        Check(capture.Report.status == "invalid" && capture.Report.scopes[0].status == "invalid" && SameTree(PlayerLoop.Current, before));
 
         var buffer = new LoopTimingBuffer("test", 2, 1000); buffer.Begin(100, 7, 1, .02); buffer.End(125, 7); buffer.Begin(200, 7, 1.02, .02); buffer.End(250, 7); buffer.Begin(300, 8, 1.04, .02); buffer.End(350, 8);
         var result = buffer.Finish(true); Check(result.samples.Length == 2 && result.droppedSamples == 1); Check(result.milliseconds.mean == 37.5 && result.samples[0].elapsedTicks == 25);
@@ -120,7 +158,7 @@ static class Program
         Check(substitution.CleanupStatus == "native-node-restored" && Find(PlayerLoop.Current, typeof(Fixed.PhysicsFixedUpdate)).updateFunction == (IntPtr)37);
 
         PlayerLoop.Current = Tree(); substitution = new PhysicsBoundarySubstitution(() => { }); substitution.Start();
-        current = PlayerLoop.Current; current.subSystemList[0].subSystemList[1].updateDelegate += () => { }; PlayerLoop.Current = current;
+        current = PlayerLoop.Current; fixedNode = Find(current, typeof(Fixed)); fixedNode.subSystemList[1].updateDelegate += () => { }; PlayerLoop.Current = Replace(current, typeof(Fixed), fixedNode);
         substitution.Audit(); substitution.Dispose(); Check(substitution.CleanupStatus == "cleanup-error");
         Console.WriteLine("PlayerLoop: " + checks + " assertions passed.");
     }

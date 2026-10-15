@@ -29,9 +29,13 @@ namespace UnityEngine
 }
 namespace UnityEngine.PlayerLoop
 {
+    public struct Initialization { }
+    public struct EarlyUpdate { }
+    public struct PreUpdate { }
     public struct FixedUpdate { public struct PhysicsFixedUpdate {} public struct ScriptRunBehaviourFixedUpdate {} }
-    public struct Update { public struct ScriptRunBehaviourUpdate {} }
+    public struct Update { public struct ScriptRunBehaviourUpdate {} public struct ScriptRunDelayedDynamicFrameRate {} public struct ScriptRunDelayedTasks {} }
     public struct PreLateUpdate { public struct ScriptRunBehaviourLateUpdate {} }
+    public struct PostLateUpdate { public struct UpdateAllRenderers {} public struct UpdateAllSkinnedMeshes {} public struct PlayerUpdateCanvases {} public struct FinishFrameRendering {} public struct PresentAfterDraw {} }
 }
 public static class Versioning { public static int version_major = 1, version_minor = 12, Revision = 5; }
 namespace UnityEngine.LowLevel
