@@ -1,0 +1,16 @@
+[package]
+name = "continuum-bundle-audit"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+lz4_flex = "0.11"
+lzma-rs = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+bcdec_rs = "=0.2.0"
+
+[dev-dependencies]
+tempfile = "3"

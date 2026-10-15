@@ -1,0 +1,21 @@
+# Rendering ownership diagnostics
+
+The research view now has a separate lifetime from its background services. Normal play retains the visible panel and uses Ctrl+BackQuote to toggle it. Timed flight fixes `--flight-research-panel visible|hidden`; omission preserves the legacy visible selection. Hidden creates no IMGUI view component. Both modes record actual service Update/FixedUpdate witnesses, GUI event classes, effective component state and exact Probe window counters. GUI wall costs are nested in complete frames.
+
+`--flight-local-camera stock|merged` tests a larger native owner. The recovered stock D3D11 path uses Camera00 through 750,000 metres, deactivates Camera01 and assigns the PQS fog role to Camera00. The explicit merged experiment applies those changes to the pinned OpenGL player. Its near plane stays 0.21 metres; replacing two depth-cleared ranges with one range changes depth precision and sorting. It is a diagnostic, with no visual-equivalence or ordinary-play qualification.
+
+The controller admits only the actual two FlightCamera-owned camera identities, matching local ray projection/masks and the captured quiet-vacuum fog defaults. It refuses unknown far-camera components, children or command buffers and checks scene, physical-vessel, body, projection and state ownership during rendering. Fog values use exact float-bit receipts, including infinity in the unused camera-position W component. Native callback counts distinguish stock's two rendering cameras from the merged owner's single camera.
+
+Declared atmosphere, entry, warp, perturbation, retained-renderer, camera-chain or GPU-timer stock workloads retain their rendering and report this diagnostic as not applicable. Merged requests reject those combinations. Unexpected context drift in an eligible quiet-vacuum request fails rather than silently abstaining. Cameras and fog roles restore after the native screenshot; faults or scene requests restore synchronously and remove owned callbacks.
+
+A three-observation protocol compares visible/stock with hidden/stock for the panel question, then reuses hidden/stock against hidden/merged for the camera question. Use the same helper, bundle, frozen inputs and effective settings. Complete frames include capture/publication and observers. Camera audit aggregate is lifecycle cost amortized over completed capture frames; it is not an exact window-exclusive CPU metric. Preserve invalid/interrupted observations, exact restore witnesses and native images. Do not repeat a valid baseline merely to recreate the same comparison.
+
+The readonly `inspect-player` mode of ShaderGraft reports serialized BuildSettings graphics API fields, scalar flags and bounded array summaries from a supplied player Data directory and class database. This resolves backend admission metadata separately from compiled shader coverage and successful native rendering. A configured backend list is not evidence that the complete game renders on it.
+
+## Completed resolving observations
+
+Three fresh-process 256-part quiet-vacuum observations used the same helper, mapped bundle, frozen inputs and effective controls at 1080p/normal time. Visible/stock measured 79.40 FPS; hidden/stock 79.37 FPS; hidden/merged 83.56 FPS. Visible GUI cost was 0.116 ms per frame, and hidden callbacks were zero while services remained active. The panel is not selected as a throughput bottleneck.
+
+The camera comparison saved 0.632 ms mean frame time (5.01%). Camera01 rendered 792 times in stock and zero in merged; Camera00 rendered 834 times in merged. All three passed and all original camera/material state restored. There were no repeated native observations. These single observations establish a promising ownership boundary, not a confidence-backed or depth-equivalent playable gain.
+
+Serialized backend inspection resolved OpenGLCore-only admission in the game versus Metal/OpenGLCore in the matching-version workbench, using the pinned managed enum. The next larger operation is an object-local BuildSettings API-array rewrite in a disposable copy, followed by actual Metal initialization and visible-shader proof. Preserve all other bootstrap identities and dependencies; backend admission, shader closure and successful gameplay are separate gates. Inspector token/password/secret-named fields are redacted.

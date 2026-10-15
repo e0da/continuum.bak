@@ -8,15 +8,55 @@ namespace KspContinuum
         public string schema = "ksp-continuum-fixed-callback-attribution/v1";
         public string status = "not-started", cleanupStatus = "not-installed", detail;
         public string measurementScope = "Inclusive elapsed wall time for patched managed MonoBehaviour FixedUpdate methods while Unity's ScriptRunBehaviourFixedUpdate subtree is active. Rows can overlap when callbacks invoke one another and must not be summed blindly.";
-        public string coverageScope = "Loaded, non-dynamic assemblies referencing Unity and patchable zero-argument instance void FixedUpdate methods declared by MonoBehaviour types.";
+        public string coverageScope = "Loaded, non-dynamic assemblies referencing Unity: patchable zero-argument instance void FixedUpdate methods declared by MonoBehaviour types and the selected stock provider seams. Explicit candidate-owned omissions have no timing coverage; parent rows still include their work. Discovered methods equal patched plus explicitly omitted methods.";
+        public string observerOverheadStatus = "unqualified-intrusive-observer";
+        public string omissionReason, omissionPatchOwner, omissionOwnershipStatus = "not-requested";
         public long clockFrequency, timerReadFloorTicks, activeWindowTicks;
-        public int discoveredMethods, patchedMethods, scanErrors, callbackErrors;
+        public long omissionOwnershipWindows;
+        public int discoveredMethods, patchedMethods, omittedMethods, omissionOwnershipErrors, scanErrors, callbackErrors;
+        public CallbackAttributionRow[] omissions = new CallbackAttributionRow[0];
         public CallbackAttributionRow[] callbacks;
+        public FeedInputAttributionReport feedInput;
+        public MechJebDriveAttributionReport mechJebDrive;
+    }
+
+    [Serializable] public sealed class MechJebDriveAttributionReport
+    {
+        public string schema = "continuum-mechjeb-drive-attribution/v1", status = "not-started", detail, cleanupStatus = "not-installed", assemblySha256;
+        public string scope = "Observer-lifetime fixed-subtree inclusive wall envelopes. Update and AnalyzeParts are separated inside/outside the matching Core.Drive; Update includes its existing UT cache hits. Controller rows group runtime type and matched Core identity during Drive, including nested controller calls. Original master/Enabled branches, ordering, exceptions and side effects remain untouched. Rows overlap; outermost means recursion of that row only, not exclusive CPU. Harmony, reflection, counters and child observer overhead remain unqualified; timer floor is not total observer tax.";
+        public string[] seamIdentities;
+        public int[] admittedCoreIds, observedCoreIds;
+        public int patchedMethods, controllerTypes, errors;
+        public string observerOverheadStatus = "unqualified-intrusive-observer";
+        public long clockFrequency, admissionStartedTicks, admissionEndedTicks;
+        public CallbackAttributionRow[] rows;
+    }
+
+    [Serializable] public sealed class FeedInputAttributionReport
+    {
+        public string status = "not-started", vesselId, seamIdentity, cleanupStatus, patchOwner;
+        public string coverage = "Four pinned original multicast callsites of the captured active vessel; ordered subscribers captured before instrumentation and at disposal. Handler timing requires registered method and exact registered target identity in that chain; static targets are null. Unobserved registered methods retain explicit zero rows and are not execution evidence. Other vessels and calls outside the fixed subtree are excluded. Per-target costs are not separated when registered targets share a method.";
+        public string scope = "Observer-lifetime fixed-subtree inclusive multicast and registered-handler timings. Original multicast Invoke order and exceptions retained. Chain, handler, FeedInputFeed and FixedUpdate rows overlap; no exclusive CPU or exact Probe-window claim. Handler rows aggregate identical methods/targets within each chain.";
+        public long snapshotStartTicks, snapshotEndTicks;
+        public int driftErrors, contextErrors;
+        public InputDelegateChain[] chains;
+    }
+    [Serializable] public sealed class InputDelegateChain
+    {
+        public string name; public int calls, errors, registeredMethods, observedMethods, unobservedMethods; public long inclusiveTicks, maximumTicks;
+        public bool snapshotUnchanged;
+        public InputDelegateMember[] members, endMembers;
+        public CallbackAttributionRow[] handlers;
+    }
+    [Serializable] public sealed class InputDelegateMember
+    {
+        public int order, targetId, targetUnityId, metadataToken;
+        public string targetType, assembly, assemblyMvid, assemblySha256, declaringType, method, ilSha256;
     }
 
     [Serializable] public sealed class CallbackAttributionRow
     {
-        public string category, assembly, assemblyVersion, assemblyMvid, declaringType, method;
+        public string category, assembly, assemblyVersion, assemblyMvid, declaringType, method, runtimeType, ilSha256;
         public int metadataToken, calls, outermostCalls;
         public long inclusiveTicks, maximumTicks, outermostInclusiveTicks, outermostMaximumTicks;
         public double inclusiveMilliseconds, meanMilliseconds, maximumMilliseconds, fractionOfActiveWindow;
@@ -63,7 +103,7 @@ namespace KspContinuum
             }
         }
 
-        public CallbackAttributionRow[] Finish(long activeWindowTicks)
+        public CallbackAttributionRow[] Finish(long activeWindowTicks, bool includeZeroCalls = false)
         {
             if (finished || activeWindowTicks < 0) throw new ArgumentException("Invalid callback attribution completion.");
             finished = true;
@@ -71,9 +111,9 @@ namespace KspContinuum
             foreach (Slot slot in slots)
             {
                 CallbackAttributionRow row = slot.Row;
-                if (row.calls == 0) continue;
+                if (row.calls == 0 && !includeZeroCalls) continue;
                 row.inclusiveMilliseconds = row.inclusiveTicks * (1000.0 / frequency);
-                row.meanMilliseconds = row.inclusiveMilliseconds / row.calls;
+                row.meanMilliseconds = row.calls == 0 ? 0 : row.inclusiveMilliseconds / row.calls;
                 row.maximumMilliseconds = row.maximumTicks * (1000.0 / frequency);
                 row.fractionOfActiveWindow = activeWindowTicks == 0 ? 0 : (double)row.inclusiveTicks / activeWindowTicks;
                 row.outermostInclusiveMilliseconds = row.outermostInclusiveTicks * (1000.0 / frequency);

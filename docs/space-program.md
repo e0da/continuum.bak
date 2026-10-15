@@ -8,6 +8,8 @@ Design a mission with explicit objectives and a vehicle suited to them. Freeze i
 
 Develop the tools alongside those missions. A physics benchmark answers a narrow engineering question; an actual flight exposes control handoffs, time warp, contact, staging, recording and presentation together. Neither substitutes for the other.
 
+The [reference workload catalog](reference-space-program.md) connects mission objectives to selectable situations and micro-situations. Use its existing-run planner for bounded measurements; retain each parent receipt and checkpoint, then return to the complete mission when integration evidence is needed.
+
 ## Current catalog
 
 | Mission | Purpose | Evidence boundary |

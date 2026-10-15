@@ -87,11 +87,34 @@ namespace KspContinuum
         public bool[] available;
         public ProfileMarkerSummary summary;
     }
+    [Serializable] public sealed class ResearchPanelReport
+    {
+        public string schema = "continuum-research-panel/v1", mode, status = "capturing";
+        public string scope = "Enclosed IMGUI callbacks inside the Probe capture window; nested wall duration, not additive to whole-frame timing.";
+        public bool startVisible, endVisible, startComponentPresent, endComponentPresent;
+        public int captureStartFrame, captureEndFrame, modeChanges, errors, blockedModeChangeAttempts;
+        public long captureStartClockTimestamp, captureEndClockTimestamp, clockFrequency;
+        public long guiCalls, layoutCalls, repaintCalls, otherCalls, guiTicks, layoutTicks, repaintTicks, otherTicks, serviceUpdateCalls, serviceFixedCalls;
+    }
     [Serializable] public sealed class ProbeReport
     {
+        public ResearchPanelReport researchPanel;
+        public string captureMode = "rendered-frame-count", completionReason, runId, captureStartUtc, captureEndUtc;
+        public double requestedSimulatedSeconds, actualSimulatedSeconds, captureWallSeconds, wallTimeoutSeconds, settleSeconds;
+        public double? requestedCatchupSeconds;
+        public double effectivePhysicsFrameLimit, effectiveMaximumDeltaTime;
+        public string cameraContract = "loaded-checkpoint-camera-no-injected-camera-controls";
+        public bool topologyStable;
+        public int topologyEvents;
+        public long captureStartClockTimestamp, captureEndClockTimestamp, clockFrequency;
+        public int screenWidth, screenHeight, qualityLevel, antiAliasing, shadowCascades;
+        public double shadowDistance;
+        public string graphicsDeviceType, graphicsDeviceVersion;
         public string schema = "ksp-continuum-markers/v2";
         public string status = "interrupted";
         public string measurementScope = "Observational previous-frame marker readings and callback cadence; not whole-frame CPU attribution.";
+        public string fixedCallbackScope = "Owned MonoBehaviour FixedUpdate callbacks between coroutine boundaries; not aligned with Recorder previous-frame totals. Global physics steps must be derived from timestamped PlayerLoop fixed scopes.";
+        public string playerLoopWindowScope = "Raw PlayerLoop instrumentation includes warmup and cleanup; use startedTicks/endedTicks and capture timestamps to select fully enclosed scopes, reporting omitted straddlers.";
         public string intervalScope = "Stopwatch interval between coroutine boundaries; includes waiting, scheduling and probe overhead.";
         public string markerScope = "Recorder previous-frame totals; marker scopes may overlap. Availability does not establish complete engine coverage.";
         public string percentileMethod = "Linear interpolation at (count-1)*quantile; marker distributions include only available frames with positive block counts.";
@@ -106,11 +129,44 @@ namespace KspContinuum
         public ProfileFrame[] frames;
         public ProfileDistribution wallIntervals;
         public LoopTimingReport playerLoop;
+        public FlightPerturbationReport perturbation;
         public WriterCensusReport writerCensus;
         public ForceObservationReport partForces;
         public PhysicsSubstitutionCanaryReport substitutionCanary;
         public CallbackAttributionReport callbackAttribution;
+        public object updateCallbackAttribution;
+        public object flightIntegratorUpdateAttribution;
+        public object cylinderOcclusionCapture;
+        public object cylinderOcclusionReplacement;
+        public object fixedStepOwnerAttribution;
+        public object fixedDispatchAttribution;
+        public object orderedBodyAeroCapture;
+        public object zeroNativeForcePruning;
+        public object zeroNativeForceCanary;
+        public object trailEmitterCapture;
+        public object convectionCapture;
+        public object convectionReplacement;
+        public object aeroIntegrationAttribution;
+        public object aeroStepContext;
+        public object processCapture;
         public DryBuoyancyReport dryBuoyancy;
+    }
+
+    [Serializable] public sealed class FlightPerturbationReport
+    {
+        public string schema = "continuum-flight-perturbation/v1", runId, mode, status;
+        public string targetFlightId, targetPartName, selection;
+        public string clock = "Unity Time.fixedTime relative to capture admission";
+        public string forceFrame = "Frozen root-local direction rotated by current root attitude, applied at selected body center of mass";
+        public string units = "Unity rigidbody mass/force/impulse units; KSP mass is commonly tonnes, so do not interpret force values as SI newtons";
+        public string flexWitness = "Physical parent-child attachment relative pose change from capture admission; cancels whole-craft rigid translation and rotation, not solver joint stress";
+        public int processId, appliedCount, cachedBodies, sampledAttachments, observationSamples, peakAwakeBodies;
+        public double requestedStartSeconds, requestedDurationSeconds, nominalDeltaVMetersPerSecond, targetMassUnityUnits;
+        public double requestedForceUnityUnits, requestedImpulseUnityUnits, appliedImpulseUnityUnits, appliedDurationSeconds;
+        public double fixedTimeOriginSeconds, firstAppliedFixedSeconds, lastAppliedFixedSeconds;
+        public double observationCadenceSimulatedSeconds = .1;
+        public double peakAngularRadiansPerSecond, peakAttachmentPositionDeltaMeters, peakAttachmentRotationDeltaDegrees;
+        public Vec rootLocalForceDirection, initialRootLocalLeverMeters, appliedImpulseWorld, appliedAngularImpulseWorld;
     }
 
     [Serializable] public sealed class DryBuoyancyReport

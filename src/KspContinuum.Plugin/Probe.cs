@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using UnityEngine;
 using UnityEngine.Profiling;
 
@@ -25,7 +26,25 @@ namespace KspContinuum
         ActiveVesselPhysicsSubstitutionCanary substitutionCanary;
         PartForceObservation partForces;
         FixedCallbackAttribution callbackAttribution;
+        UpdateCallbackAttribution updateCallbackAttribution;
+        FlightIntegratorUpdateAttribution integratorUpdateAttribution;
+        CylinderOcclusionCapture cylinderOcclusionCapture;
+        CylinderOcclusionReplacement cylinderOcclusionReplacement;
+        FixedStepOwnerAttribution fixedStepOwnerAttribution;
+        FixedDispatchAttribution fixedDispatchAttribution;
+        RetainedOrderedBodyAeroCapture orderedBodyAeroCapture;
+        NativeAssemblyCaptureObserver nativeAssemblyCapture;
+        LiveRigidVesselOwner liveRigidOwner;
+        ZeroNativeForcePruning zeroNativeForcePruning;
+        TrailEmitterCapture trailEmitter;
+        ConvectionCapture convectionCapture;
+        ConvectionReplacement convectionReplacement;
+        AeroIntegrationAttribution aeroIntegrationAttribution;
+        AeroStepContext aeroStepContext;
+        ProcessCaptureDiagnostics processCapture;
+        ProcessCaptureDiagnostics.Boundary processStartBoundary, processEndBoundary;
         DryBuoyancyRuntime dryBuoyancy;
+        VesselRuntimeCapture vesselRuntime;
         Action<ProbeReport> completion;
         bool started, finished;
         int completed;
@@ -35,9 +54,40 @@ namespace KspContinuum
         const int FrameCount = 300;
         readonly string dryBuoyancyStrategy;
         readonly bool forcePlayerLoop;
+        readonly double simulationSeconds, wallTimeoutSeconds;
+        readonly string signalDirectory;
+        double captureStartWall, captureStartUt;
+        int fixedCallbacks, capturedFixedCallbacks, physicslessParts = -1, moduleCount = -1;
+        bool topologyHooks, captureActive;
+        FlightPerturbation perturbation;
+        Exception perturbationError;
+        public VesselRuntimeCapture.CaptureReport VesselRuntimeReport { get { return vesselRuntime == null ? null : vesselRuntime.Report; } }
 
-        public Probe(string dryBuoyancyStrategy = null, bool forcePlayerLoop = false)
-        { this.dryBuoyancyStrategy = dryBuoyancyStrategy; this.forcePlayerLoop = forcePlayerLoop; }
+        [Serializable] sealed class CaptureSignal
+        {
+            public string schema = "continuum-flight-capture-signal/v1", runId, status, utc, reason;
+            public double universalTime;
+            public double requestedSimulatedSeconds, actualSimulatedSeconds, captureWallSeconds;
+            public long clockTimestamp, clockFrequency;
+            public int processId;
+            public string machClockStatus = "not-requested";
+            public long machAbsoluteBeforeTicks, machAbsoluteAfterTicks;
+            public uint machTimebaseNumerator, machTimebaseDenominator;
+        }
+
+        public Probe(string dryBuoyancyStrategy = null, bool forcePlayerLoop = false, double simulationSeconds = 0,
+            double wallTimeoutSeconds = 60, string signalDirectory = null)
+        { this.dryBuoyancyStrategy = dryBuoyancyStrategy; this.forcePlayerLoop = forcePlayerLoop;
+            this.simulationSeconds = simulationSeconds; this.wallTimeoutSeconds = wallTimeoutSeconds; this.signalDirectory = signalDirectory; }
+
+        public static void ObserveFixedCallback()
+        {
+            if (owner == null) return;
+            owner.fixedCallbacks++;
+            if (!owner.captureActive || owner.perturbation == null || owner.perturbationError != null) return;
+            try { owner.perturbation.FixedStep(); }
+            catch (Exception error) { owner.perturbationError = error; }
+        }
 
         public IEnumerator Run(Action<ProbeReport> complete)
         {
@@ -47,21 +97,84 @@ namespace KspContinuum
             started = true; owner = this; completion = complete;
             try
             {
+                int requestedFrames = simulationSeconds > 0 ? (VesselRuntimeCapture.Requested ? VesselRuntimeFormat.MaxFrames : TrailEmitterCapture.Requested ? 4096 : 20000) : FrameCount;
                 report = new ProbeReport {
-                    requestedFrames = FrameCount, frames = new ProfileFrame[FrameCount], markers = new MarkerReport[Names.Length],
+                    requestedFrames = requestedFrames, frames = new ProfileFrame[requestedFrames], markers = new MarkerReport[Names.Length],
                     unity = Application.unityVersion, ksp = Versioning.GetVersionString(),
                     plugin = typeof(Probe).Assembly.GetName().Version.ToString(), platform = Application.platform.ToString(),
                     processor = SystemInfo.processorType, processorCount = SystemInfo.processorCount,
                     graphicsDevice = SystemInfo.graphicsDeviceName, targetFrameRate = Application.targetFrameRate, vSyncCount = QualitySettings.vSyncCount
                 };
+                report.captureMode = simulationSeconds > 0 ? "simulation-duration" : "rendered-frame-count";
+                report.requestedSimulatedSeconds = simulationSeconds; report.wallTimeoutSeconds = wallTimeoutSeconds;
+                report.effectivePhysicsFrameLimit = GameSettings.PHYSICS_FRAME_DT_LIMIT; report.effectiveMaximumDeltaTime = Time.maximumDeltaTime;
+                report.screenWidth=Screen.width; report.screenHeight=Screen.height; report.qualityLevel=QualitySettings.GetQualityLevel();
+                report.antiAliasing=QualitySettings.antiAliasing; report.shadowDistance=QualitySettings.shadowDistance; report.shadowCascades=QualitySettings.shadowCascades;
+                report.graphicsDeviceType=SystemInfo.graphicsDeviceType.ToString(); report.graphicsDeviceVersion=SystemInfo.graphicsDeviceVersion;
+                if (Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-flight-diagnostic") >= 0)
+                    report.cameraContract="diagnostic-controls.json records requested and effective seeded FREE camera; engine camera adjustments remain possible";
+                foreach (string argument in Environment.GetCommandLineArgs()) if (argument.StartsWith("--continuum-research-run=", StringComparison.Ordinal))
+                    report.runId = argument.Substring("--continuum-research-run=".Length);
                 for (int i = 0; i < Names.Length; i++)
                 {
                     var row = new MarkerReport { name = Names[i], status = "unavailable", availabilityDetail = "Recorder unavailable in this player or marker has not been created.",
-                        nanoseconds = new long[FrameCount], blocks = new int[FrameCount], available = new bool[FrameCount] };
+                        nanoseconds = new long[report.requestedFrames], blocks = new int[report.requestedFrames], available = new bool[report.requestedFrames] };
                     report.markers[i] = row;
-                    Acquire(row);
                 }
+                ZeroNativeForceCanary.ReportData zeroQualification = null;
+                if (ZeroNativeForcePruning.Requested)
+                {
+                    zeroQualification = ZeroNativeForceCanary.Run();
+                    zeroQualification.runId = report.runId;
+                    report.zeroNativeForceCanary = zeroQualification;
+                    double cleanupDeadline = Time.realtimeSinceStartup + 10;
+                    while (!ZeroNativeForceCanary.ObserveCleanup(zeroQualification))
+                    {
+                        if (zeroQualification.cleanupStatus == "cleanup-error" || Time.realtimeSinceStartup >= cleanupDeadline)
+                            throw new InvalidOperationException("Isolated zero-force scene cleanup failed or timed out.");
+                        yield return null;
+                        if (finished) yield break;
+                    }
+                    if (!zeroQualification.passed || zeroQualification.cleanupStatus != "scene-unloaded")
+                        throw new InvalidOperationException("Isolated zero-force native qualification failed: " + zeroQualification.detail);
+                }
+                if (VesselRuntimeCapture.Requested && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-callback-attribution") >= 0)
+                    throw new InvalidOperationException("Vessel runtime recording excludes broad callback attribution.");
+                if (VesselRuntimeCapture.Requested && TrailEmitterCapture.Requested)
+                    throw new InvalidOperationException("Runtime poses and emitter recording require distinct cold manifest leases; select one capture in this prototype.");
+                vesselRuntime = VesselRuntimeCapture.Create(FlightGlobals.ActiveVessel, report.runId);
+                trailEmitter = TrailEmitterCapture.Create(FlightGlobals.ActiveVessel, report.runId);
+                if (trailEmitter != null)
+                {
+                    report.trailEmitterCapture = trailEmitter.Report;
+                    if (trailEmitter.FailureReason != null) throw new InvalidOperationException("Trail emitter admission failed: " + trailEmitter.FailureReason);
+                }
+                foreach (MarkerReport row in report.markers) Acquire(row);
                 string[] arguments = Environment.GetCommandLineArgs();
+                if (Environment.GetEnvironmentVariable("CONTINUUM_PROCESS_CAPTURE") == "1")
+                {
+                    processCapture = new ProcessCaptureDiagnostics(report.runId);
+                    report.processCapture = processCapture.Report;
+                }
+                convectionReplacement = ConvectionReplacement.Create(arguments, report.runId, () => captureActive);
+                if (convectionReplacement != null) report.convectionReplacement = convectionReplacement.Report;
+                aeroStepContext = AeroStepContext.Create(arguments, report.runId, () => captureActive);
+                if (aeroStepContext != null)
+                {
+                    report.aeroStepContext = aeroStepContext.Report;
+                    if (aeroStepContext.Report.status != "installed") throw new InvalidOperationException("AeroStepContext: " + aeroStepContext.Report.detail);
+                }
+                aeroIntegrationAttribution = AeroIntegrationAttribution.Create(arguments, report.runId, () => captureActive);
+                if (aeroIntegrationAttribution != null) report.aeroIntegrationAttribution = aeroIntegrationAttribution.Report;
+                updateCallbackAttribution = UpdateCallbackAttribution.Create(arguments, report.runId, () => captureActive);
+                if (updateCallbackAttribution != null)
+                {
+                    report.updateCallbackAttribution = updateCallbackAttribution.Report;
+                    if (updateCallbackAttribution.Report.status != "installed")
+                        throw new InvalidOperationException("UpdateCallbackAttribution: " + updateCallbackAttribution.Report.detail);
+                }
+                convectionCapture = ConvectionCapture.Create(arguments, report.runId, () => captureActive);
+                if (convectionCapture != null) report.convectionCapture = convectionCapture.Report;
                 string canaryReason;
                 bool canaryRequested = ActiveVesselPhysicsSubstitutionCanary.RequestedAndQualified(arguments, out canaryReason);
                 if (canaryRequested && canaryReason != null)
@@ -80,9 +193,23 @@ namespace KspContinuum
                 }
                 if (Array.IndexOf(arguments, "--continuum-callback-attribution") >= 0)
                 {
-                    callbackAttribution = new FixedCallbackAttribution(); callbackAttribution.Start();
+                    callbackAttribution = new FixedCallbackAttribution(convectionReplacement); callbackAttribution.Start();
                     report.callbackAttribution = callbackAttribution.Report;
                 }
+                cylinderOcclusionReplacement = CylinderOcclusionReplacement.Create(arguments, report.runId, () => captureActive);
+                if (cylinderOcclusionReplacement != null) report.cylinderOcclusionReplacement = cylinderOcclusionReplacement.Report;
+                if (Array.IndexOf(arguments, "--continuum-flight-integrator-update-attribution") >= 0)
+                {
+                    if (callbackAttribution != null) throw new InvalidOperationException("Narrow integrator attribution excludes broad callback attribution.");
+                    cylinderOcclusionCapture = CylinderOcclusionCapture.Create(arguments, report.runId, () => captureActive);
+                    if (cylinderOcclusionCapture != null) report.cylinderOcclusionCapture = cylinderOcclusionCapture.Report;
+                    integratorUpdateAttribution = new FlightIntegratorUpdateAttribution(report.runId, aeroStepContext, convectionReplacement, cylinderOcclusionCapture, cylinderOcclusionReplacement); integratorUpdateAttribution.Start();
+                    report.flightIntegratorUpdateAttribution = integratorUpdateAttribution.Report;
+                    if (integratorUpdateAttribution.Report.status != "installed")
+                        throw new InvalidOperationException("Narrow integrator attribution: " + integratorUpdateAttribution.Report.detail);
+                }
+                else if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_CYLINDER_OCCLUSION_CAPTURE")))
+                    throw new InvalidOperationException("Cylinder capture requires the narrow integrator diagnostic.");
                 bool explicitStock = dryBuoyancyStrategy == DryBuoyancyRuntime.Stock;
                 string requestedDryStrategy = explicitStock ? null : dryBuoyancyStrategy;
                 if (!explicitStock && requestedDryStrategy == null && Array.IndexOf(arguments, "--continuum-dry-buoyancy") >= 0)
@@ -92,13 +219,55 @@ namespace KspContinuum
                     dryBuoyancy = new DryBuoyancyRuntime(requestedDryStrategy); dryBuoyancy.Start(); report.dryBuoyancy = dryBuoyancy.Report;
                     if (dryBuoyancy.Report.status != "installed") throw new InvalidOperationException("Dry buoyancy admission did not install: " + dryBuoyancy.Report.status);
                 }
-                if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || dryBuoyancy != null)
+                fixedStepOwnerAttribution = FixedStepOwnerAttribution.Create(arguments, report.runId, () => captureActive);
+                if (fixedStepOwnerAttribution != null)
+                {
+                    report.fixedStepOwnerAttribution = fixedStepOwnerAttribution.Report;
+                    if (fixedStepOwnerAttribution.Report.status != "installed") throw new InvalidOperationException("Fixed step owner admission failed: " + fixedStepOwnerAttribution.Report.detail);
+                }
+                fixedDispatchAttribution = FixedDispatchAttribution.Create(arguments, report.runId, () => captureActive);
+                if (fixedDispatchAttribution != null)
+                {
+                    report.fixedDispatchAttribution = fixedDispatchAttribution.Report;
+                    if (fixedStepOwnerAttribution == null || fixedDispatchAttribution.Report.status != "installed")
+                        throw new InvalidOperationException("Fixed dispatch admission failed: " + fixedDispatchAttribution.Report.detail);
+                }
+                orderedBodyAeroCapture = RetainedOrderedBodyAeroCapture.Create(arguments, report.runId, () => captureActive);
+                if (orderedBodyAeroCapture != null)
+                {
+                    report.orderedBodyAeroCapture = orderedBodyAeroCapture.Report;
+                    if (orderedBodyAeroCapture.Report.status != "installed")
+                        throw new InvalidOperationException("Ordered body aero admission failed: " + orderedBodyAeroCapture.Report.detail);
+                }
+                zeroNativeForcePruning = ZeroNativeForcePruning.Create(arguments, report.runId, () => captureActive,
+                    zeroQualification != null && zeroQualification.passed && zeroQualification.cleanupStatus == "scene-unloaded");
+                if (zeroNativeForcePruning != null)
+                {
+                    report.zeroNativeForcePruning = zeroNativeForcePruning.Report;
+                    if (zeroNativeForcePruning.Report.status != "installed")
+                        throw new InvalidOperationException("Zero-force pruning admission failed: " + zeroNativeForcePruning.Report.detail);
+                }
+                string nativeAssemblyOutput=Environment.GetEnvironmentVariable("CONTINUUM_NATIVE_ASSEMBLY_SCENE");
+                if(!string.IsNullOrEmpty(nativeAssemblyOutput))nativeAssemblyCapture=new NativeAssemblyCaptureObserver(nativeAssemblyOutput,report.runId,()=>captureActive);
+                string liveRigidOutput=Environment.GetEnvironmentVariable("CONTINUUM_LIVE_RIGID_OWNER");
+                if(!string.IsNullOrEmpty(liveRigidOutput))liveRigidOwner=new LiveRigidVesselOwner(liveRigidOutput,report.runId,()=>captureActive);
+                if (forcePlayerLoop || Array.IndexOf(arguments, "--continuum-playerloop") >= 0 || writerCensus != null || callbackAttribution != null || updateCallbackAttribution != null || integratorUpdateAttribution != null || cylinderOcclusionReplacement != null || fixedStepOwnerAttribution != null || dryBuoyancy != null || nativeAssemblyCapture != null || liveRigidOwner != null)
                 {
                     IPlayerLoopBracketObserver observer = writerCensus == null ? null : writerCensus.Census;
                     if (substitutionCanary != null) observer = new CompositePlayerLoopObserver(observer, substitutionCanary);
                     if (callbackAttribution != null) observer = new CompositePlayerLoopObserver(observer, callbackAttribution);
+                    if (updateCallbackAttribution != null) observer = new CompositePlayerLoopObserver(observer, updateCallbackAttribution);
+                    if (integratorUpdateAttribution != null) observer = new CompositePlayerLoopObserver(observer, integratorUpdateAttribution);
+                    if (fixedStepOwnerAttribution != null) observer = new CompositePlayerLoopObserver(observer, fixedStepOwnerAttribution);
+                    if (fixedDispatchAttribution != null) observer = new CompositePlayerLoopObserver(observer, fixedDispatchAttribution);
                     if (dryBuoyancy != null) observer = new CompositePlayerLoopObserver(observer, dryBuoyancy);
+                    if (nativeAssemblyCapture != null) observer = new CompositePlayerLoopObserver(observer, nativeAssemblyCapture);
+                    if (liveRigidOwner != null) observer = new CompositePlayerLoopObserver(observer, liveRigidOwner);
                     playerLoop = new PlayerLoopTiming(observer); playerLoop.Start(); report.playerLoop = playerLoop.Report;
+                    if (updateCallbackAttribution != null && playerLoop.Report.integrityStatus != "verified-at-boundaries")
+                        throw new InvalidOperationException("Update attribution requires intact PlayerLoop brackets.");
+                    if (liveRigidOwner != null && playerLoop.Report.integrityStatus != "verified-at-boundaries")
+                        throw new InvalidOperationException("Live rigid owner requires intact PlayerLoop brackets.");
                     if (substitutionCanary != null) substitutionCanary.Start();
                 }
                 if (Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-part-forces") >= 0)
@@ -108,17 +277,72 @@ namespace KspContinuum
                     report.partForces = partForces.Report;
                 }
                 clock.Start();
+                if(simulationSeconds > 0) { GameEvents.onVesselWasModified.Add(VesselModified); GameEvents.onPartDie.Add(PartDied); topologyHooks=true; }
                 // Recorder counters describe the previous frame; discard the partly enabled initial frame.
                 yield return null;
                 if (finished) yield break;
+                if (aeroStepContext != null && !aeroStepContext.ReadyForCapture)
+                {
+                    aeroStepContext.Report.dragWarmupWaitStartedTicks = Stopwatch.GetTimestamp();
+                    while (!aeroStepContext.ReadyForCapture)
+                    {
+                        if (aeroStepContext.QualificationFailed || clock.Elapsed.TotalSeconds >= wallTimeoutSeconds)
+                            throw new InvalidOperationException("Aero drag qualification failed or timed out before capture.");
+                        yield return null;
+                        if (finished) yield break;
+                    }
+                    aeroStepContext.Report.dragWarmupWaitEndedTicks = Stopwatch.GetTimestamp();
+                }
+                while (cylinderOcclusionReplacement != null && !cylinderOcclusionReplacement.ReadyForCapture)
+                {
+                    if (cylinderOcclusionReplacement.QualificationFailed || clock.Elapsed.TotalSeconds >= wallTimeoutSeconds)
+                        throw new InvalidOperationException("Cylinder occlusion qualification failed or timed out before capture.");
+                    yield return null;
+                    if (finished) yield break;
+                }
+                while (zeroNativeForcePruning != null && !zeroNativeForcePruning.ReadyForCapture)
+                {
+                    if (zeroNativeForcePruning.QualificationFailed || clock.Elapsed.TotalSeconds >= wallTimeoutSeconds)
+                        throw new InvalidOperationException("Zero-force root warmup failed or timed out before capture.");
+                    yield return null;
+                    if (finished) yield break;
+                }
+                perturbation = FlightPerturbation.Create(arguments, FlightGlobals.ActiveVessel, report.runId);
+                if (perturbation != null)
+                {
+                    report.perturbation = perturbation.Report;
+                    if (simulationSeconds <= 0 || perturbation.Report.requestedStartSeconds + perturbation.Report.requestedDurationSeconds >= simulationSeconds)
+                        throw new ArgumentException("Perturbation requires a simulation-duration capture extending beyond the pulse.");
+                }
+                report.captureStartUtc = DateTime.UtcNow.ToString("o"); captureStartUt = Planetarium.GetUniversalTime();
                 ProfileFrame previous = Context();
-                for (int frame = 0; frame < FrameCount; frame++)
+                report.clockFrequency=Stopwatch.Frequency;
+                processStartBoundary = processCapture == null ? null : processCapture.MarkBoundary();
+                report.captureStartClockTimestamp = processStartBoundary == null ? Stopwatch.GetTimestamp() : processStartBoundary.clockTimestamp;
+                if (processCapture != null) processCapture.Begin(processStartBoundary);
+                report.researchPanel = ResearchPanelPresentation.BeginCapture(report.captureStartClockTimestamp);
+                FlightLocalCamera.BeginWindow(report.captureStartClockTimestamp);
+                FlightDiagnosticControls.BeginWindow(report.captureStartClockTimestamp);
+                FlightPartBatcher.CaptureStart(report.captureStartClockTimestamp);
+                captureStartWall=clock.Elapsed.TotalSeconds; previous.boundaryWallSeconds=captureStartWall; capturedFixedCallbacks=fixedCallbacks;
+                Signal("capture-start", null);
+                captureActive=true;
+                for (int frame = 0; frame < report.requestedFrames; frame++)
                 {
                     yield return null;
                     if (finished) yield break;
+                    if (liveRigidOwner != null && liveRigidOwner.Invalid)
+                    { report.status = "invalid"; report.completionReason = "live-rigid-owner-invalid"; throw new InvalidOperationException("Live rigid owner failed: " + liveRigidOwner.Report.detail); }
+                    if (perturbationError != null)
+                    {
+                        report.status = "invalid"; report.completionReason = "perturbation-error";
+                        throw new InvalidOperationException("Flight perturbation failed.", perturbationError);
+                    }
                     if (playerLoop != null)
                     {
                         playerLoop.Audit();
+                        if (updateCallbackAttribution != null && playerLoop.Report.integrityStatus == "invalidated")
+                            throw new InvalidOperationException("Update attribution PlayerLoop integrity changed.");
                         if (dryBuoyancy != null && playerLoop.Report.integrityStatus == "invalidated")
                         {
                             dryBuoyancy.Dispose();
@@ -126,17 +350,47 @@ namespace KspContinuum
                         }
                     }
                     if (partForces != null) partForces.Tick();
+                    if (vesselRuntime != null)
+                        try { vesselRuntime.CaptureFrame(); }
+                        catch { report.status = "invalid"; report.completionReason = "vessel-runtime-capture-invalid"; throw; }
+                    if (trailEmitter != null)
+                        try { trailEmitter.CaptureFrame(); }
+                        catch { report.status = "invalid"; report.completionReason = "trail-emitter-capture-invalid"; throw; }
                     double now = clock.Elapsed.TotalSeconds;
                     previous.observedFrame = Time.frameCount;
                     previous.markerFrame = Time.frameCount - 1;
                     previous.contextAligned = previous.contextFrame == previous.markerFrame;
                     previous.wallMilliseconds = (now - previous.boundaryWallSeconds) * 1000;
+                    previous.fixedCallbacksPerFrame = fixedCallbacks - capturedFixedCallbacks; capturedFixedCallbacks = fixedCallbacks;
                     foreach (Slot slot in slots) Read(slot, frame);
                     report.frames[frame] = previous;
                     completed++;
-                    if (completed < FrameCount) previous = Context();
+                    report.actualSimulatedSeconds = Planetarium.GetUniversalTime() - captureStartUt;
+                    report.captureWallSeconds = now - captureStartWall;
+                    if (simulationSeconds > 0 && report.actualSimulatedSeconds >= simulationSeconds && (liveRigidOwner == null || liveRigidOwner.CaptureReady))
+                    { report.status = "complete"; report.completionReason = "simulation-duration-reached"; break; }
+                    if (simulationSeconds > 0 && report.captureWallSeconds >= wallTimeoutSeconds) { report.status = "invalid"; report.completionReason = "capture-wall-timeout"; break; }
+                    if (completed < report.requestedFrames) previous = Context();
                 }
-                report.status = "complete";
+                captureActive=false;
+                processEndBoundary = processCapture == null ? null : processCapture.MarkBoundary();
+                report.captureEndClockTimestamp = processEndBoundary == null ? Stopwatch.GetTimestamp() : processEndBoundary.clockTimestamp;
+                if (processCapture != null) processCapture.End(processEndBoundary, simulationSeconds <= 0 || report.status == "complete");
+                ResearchPanelPresentation.EndCapture(report.researchPanel, report.captureEndClockTimestamp);
+                if (report.researchPanel.status != "complete") { report.status = "invalid"; report.completionReason = "research-panel-visibility-or-callback-invalid"; }
+                FlightLocalCamera.EndWindow(report.captureEndClockTimestamp);
+                FlightDiagnosticControls.EndWindow(report.captureEndClockTimestamp);
+                FlightPartBatcher.CaptureEnd(report.captureEndClockTimestamp);
+                if(simulationSeconds > 0 && completed > 0)
+                {
+                    ProfileFrame last = Context(true), first=report.frames[0];
+                    report.topologyStable=report.topologyEvents==0 && last.vesselId==first.vesselId && last.parts==first.parts && last.rigidbodies==first.rigidbodies &&
+                        last.joints==first.joints && last.colliders==first.colliders && last.moduleCount==first.moduleCount &&
+                        last.physicslessParts==first.physicslessParts && last.loadedVessels==first.loadedVessels;
+                    if(!report.topologyStable) { report.status="invalid"; report.completionReason="final-topology-changed"; }
+                }
+                if (simulationSeconds <= 0) { report.status = "complete"; report.completionReason = "frame-count-reached"; }
+                else if (report.status == "interrupted") { report.status = "invalid"; report.completionReason = "frame-cap-before-duration"; }
                 Finish(false);
             }
             finally { Dispose(); }
@@ -176,11 +430,13 @@ namespace KspContinuum
             catch (Exception error) { slot.Report.availabilityDetail = "Recorder read failed: " + error.GetType().Name; }
         }
 
-        ProfileFrame Context()
+        ProfileFrame Context(bool boundary = false)
         {
             var frame = new ProfileFrame {
                 contextFrame = Time.frameCount, renderedFrame = Time.renderedFrameCount, boundaryWallSeconds = clock.Elapsed.TotalSeconds,
                 fixedDeltaSeconds = Time.fixedDeltaTime, timeScale = Time.timeScale, scene = HighLogic.LoadedScene.ToString(),
+                maximumDeltaSeconds = Time.maximumDeltaTime, physicsFrameLimitSeconds = GameSettings.PHYSICS_FRAME_DT_LIMIT,
+                warpMode = TimeWarp.fetch == null ? "unavailable" : TimeWarp.WarpMode.ToString(),
                 screenWidth = Screen.width, screenHeight = Screen.height, parts = -1,
                 rigidbodies = -1, joints = -1, colliders = -1, loadedVessels = -1,
                 managedBytes = GC.GetTotalMemory(false), gcGeneration0 = GC.CollectionCount(0), gcGeneration1 = GC.CollectionCount(1), gcGeneration2 = GC.CollectionCount(2),
@@ -200,15 +456,20 @@ namespace KspContinuum
             if (FlightGlobals.VesselsLoaded != null) frame.loadedVessels = FlightGlobals.VesselsLoaded.Count;
             // Census the whole vessel only at capture boundaries. Per-frame hierarchy walks would
             // perturb the same part-count scaling this probe is intended to measure.
-            if (structuralRigidbodies < 0 || completed == 0 || completed == FrameCount - 1)
+            if (structuralRigidbodies < 0 || boundary || completed == 0 || completed == report.requestedFrames - 1)
             {
                 StructuralCensusResult census = StructuralCensusCapture.Capture(vessel);
                 structuralRigidbodies = census.rigidbodies;
                 structuralJoints = census.joints;
                 structuralColliders = census.colliders;
+                physicslessParts = 0; moduleCount = 0;
+                foreach (Part part in vessel.parts) if (part != null) { if (part.physicalSignificance == Part.PhysicalSignificance.NONE) physicslessParts++; if (part.Modules != null) moduleCount += part.Modules.Count; }
             }
             frame.rigidbodies = structuralRigidbodies; frame.joints = structuralJoints; frame.colliders = structuralColliders;
+            frame.physicslessParts = physicslessParts; frame.moduleCount = moduleCount;
             frame.body = vessel.mainBody == null ? null : vessel.mainBody.bodyName;
+            frame.altitudeMeters=vessel.altitude; frame.atmosphericDensity=vessel.atmDensity;
+            if(vessel.mainBody!=null) frame.atmosphereDepthMeters=vessel.mainBody.atmosphereDepth;
             frame.situation = vessel.situation.ToString();
             if (vessel.mainBody != null)
             {
@@ -227,6 +488,7 @@ namespace KspContinuum
                     frame.radialSpeedMetersPerSecond = Vector3d.Dot(position, velocity) / radius;
                 }
             }
+            if (perturbation != null) perturbation.Observe(frame);
             return frame;
         }
 
@@ -235,6 +497,170 @@ namespace KspContinuum
             if (finished) return;
             finished = true;
             var errors = new List<string>();
+            if(liveRigidOwner!=null)
+            {
+                try { liveRigidOwner.Dispose(); if(!liveRigidOwner.Report.passed)errors.Add("LiveRigidOwner: "+liveRigidOwner.Report.status+" "+liveRigidOwner.Report.detail); }
+                catch(Exception error) {errors.Add("LiveRigidOwner: "+error);}
+                liveRigidOwner=null;
+            }
+            if(nativeAssemblyCapture!=null)
+            {
+                if(nativeAssemblyCapture.Error!=null||nativeAssemblyCapture.ManifestPath==null)errors.Add("NativeAssemblyScene: "+(nativeAssemblyCapture.Error??"No completed native boundary capture."));
+                nativeAssemblyCapture=null;
+            }
+            if (zeroNativeForcePruning != null)
+            {
+                try
+                {
+                    zeroNativeForcePruning.Dispose();
+                    string reason;
+                    if (!zeroNativeForcePruning.IsValidFinal(out reason)) errors.Add("ZeroNativeForcePruning: " + reason);
+                }
+                catch (Exception error) { errors.Add("ZeroNativeForcePruning: " + error.GetType().Name); }
+                zeroNativeForcePruning = null;
+            }
+            if (orderedBodyAeroCapture != null)
+            {
+                try
+                {
+                    orderedBodyAeroCapture.Dispose();
+                    string reason;
+                    if (!orderedBodyAeroCapture.IsValidFinal(out reason)) errors.Add("OrderedBodyAeroCapture: " + reason);
+                }
+                catch (Exception error) { errors.Add("OrderedBodyAeroCapture: " + error.GetType().Name); }
+                orderedBodyAeroCapture = null;
+            }
+            if (fixedDispatchAttribution != null)
+            {
+                try
+                {
+                    fixedDispatchAttribution.Dispose();
+                    string reason;
+                    if (!fixedDispatchAttribution.IsValidFinal(out reason)) errors.Add("FixedDispatchAttribution: " + reason);
+                }
+                catch (Exception error) { errors.Add("FixedDispatchAttribution: " + error.GetType().Name); }
+                fixedDispatchAttribution = null;
+            }
+            if (fixedStepOwnerAttribution != null)
+            {
+                try
+                {
+                    fixedStepOwnerAttribution.Dispose();
+                    string reason;
+                    if (!fixedStepOwnerAttribution.IsValidFinal(out reason)) errors.Add("FixedStepOwnerAttribution: " + reason);
+                }
+                catch (Exception error) { errors.Add("FixedStepOwnerAttribution: " + error.GetType().Name); }
+                fixedStepOwnerAttribution = null;
+            }
+            if (updateCallbackAttribution != null)
+            {
+                try
+                {
+                    if (playerLoop != null)
+                    {
+                        playerLoop.Audit();
+                        if (playerLoop.Report.integrityStatus != "verified-at-boundaries")
+                            updateCallbackAttribution.Fault(typeof(UnityEngine.PlayerLoop.Update.ScriptRunBehaviourUpdate).FullName,
+                                new InvalidOperationException("Final Update PlayerLoop integrity is unqualified."));
+                    }
+                    updateCallbackAttribution.Dispose();
+                    string reason;
+                    if (!updateCallbackAttribution.IsValidFinal(out reason)) errors.Add("UpdateCallbackAttribution: " + reason);
+                }
+                catch (Exception error) { errors.Add("UpdateCallbackAttribution: " + error.GetType().Name); }
+                updateCallbackAttribution = null;
+            }
+            if (integratorUpdateAttribution != null)
+            {
+                try
+                {
+                    if (playerLoop != null)
+                    {
+                        playerLoop.Audit();
+                        if (playerLoop.Report.integrityStatus != "verified-at-boundaries")
+                            integratorUpdateAttribution.Fault(typeof(UnityEngine.PlayerLoop.Update.ScriptRunBehaviourUpdate).FullName,
+                                new InvalidOperationException("Final integrator PlayerLoop integrity is unqualified."));
+                    }
+                    integratorUpdateAttribution.Dispose();
+                    if (integratorUpdateAttribution.Report.status != "observed" ||
+                        integratorUpdateAttribution.Report.patchGraphWitnessStatus != "passed" ||
+                        integratorUpdateAttribution.Report.cleanupStatus != "removed-owned-patches")
+                        errors.Add("IntegratorUpdateAttribution: closed witness " + integratorUpdateAttribution.Report.status);
+                }
+                catch (Exception error) { errors.Add("IntegratorUpdateAttribution: " + error.GetType().Name); }
+                integratorUpdateAttribution = null;
+            }
+            if (cylinderOcclusionCapture != null)
+            {
+                try
+                {
+                    cylinderOcclusionCapture.Dispose();
+                    if (cylinderOcclusionCapture.Report.status != "complete" || cylinderOcclusionCapture.Report.cleanupStatus != "removed-owned-patches")
+                        errors.Add("CylinderOcclusionCapture: " + cylinderOcclusionCapture.Report.detail);
+                }
+                catch (Exception error) { errors.Add("CylinderOcclusionCapture: " + error.GetType().Name); }
+                cylinderOcclusionCapture = null;
+            }
+            if (cylinderOcclusionReplacement != null)
+            {
+                try
+                {
+                    cylinderOcclusionReplacement.Dispose();
+                    string reason;
+                    if (!cylinderOcclusionReplacement.IsValidFinal(out reason)) errors.Add("CylinderOcclusionReplacement: " + reason);
+                }
+                catch (Exception error) { errors.Add("CylinderOcclusionReplacement: " + error.GetType().Name); }
+                cylinderOcclusionReplacement = null;
+            }
+            if (aeroStepContext != null)
+            {
+                try
+                {
+                    aeroStepContext.Dispose();
+                    string reason;
+                    if (!aeroStepContext.IsValidFinal(out reason)) errors.Add("AeroStepContext: " + reason);
+                }
+                catch (Exception error) { errors.Add("AeroStepContext: " + error.GetType().Name); }
+                aeroStepContext = null;
+            }
+            if (aeroIntegrationAttribution != null)
+            {
+                try
+                {
+                    aeroIntegrationAttribution.Dispose();
+                    string reason;
+                    if (!aeroIntegrationAttribution.IsValidFinal(out reason)) errors.Add("AeroIntegrationAttribution: " + reason);
+                }
+                catch (Exception error) { errors.Add("AeroIntegrationAttribution: " + error.GetType().Name); }
+                aeroIntegrationAttribution = null;
+            }
+            if (callbackAttribution != null)
+            {
+                try { callbackAttribution.Dispose(); }
+                catch (Exception error) { errors.Add("CallbackAttribution: " + error.GetType().Name); }
+                if (callbackAttribution.Report.cleanupStatus == "cleanup-error") errors.Add("CallbackAttribution: cleanup-error");
+                if (convectionReplacement != null && callbackAttribution.Report.status != "observed")
+                    errors.Add("CallbackAttribution: candidate coexistence " + callbackAttribution.Report.status);
+                callbackAttribution = null;
+            }
+            if (convectionReplacement != null)
+            {
+                try
+                {
+                    convectionReplacement.Dispose();
+                    string reason;
+                    if (!convectionReplacement.IsValidFinal(out reason)) errors.Add("ConvectionReplacement: " + reason);
+                }
+                catch (Exception error) { errors.Add("ConvectionReplacement: " + error.GetType().Name); }
+                convectionReplacement = null;
+            }
+            if (convectionCapture != null)
+            {
+                try { convectionCapture.Dispose(); }
+                catch (Exception error) { errors.Add("ConvectionCapture: " + error.GetType().Name); }
+                if (convectionCapture.Report.status != "complete") errors.Add("ConvectionCapture: " + convectionCapture.Report.status);
+                convectionCapture = null;
+            }
             if (substitutionCanary != null)
             {
                 try { substitutionCanary.Dispose(); }
@@ -253,13 +679,6 @@ namespace KspContinuum
                 try { writerCensus.Dispose(); }
                 catch (Exception error) { errors.Add("WriterCensus: " + error.GetType().Name); }
                 writerCensus = null;
-            }
-            if (callbackAttribution != null)
-            {
-                try { callbackAttribution.Dispose(); }
-                catch (Exception error) { errors.Add("CallbackAttribution: " + error.GetType().Name); }
-                if (callbackAttribution.Report.cleanupStatus == "cleanup-error") errors.Add("CallbackAttribution: cleanup-error");
-                callbackAttribution = null;
             }
             if (dryBuoyancy != null)
             {
@@ -282,17 +701,70 @@ namespace KspContinuum
                 catch (Exception error) { errors.Add(slot.Report.name + ": " + error.GetType().Name); }
             }
             slots.Clear();
+            captureActive=false;
+            if (perturbation != null)
+            {
+                if (perturbationError != null) perturbation.Report.status = "invalid-perturbation-error";
+                if (!perturbation.Finish())
+                { report.status = "invalid"; report.completionReason = "incomplete-or-failed-perturbation"; }
+                if (signalDirectory != null)
+                    try { File.WriteAllText(Path.Combine(signalDirectory, "perturbation.json"), ReportJson.Encode(perturbation.Report)); }
+                    catch (Exception error) { errors.Add("PerturbationExport: " + error.GetType().Name); }
+                perturbation = null;
+            }
+            if(topologyHooks) { GameEvents.onVesselWasModified.Remove(VesselModified); GameEvents.onPartDie.Remove(PartDied); topologyHooks=false; }
             if (ReferenceEquals(owner, this)) owner = null;
             clock.Stop();
             Action<ProbeReport> callback = completion;
             completion = null;
-            if (report == null || callback == null) return;
+            if (report == null || callback == null)
+            {
+                if (processCapture != null) { processCapture.Dispose(); processCapture = null; }
+                return;
+            }
             try
             {
                 report.cleanupErrors = errors.ToArray();
                 report.recorderCleanupStatus = errors.Count == 0 ? "restored-owned-enables" : "restoration-errors";
                 if (errors.Count != 0) report.status = "cleanup-error";
+                if(simulationSeconds > 0 && report.playerLoop!=null && report.playerLoop.scopes!=null)
+                    foreach(LoopTimingScope scope in report.playerLoop.scopes) if(scope.droppedSamples>0 || scope.sequenceErrors>0)
+                    { report.status="invalid"; report.completionReason="truncated-or-invalid-playerloop"; }
                 ProfilingSummary.Finish(report, completed);
+                report.captureEndUtc = DateTime.UtcNow.ToString("o");
+                if (report.completionReason == null) report.completionReason = "capture-interrupted";
+                if(report.captureStartClockTimestamp>0)
+                {
+                    if(report.captureEndClockTimestamp==0)
+                    {
+                        processEndBoundary = processCapture == null ? null : processCapture.MarkBoundary();
+                        report.captureEndClockTimestamp = processEndBoundary == null ? Stopwatch.GetTimestamp() : processEndBoundary.clockTimestamp;
+                        if (processCapture != null) processCapture.End(processEndBoundary, false);
+                    }
+                    ResearchPanelPresentation.EndCapture(report.researchPanel, report.captureEndClockTimestamp);
+                    if (report.researchPanel != null && report.researchPanel.status != "complete") { report.status = "invalid"; report.completionReason = "research-panel-visibility-or-callback-invalid"; }
+                    FlightLocalCamera.EndWindow(report.captureEndClockTimestamp);
+                    FlightDiagnosticControls.EndWindow(report.captureEndClockTimestamp);
+                    FlightPartBatcher.CaptureEnd(report.captureEndClockTimestamp);
+                }
+                if (vesselRuntime != null)
+                {
+                    vesselRuntime.Finish(report.status == "complete", report.completionReason);
+                    if (vesselRuntime.Report.status != "complete")
+                    { report.status = "invalid"; report.completionReason = "vessel-runtime-" + vesselRuntime.Report.status; }
+                }
+                if (trailEmitter != null)
+                {
+                    try
+                    {
+                        trailEmitter.Finish(report.status == "complete", report.completionReason);
+                        if (trailEmitter.Report.status != "complete") { report.status = "invalid"; report.completionReason = "trail-emitter-" + trailEmitter.Report.status; }
+                    }
+                    finally { trailEmitter.Dispose(); }
+                }
+                if (report.captureStartClockTimestamp > 0) Signal("capture-end", report.completionReason);
+                if (!MonoJitSampleMap.ResolveRequested(report.runId, report.captureEndClockTimestamp, signalDirectory, captureActive))
+                { report.status = "invalid"; report.completionReason = "mono-jit-sample-map-failed"; }
                 callback(report);
             }
             catch (Exception error)
@@ -302,8 +774,32 @@ namespace KspContinuum
                 UnityEngine.Debug.LogError("[Continuum] Partial profiling report export failed: " + error.GetType().Name);
                 UnityEngine.Debug.LogException(error);
             }
+            finally { if (processCapture != null) { processCapture.Dispose(); processCapture = null; } }
         }
 
         public void Dispose() { Finish(true); }
+        void VesselModified(Vessel vessel) { if(captureActive && ReferenceEquals(vessel,lastVessel)) report.topologyEvents++; }
+        void PartDied(Part part) { if(captureActive && part!=null && ReferenceEquals(part.vessel,lastVessel)) report.topologyEvents++; }
+        void Signal(string name, string reason)
+        {
+            if (signalDirectory == null) return;
+            var signal = new CaptureSignal { runId = report.runId, status = name == "capture-start" ? "capturing" : report.status,
+                utc = DateTime.UtcNow.ToString("o"), reason = reason, universalTime = name == "capture-start" ? captureStartUt : captureStartUt + report.actualSimulatedSeconds,
+                requestedSimulatedSeconds=report.requestedSimulatedSeconds, actualSimulatedSeconds=report.actualSimulatedSeconds,
+                captureWallSeconds=report.captureWallSeconds,
+                clockTimestamp = name=="capture-start" ? report.captureStartClockTimestamp : report.captureEndClockTimestamp,
+                clockFrequency = Stopwatch.Frequency, processId = Process.GetCurrentProcess().Id };
+            ProcessCaptureDiagnostics.Boundary boundary = name == "capture-start" ? processStartBoundary : processEndBoundary;
+            if (boundary != null)
+            {
+                signal.machClockStatus = boundary.machClockStatus;
+                signal.machAbsoluteBeforeTicks = boundary.machAbsoluteBeforeTicks;
+                signal.machAbsoluteAfterTicks = boundary.machAbsoluteAfterTicks;
+                signal.machTimebaseNumerator = boundary.machTimebaseNumerator;
+                signal.machTimebaseDenominator = boundary.machTimebaseDenominator;
+            }
+            string path = Path.Combine(signalDirectory, name + ".json"), temporary = path + ".pending";
+            File.WriteAllText(temporary, JsonUtility.ToJson(signal)); File.Move(temporary, path);
+        }
     }
 }

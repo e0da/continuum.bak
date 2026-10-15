@@ -11,3 +11,5 @@
 /Packages/packages-lock.json
 /ProjectSettings/*
 !/ProjectSettings/ProjectVersion.txt
+Assets/ContinuumAeroCookGenerated/
+Assets/ContinuumAeroCookGenerated.meta

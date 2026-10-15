@@ -1,13 +1,41 @@
 # Continuum
 
-An experimental KSP 1 mechanics and performance lab with an addon, captured workloads, and portable physics experiments. Gimbal's native Rust runtime and Space Race game are the primary product path. Continuum can inform them through measured algorithms and fixtures without becoming a required runtime dependency. Rigid grouping remains one experiment, not a commitment to making every ship rigid. `KspContinuum` remains the addon namespace.
+[Predictive flight windows](docs/owned-flight-windows.md) combine source-bound
+environment forecasts, thermal lag deadlines and partial atmosphere-entry coast
+with the owned numerical timeline. [Executable situations](docs/owned-forecast-situations.md)
+exercise captured-craft entry and exact pending-state continuation. Native world-mode
+warp scales demand independently of the physical interval. A private stock probe
+now runs on that independent clock; full playable coverage remains open.
 
-**Status: experimental measurement, input, and worker infrastructure.** The isolated physics benchmark has passed in headless KSP 1.12.5, and an installed orbital coast has exercised the live background worker plus next-step stock comparison. This is a research harness, not a gameplay fix or a replacement physics engine. Stock-vessel speedup and mod compatibility remain unverified.
+The opt-in [owned KSP clock](docs/owned-clock-flight.md) connects that worker to
+the stock shell through a reversible lease of the complete fixed-update subtree.
+[Scalar supply](docs/owned-scalar-supply.md) combines acquired fixed solar panels,
+probe-command loads and actuator consumption in one accepted resource bank.
+The [stock probe producer](docs/owned-clock-probe-stage.md) establishes original
+construction, module initialization and save loading. Actual nine-part flight has
+demonstrated clock takeover, exact module/debt restore, 32×/128× demand and clean
+stock handback. This is a bounded vacuum consumer, with broader gameplay and mod
+coverage still open.
 
-The [roadmap and goal index](docs/roadmap.md) retains the KSP experiments and their evidence while Gimbal advances independently. A023 substituted an empty native physics callback and restored it; useful replacement dynamics and measured KSP performance improvement remain open research outcomes. The Rust CPU/Metal results are synthetic kernel measurements, not game-framerate evidence.
+An experimental KSP 1 mechanics and performance lab with an addon, captured workloads, and system replacements. Continuum and Gimbal share a longer-term goal of supporting Kerbal-like, toy and realism experiences. Their [runtime and repository boundary](docs/continuum-gimbal-boundary.md) remains provisional, including a possible complete KSP/Unity replacement. Rigid assembled craft is the primary motion model; optional flexibility and wobble remain research capabilities. `KspContinuum` remains the addon namespace.
+
+**Status: experimental laboratory and opt-in replacements.** Prepared startup providers and batched flight rendering have run in an owned KSP instance. The [delivery ledger](docs/research-delivery.md) records their measured scope and remaining qualification. Complete playable performance, broad mod compatibility and a complete independent game runtime remain open outcomes.
+
+The [owned runtime and live workbench](docs/owned-runtime.md) now execute a real captured 512-part craft through controls/resources, rigid motion, atmosphere/warp, split/join, complete checkpoints and executable schedule HMR. The same retained simulation runs in the portable laboratory and matching Unity/Metal consumer. Visible geometry, native continuation and code rejection/recovery have been checked; full KSP gameplay, contacts, broad providers and stock shader fidelity remain open.
+
+The [owned central-body flight consumer](docs/owned-flight.md) adds captured orbital placement/gravity/rotating atmosphere, guarded Kepler coast, predictions, maneuver nodes, directional control authority and complete flight checkpoints. It renders the actual captured craft meshes/textures and planet with scientific views and retained draw packets. Original shader fidelity and a complete independent game remain open.
+
+The [owned flight timeline](docs/owned-flight-timeline.md) separates requested wall progress from committed physical time, retains ordered input/debt, and supports bounded local work, event barriers and admitted coast. Its [independent worker](docs/owned-flight-worker.md) owns simulation and publishes coherent leased presentation state. [Thermal evolution](docs/owned-runtime-thermal.md) retains ordered forcing and pending energy on a separate bounded cadence. [Adaptive mechanics](docs/owned-runtime-adaptive.md), [typed physical events](docs/owned-flight-events.md), complete execution checkpoints and [render interpolation](docs/owned-flight-interpolation.md) now extend that ownership without a global render-driven cadence. The [captured-craft consumer](docs/owned-flight-worker-consumer.md) and [causal flight lab](tools/KspContinuum.CausalFlightLab/README.md) exercise the transfer. The [persistent KSP flight service](docs/playable-rigid-flight.md) supports ordinary controls and safe stock transitions. KSP-wide clock ownership and complete playable qualification remain part of the [whole-runtime redesign](docs/whole-runtime-redesign.md).
+
+The selectable [compiled execution plan](docs/owned-runtime-execution-plan.md) retains physical dependencies and geometry, skips inactive vacuum aero, and probes actuator deadlines without copying the world. [Embedded mechanics](docs/owned-runtime-embedded.md) replaces repeated complete trials with two wrench samples around one scalar transaction. [Higher-order mechanics](docs/owned-runtime-higher-order-comparison.md) adds RK23 with isolated force stages and explicit variable-mass/wheel fallback. [Retained deadlines](docs/owned-runtime-deadlines.md) project resource/wheel events from current state and certify the frontier against original allocation. [Mission situations](docs/owned-mission-situations.md) exercise burn/cutoff, reversals, exact impulses, warp, complete continuation, airborne reentry and [local moving-frame split/join](docs/owned-topology-transfer.md). Original execution and step-doubling remain available; complete work counters distinguish physical work from render pacing. Binary v6 preserves scalar-provider source bindings with explicit v1–v5 decoding.
+
+The [roadmap and goal index](docs/roadmap.md) connects existing research to the shared direction. The [replacement architecture](docs/research-replacement-architecture.md) targets complete workloads and avoidable work, rather than inheriting KSP's method and part boundaries. Broader gameplay dynamics qualification remains open; synthetic Rust CPU/Metal kernel results do not establish game-framerate gains.
+
+The [local research program](docs/ksp-research-program.md) adds guarded inventory, managed indexing/recomposition, a 30-case benchmark blueprint, owned process runs, and matched receipt checks. Its [delivery ledger](docs/research-delivery.md) keeps reconstruction, performance, modern Unity, and subsystem replacement gates separate.
 
 ## What exists
 
+- A [live rigid vessel owner](docs/live-rigid-owner.md) routes original part force queues and motion reads to one aggregate while retaining gameplay identities. Its bounded 512-part vacuum proof includes original wheel/RCS controls, 4x physics warp and return, followed by stock ownership restoration. Independent raw verification and visible capture qualify this limited transaction separately from playability and FPS.
 - A main-menu benchmark compares 8, 32, and 128 aligned boxes as a chain of Unity fixed joints and as one compound rigid body. Both retain the same collider geometry. It uses separate physics scenes and does not change global simulation settings.
 - The benchmark checks collider ray hits, spacing error, a compound body's contact with a floor, and momentum at separation. It reports raw repeated timings. These are synthetic bodies, not stock parts or KSP joints.
 - A flight panel inventories the active vessel without modifying it. A small structural allowlist identifies inspection candidates; it does not approve them for merging.
@@ -32,6 +60,10 @@ The [roadmap and goal index](docs/roadmap.md) retains the KSP experiments and th
 Experiments run only through explicit panel actions or command-line flags. Analog replay changes flight controls. The optional mission runner creates its own save and uses MechJeb on its mission vessel; normal launches do not start a mission. Local reports/recordings go to `GameData/KspContinuum/PluginData/` and can include vessel identifiers, mod identities and mission save paths. They are runtime artifacts and are not committed to this public repo.
 
 ## Build
+
+The private reference-program runner includes an [owned diagnostic docking roundtrip](docs/docking-situations.md), with pinned paired fixtures, stock merge/split evidence and inspected render captures.
+
+It also includes [stock checkpoint reconstruction](docs/checkpoint-reload.md) and an opt-in [live sparse convection replacement](docs/live-convection.md), with complete boundary costs and bitwise same-state evidence.
 
 Use a .NET 8 or newer SDK. Run the analytic tests without installing KSP:
 
@@ -83,6 +115,11 @@ The experiments are independent of the running game:
 | [KSP-to-Rust native boundary](docs/native-boundary-benchmark.md) | Architecture-compatible x86_64 P/Invoke cost, precision conversion, synchronous publication, and one/few-step latency |
 | [Metal shader swap](docs/metal-shader-swap.md) | Matching-Unity shader substitution experiment in an isolated KSP copy; rendering and frame-time gains remain unproven |
 | [Persistent execution views](docs/persistent-execution-views.md) | Generational identity, deterministic topology rebuilds, and full-pack versus dirty-row refresh crossover |
+| [Hardware-conscious execution](docs/hardware-execution.md) | Cache locality, retained storage, SIMD, worker/GPU residency, prewarming and complete-cost profiling |
+| [Runtime data design](docs/runtime-data-design.md) | Compiled vessel plans, replaceable execution, shared invariants, telemetry costs and CPU/GPU physics choices |
+| [Rigid craft and bulk systems](docs/rigid-and-bulk-systems.md) | Rigid primary physics, optional wobble, locked-region transactions and real captured-workload Rust ECS comparison |
+| [Rigid assembly motion boundary](docs/rigid-assembly-owner.md) | Aggregate mass/inertia, native compound ownership, real separation and first-command original KSP body snapshots |
+| [Real craft physics import](docs/real-craft-physics.md) | Coherent native-body/part/shape packet, all-body momentum projection and compound native laboratory |
 | [Compiled execution views](docs/execution-views.md) | Stable entity identity, dense per-system SoA batches, deterministic backend routing, and transactional publication |
 | [Aerodynamic strategies](docs/aerodynamics.md) | Deterministic drag-cube projection with scalar and order-preserving parallel paths; a metamorphic baseline pending comparison with captured stock labels |
 | [Gravitational trajectories](docs/field-trajectory.md) | Analytic and step-refined Plummer trajectories, conservation, reversibility and a potential-consistent split toy |

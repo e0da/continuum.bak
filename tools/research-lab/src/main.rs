@@ -1,0 +1,2050 @@
+#![recursion_limit = "256"]
+mod backend_menu;
+mod backend_pixel;
+mod native_assets;
+use continuum_research_lab::{
+    compare, hash, inventory, matrix, metrics, read, source_tree_hash, write_new, FlightReceipt,
+    Result, VariantManifest,
+};
+use serde_json::{json, Value};
+use std::{
+    collections::BTreeMap,
+    env, fs,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("lab: {error}");
+        std::process::exit(1);
+    }
+}
+fn run() -> Result<()> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let operation = args
+        .first()
+        .ok_or("expected inventory, index, recompose, prepare, run, compare, or qualify")?;
+    let mut options = BTreeMap::new();
+    if (args.len() - 1) % 2 != 0 {
+        return Err("options require --name VALUE pairs".into());
+    }
+    for pair in args[1..].chunks(2) {
+        if !pair[0].starts_with("--") || options.insert(pair[0].clone(), pair[1].clone()).is_some()
+        {
+            return Err("invalid or duplicate option".into());
+        }
+    }
+    let allowed: &[&str] = match operation.as_str() {
+        "program-catalog" => &["--output"],
+        "program-plan" | "program-prepare" => &["--recipe", "--inputs", "--output"],
+        "inventory" => &["--instance", "--output"],
+        "admit-cache" => &["--instance", "--startup-cache", "--output"],
+        "install-native-assets" => &["--instance", "--manifest", "--output"],
+        "restore-native-assets" => &["--instance", "--installation", "--output"],
+        "startup-timeline" => &["--log", "--output"],
+        "update-callback-summary" => &["--report", "--pid", "--output"],
+        "ordered-body-aero-summary" => &["--report", "--recording", "--pid", "--output"],
+        "zero-native-force-summary" => &["--report", "--pid", "--output"],
+        "rigid-window" => &["--report", "--closure", "--start", "--end", "--output"],
+        "rigid-proof" => &["--run", "--pid", "--helper-sha256", "--audit-steps", "--output"],
+        "rigid-thread-work" => &["--report", "--output"],
+        "prepare" => &["--output", "--variant"],
+        "index" => &["--assembly", "--ilspy", "--output", "--project"],
+        "recompose" => &[
+            "--assembly",
+            "--sha256",
+            "--output",
+            "--method",
+            "--suffix",
+            "--project",
+            "--project-sha256",
+        ],
+        "run" | "resolve" => &[
+            "--flight-aero-step-context",
+            "--flight-aero-drag-transaction",
+            "--flight-fixed-step-owner-attribution",
+            "--flight-fixed-dispatch-attribution",
+            "--flight-ordered-body-aero-capture",
+            "--flight-native-assembly-scene",
+            "--flight-live-rigid-owner",
+            "--flight-live-rigid-scenario",
+            "--flight-zero-native-force-pruning",
+            "--flight-scientific-attachment-nodes",
+            "--flight-trail-emitter",
+            "--flight-trail-emitter-part",
+            "--flight-trail-emitter-mode",
+            "--flight-checkpoint-reload",
+            "--flight-convection-replacement",
+            "--flight-cylinder-occlusion",
+            "--flight-docking",
+            "--flight-docking-prepare-pair",
+            "--flight-lighting",
+            "--flight-expected-parts",
+            "--flight-convection-capture",
+            "--live-play",
+            "--playable-rigid",
+            "--rigid-audit-steps",
+            "--control-port",
+            "--flight-integrator-update-attribution",
+            "--flight-thread-cpu",
+            "--instance",
+            "--reservation",
+            "--output",
+            "--timeout-seconds",
+            "--launch-profile",
+            "--startup-unlimited",
+            "--startup-profile",
+            "--startup-reuse-bundle-data",
+            "--startup-file-bundles",
+            "--startup-build-cache",
+            "--startup-cache",
+            "--startup-cached-bundles",
+            "--startup-native-admission",
+            "--graphics-api",
+            "--backend-pixel-proof-bundle",
+            "--backend-menu-presentation",
+            "--startup-prepared-bundles",
+            "--startup-catalog-mode",
+            "--startup-catalog",
+            "--startup-texture-prefetch",
+            "--startup-texture-observe",
+            "--startup-dds-mapped",
+            "--startup-audio-prefetch",
+            "--startup-readiness",
+            "--startup-stock-terrain-ready",
+            "--startup-deferred-terrain",
+            "--startup-site-proof",
+            "--startup-resource-image-mode",
+            "--startup-resource-image",
+            "--startup-work-scheduler",
+            "--native-asset-installation",
+            "--startup-world-timing",
+            "--startup-construction-timing",
+            "--startup-part-construction-timing",
+            "--flight-multiscale-scene",
+            "--menu-material-facts",
+            "--startup-prepared-bindings",
+            "--flight-save",
+            "--flight-checkpoint",
+            "--flight-max-delta",
+            "--flight-seconds",
+            "--flight-settle-seconds",
+            "--flight-camera-chain",
+            "--flight-world-draw",
+            "--flight-warp",
+            "--flight-atmosphere",
+            "--flight-resolution",
+            "--flight-no-shadows",
+            "--flight-no-aa",
+            "--flight-native-sample",
+            "--flight-gpu-timing-library",
+            "--flight-perturbation",
+            "--flight-pulse-delta-v",
+            "--flight-callback-attribution",
+            "--flight-mechjeb-provider-plan",
+            "--flight-hide-vessel",
+            "--flight-no-aero-fx",
+            "--flight-aero-quality",
+            "--flight-aero-batch",
+            "--flight-aero-field",
+            "--flight-aero-field-bundle",
+            "--flight-part-batch",
+            "--flight-part-mapped-only",
+            "--flight-part-reference",
+            "--flight-research-panel",
+            "--flight-local-camera",
+            "--flight-part-retained",
+            "--flight-part-shader-bundle",
+            "--flight-part-standard-fallback",
+            "--flight-screenshot",
+            "--flight-entry-target-altitude",
+        ],
+        "compare" => &[
+            "--baseline",
+            "--candidate",
+            "--treatments",
+            "--output",
+            "--startup-screen",
+        ],
+        "qualify" => &["--receipt", "--output"],
+        "revalidate-live" => &["--run", "--output"],
+        "summarize-integrator" => &["--markers", "--output"],
+        "summarize-cylinder" => &["--markers", "--mode", "--pid", "--output"],
+        "verify-backend-proof" => &["--receipt", "--output"],
+        "recovery" => &[
+            "--catalog",
+            "--state",
+            "--trial-id",
+            "--outcome",
+            "--failure-signature",
+            "--output",
+        ],
+        _ => return Err("unknown laboratory operation".into()),
+    };
+    if options.keys().any(|k| !allowed.contains(&k.as_str())) {
+        return Err("unsupported option".into());
+    }
+    let get = |key: &str| {
+        options
+            .get(key)
+            .map(String::as_str)
+            .ok_or_else(|| format!("missing {key}"))
+    };
+    let output = Path::new(get("--output")?);
+    match operation.as_str() {
+        "rigid-proof" => {
+            let pid=get("--pid")?.parse::<u32>().map_err(|error|error.to_string())?;
+            let cadence=get("--audit-steps")?.parse::<u32>().map_err(|error|error.to_string())?;
+            continuum_research_lab::playable_rigid::retain(output,get("--run")?,pid,get("--helper-sha256")?,cadence)?;
+        }
+        "rigid-thread-work" => {
+            let path = Path::new(get("--report")?);
+            let digest = hash(path)?;
+            let report: Value = read(path)?;
+            let mut result = continuum_research_lab::playable_rigid::thread_work_summary(&report)?;
+            if hash(path)? != digest { return Err("thread work source changed during analysis".into()); }
+            result["input"] = json!({"path":path,"sha256":digest});
+            write_new(output, &result)?;
+        }
+        "rigid-window" => {
+            let report_path = Path::new(get("--report")?);
+            let start_path = Path::new(get("--start")?);
+            let end_path = Path::new(get("--end")?);
+            let report: Value = read(report_path)?;
+            let start: Value = read(start_path)?;
+            let end: Value = read(end_path)?;
+            let closure=options.get("--closure").map(|path|read::<Value>(Path::new(path))).transpose()?;
+            let mut result = continuum_research_lab::playable_rigid::window_bound(&report, &start, &end, closure.as_ref())?;
+            result["inputs"] = json!({"report":{"path":report_path,"sha256":hash(report_path)?},"start":{"path":start_path,"sha256":hash(start_path)?},"end":{"path":end_path,"sha256":hash(end_path)?}});
+            if let Some(path)=options.get("--closure") { result["inputs"]["closure"]=json!({"path":path,"sha256":hash(Path::new(path))?}); }
+            write_new(output, &result)?;
+        }
+        "update-callback-summary" => {
+            let path = Path::new(get("--report")?);
+            let digest = hash(path)?;
+            let report: Value = read(path)?;
+            let pid = get("--pid")?.parse::<u32>().map_err(|_| "owned pid must be a positive integer")?;
+            let mut summary = continuum_research_lab::update_callbacks::summarize_owned(&report, pid)?;
+            if hash(path)? != digest { return Err("Update callback source changed during analysis".into()); }
+            summary["sourceSha256"] = json!(digest);
+            summary["ownedPid"] = json!(pid);
+            write_new(output, &summary)?;
+        }
+        "ordered-body-aero-summary" => {
+            let report: Value = read(Path::new(get("--report")?))?;
+            let pid = get("--pid")?.parse::<u32>().map_err(|e| e.to_string())?;
+            let summary = continuum_research_lab::ordered_body_aero::summarize(Path::new(get("--recording")?), &report, pid)?;
+            write_new(output, &summary)?;
+        }
+        "zero-native-force-summary" => {
+            let report: Value = read(Path::new(get("--report")?))?;
+            let pid = get("--pid")?.parse::<u32>().map_err(|e| e.to_string())?;
+            write_new(output, &continuum_research_lab::zero_native_force::summarize(&report, pid)?)?;
+        }
+        "program-catalog" => {
+            write_new(output, &json!({"schema":"continuum-reference-program/v1","recipes":continuum_research_lab::reference_program::catalog()}))?;
+        }
+        "program-plan" | "program-prepare" => {
+            let inputs = read(Path::new(get("--inputs")?))?;
+            let plan = continuum_research_lab::reference_program::resolve(get("--recipe")?, &inputs)?;
+            let mut value = serde_json::to_value(&plan).map_err(|e| e.to_string())?;
+            if operation == "program-prepare" {
+                if output.exists() || plan.inputs.derived_profile.exists() {
+                    return Err("program preparation requires fresh plan and profile outputs".into());
+                }
+                let frozen = continuum_research_lab::profile::FrozenLaunch::capture(&plan.inputs.instance, &plan.selection)?;
+                let checkpoint = plan.inputs.instance.join("saves").join(&plan.inputs.save).join(format!("{}.sfs", plan.inputs.checkpoint));
+                if frozen.inputs.get(&checkpoint) != Some(&plan.inputs.checkpoint_sha256)
+                    || continuum_research_lab::reference_program::resolve(get("--recipe")?, &inputs)?.selection.identity_sha256()? != plan.selection.identity_sha256()?
+                {
+                    return Err("program inputs changed while freezing the derived profile".into());
+                }
+                write_new(&plan.inputs.derived_profile, &frozen)?;
+                value["preparedProfile"] = json!({"path":plan.inputs.derived_profile,"sha256":hash(&plan.inputs.derived_profile)?,"status":"frozen-current-inputs"});
+                value["requiredAction"] = json!("Execute the exact existing runArguments; frozen inputs are rechecked by the runner. Compare native outcome with this recipe's behavior contract and preserve parent linkage.");
+            }
+            write_new(output, &value)?;
+        }
+        "summarize-cylinder" => {
+            let path=Path::new(get("--markers")?);
+            let before=hash(path)?;
+            let report: Value=read(path)?;
+            let pid=get("--pid")?.parse::<u32>().map_err(|e|e.to_string())?;
+            let run=report["runId"].as_str().ok_or("enclosing run absent")?;
+            let mut summary=continuum_research_lab::cylinder_occlusion::summarize(
+                get("--mode")?,&report["cylinderOcclusionReplacement"],&report,run,pid)?;
+            if hash(path)?!=before {return Err("cylinder markers changed during analysis".into());}
+            summary["markersSha256"]=json!(before);
+            write_new(output,&summary)?;
+        }
+        "summarize-integrator" => {
+            let path = Path::new(get("--markers")?);
+            let before = hash(path)?;
+            let mut summary = continuum_research_lab::integrator_summary::summarize(&read(path)?)?;
+            if hash(path)? != before {
+                return Err("integrator markers changed during summarization".into());
+            }
+            summary["markersSha256"] = json!(before);
+            write_new(output, &summary)?;
+        }
+        "revalidate-live" => {
+            continuum_research_lab::live_revalidation::retain(Path::new(get("--run")?), output)?;
+        }
+        "verify-backend-proof" => {
+            backend_pixel::verify_offline(Path::new(get("--receipt")?), output)?
+        }
+        "recovery" => continuum_research_lab::recovery::advance(
+            Path::new(get("--catalog")?),
+            options.get("--state").map(|v| Path::new(v)),
+            options.get("--trial-id").map(String::as_str),
+            options.get("--outcome").map(String::as_str),
+            options.get("--failure-signature").map(String::as_str),
+            output,
+        )?,
+        "inventory" => write_new(output, &inventory(Path::new(get("--instance")?))?)?,
+        "prepare" => {
+            let mut blueprint = matrix();
+            if let Some(path) = options.get("--variant") {
+                let manifest: VariantManifest = read(Path::new(path))?;
+                manifest.validate()?;
+                blueprint["variantManifestSha256"] = json!(hash(Path::new(path))?);
+                blueprint["variant"] = serde_json::to_value(manifest).map_err(|e| e.to_string())?;
+            }
+            write_new(output, &blueprint)?;
+        }
+        "index" => {
+            if let Some(project) = options.get("--project") {
+                if options.contains_key("--assembly") || options.contains_key("--ilspy") {
+                    return Err(
+                        "project indexing and assembly decompilation are separate inputs".into(),
+                    );
+                }
+                let project = Path::new(project)
+                    .canonicalize()
+                    .map_err(|e| e.to_string())?;
+                if project.extension().and_then(|v| v.to_str()) != Some("csproj") {
+                    return Err("source index requires a csproj".into());
+                }
+                write_new(
+                    output,
+                    &json!({"schema":"continuum-source-index/v1","projectSha256":source_tree_hash(project.parent().unwrap())?,"excludes":["bin","obj"],"qualification":"source-inputs-indexed-external-references-unqualified"}),
+                )?;
+                return Ok(());
+            }
+            if output.exists() {
+                return Err("index output already exists".into());
+            }
+            let source = Path::new(get("--assembly")?)
+                .canonicalize()
+                .map_err(|e| e.to_string())?;
+            let source_hash = hash(&source)?;
+            let ilspy = get("--ilspy")?;
+            let version = Command::new(ilspy)
+                .arg("--version")
+                .output()
+                .map_err(|e| e.to_string())?;
+            let version_text = String::from_utf8_lossy(&version.stdout).into_owned();
+            if !version.status.success() || !version_text.contains("11.1.0.9782") {
+                return Err("index requires pinned ilspycmd 11.1.0.9782".into());
+            }
+            fs::create_dir(output).map_err(|e| e.to_string())?;
+            let metadata = managed(&["inspect", source.to_str().ok_or("non-UTF8 assembly path")?])?;
+            write_new(&output.join("metadata.json"), &metadata)?;
+            let log = fs::File::create(output.join("decompiler.log")).map_err(|e| e.to_string())?;
+            let project = output.join("project");
+            let mut child = Command::new(ilspy)
+                .args(["--disable-updatecheck", "-p", "-r"])
+                .arg(source.parent().unwrap())
+                .arg("-o")
+                .arg(&project)
+                .arg(&source)
+                .stdout(Stdio::from(log.try_clone().map_err(|e| e.to_string())?))
+                .stderr(Stdio::from(log))
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            let started = Instant::now();
+            let (status, timed_out) = loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break (status, false),
+                    Ok(None) => {}
+                    Err(error) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(error.to_string());
+                    }
+                }
+                if started.elapsed() >= Duration::from_secs(900) {
+                    child.kill().map_err(|e| e.to_string())?;
+                    break (child.wait().map_err(|e| e.to_string())?, true);
+                }
+                thread::sleep(Duration::from_millis(100));
+            };
+            let unchanged = hash(&source)? == source_hash;
+            write_new(
+                &output.join("receipt.json"),
+                &json!({"schema":"continuum-decompilation/v1","sourceSha256":source_hash,"sourceUnchanged":unchanged,
+                "decompilerVersion":version_text,"decompilerExitCode":status.code(),"timedOut":timed_out,"wallSeconds":started.elapsed().as_secs_f64(),"qualification":if status.success()&&unchanged {"decompiled-rebuild-unqualified"} else {"failed"}}),
+            )?;
+            if !status.success() || !unchanged {
+                return Err("decompilation failed; retained metadata, log, and receipt".into());
+            }
+        }
+        "recompose" => {
+            if output.exists() {
+                return Err("recomposition output already exists".into());
+            }
+            let source = get("--assembly")?;
+            let digest = get("--sha256")?;
+            if hash(Path::new(source))? != digest {
+                return Err("source hash differs from frozen input".into());
+            }
+            if let Some(project) = options.get("--project") {
+                if options.contains_key("--method") || options.contains_key("--suffix") {
+                    return Err("source rebuilding cannot also apply an IL probe".into());
+                }
+                return recompose_source(
+                    Path::new(source),
+                    digest,
+                    Path::new(project),
+                    get("--project-sha256")?,
+                    output,
+                );
+            }
+            if options.contains_key("--project-sha256") {
+                return Err("project hash requires a project".into());
+            }
+            fs::create_dir(output).map_err(|e| e.to_string())?;
+            let candidate = output.join(
+                Path::new(source)
+                    .file_name()
+                    .ok_or("missing assembly filename")?,
+            );
+            let mut command = vec![
+                "rewrite",
+                source,
+                digest,
+                candidate.to_str().ok_or("non-UTF8 output")?,
+            ];
+            if let Some(method) = options.get("--method") {
+                command[0] = "probe";
+                command.push(method);
+                command.push(get("--suffix")?);
+            } else if options.contains_key("--suffix") {
+                return Err("suffix requires method".into());
+            }
+            write_new(&output.join("receipt.json"), &managed(&command)?)?;
+        }
+        "startup-timeline" => {
+            let path = Path::new(get("--log")?);
+            let source_hash = hash(path)?;
+            let log = fs::read_to_string(path).map_err(|e| e.to_string())?;
+            let mut report = continuum_research_lab::startup::timeline(&log)?;
+            if hash(path)? != source_hash {
+                return Err("log changed during analysis".into());
+            }
+            report["logSha256"] = json!(source_hash);
+            write_new(output, &report)?;
+        }
+        "admit-cache" => {
+            let started = Instant::now();
+            let instance = Path::new(get("--instance")?)
+                .canonicalize()
+                .map_err(|e| e.to_string())?;
+            if read::<Value>(&instance.join("continuum-lab.local.json"))?["scope"]
+                != "disposable-lab"
+            {
+                return Err("disposable laboratory ownership required".into());
+            }
+            let source_hashes = expected_bundle_hashes(Path::new(get("--startup-cache")?))?;
+            let admission = continuum_research_lab::admission::admit(
+                &instance,
+                Path::new(get("--startup-cache")?),
+                "offline-admission-proof",
+                &source_hashes,
+            )?;
+            write_new(
+                output,
+                &json!({"schema":"continuum-offline-cache-admission/v1", "wallSeconds":started.elapsed().as_secs_f64(),
+                "proof":admission.proof,"files":admission.files,"sourceSha256":source_hashes,"scope":"no-game-launch-content-admission"}),
+            )?;
+        }
+        "resolve" | "run" => {
+            let frozen = options
+                .get("--launch-profile")
+                .map(|path| continuum_research_lab::profile::FrozenLaunch::load(Path::new(path)))
+                .transpose()?;
+            if frozen.is_some()
+                && options.keys().any(|key| {
+                    ![
+                        "--instance",
+                        "--reservation",
+                        "--output",
+                        "--launch-profile",
+                    ]
+                    .contains(&key.as_str())
+                })
+            {
+                return Err("frozen launch cannot share selection override switches".into());
+            }
+            let selection = match &frozen {
+                Some(profile) => profile.selection.clone(),
+                None => continuum_research_lab::launch::ResolvedLaunch::parse(&options)?,
+            };
+            let instance = Path::new(get("--instance")?);
+            if operation == "resolve" {
+                let profile =
+                    continuum_research_lab::profile::FrozenLaunch::capture(instance, &selection)?;
+                if let Some(expected) = &frozen {
+                    profile.require_matches(expected)?;
+                }
+                write_new(output, &profile)?;
+            } else {
+                smoke(
+                    instance,
+                    Path::new(get("--reservation")?),
+                    output,
+                    &selection,
+                    frozen.as_ref(),
+                )?;
+            }
+        }
+        "compare" => {
+            if let Some(path) = options.get("--startup-screen") {
+                if options.contains_key("--baseline")
+                    || options.contains_key("--candidate")
+                    || options.contains_key("--treatments")
+                {
+                    return Err("startup and flight comparisons require separate inputs".into());
+                }
+                let specification: Value = read(Path::new(path))?;
+                if specification["schema"] != "continuum-startup-screen/v1"
+                    || specification["cacheState"] != "warm-observed-not-reset"
+                {
+                    return Err(
+                        "startup screen requires its frozen schema/cache declaration".into(),
+                    );
+                }
+                let load = |key: &str| -> Result<Vec<(Value, Value)>> {
+                    specification[key]
+                        .as_array()
+                        .ok_or("startup run list absent")?
+                        .iter()
+                        .map(|row| {
+                            Ok((
+                                read(Path::new(
+                                    row["receipt"].as_str().ok_or("receipt path absent")?,
+                                ))?,
+                                read(Path::new(
+                                    row["observation"]
+                                        .as_str()
+                                        .ok_or("observation path absent")?,
+                                ))?,
+                            ))
+                        })
+                        .collect()
+                };
+                return write_new(
+                    output,
+                    &continuum_research_lab::startup_screen(
+                        &load("baseline")?,
+                        &load("candidate")?,
+                    )?,
+                );
+            }
+            let left: FlightReceipt = read(Path::new(get("--baseline")?))?;
+            let right: FlightReceipt = read(Path::new(get("--candidate")?))?;
+            let treatments = get("--treatments")?
+                .split(',')
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            write_new(output, &compare(&left, &right, &treatments)?)?;
+        }
+        "install-native-assets" => native_assets::install(
+            Path::new(get("--instance")?),
+            Path::new(get("--manifest")?),
+            output,
+        )?,
+        "restore-native-assets" => native_assets::restore(
+            Path::new(get("--instance")?),
+            Path::new(get("--installation")?),
+            output,
+        )?,
+        "qualify" => write_new(
+            output,
+            &metrics(&read::<FlightReceipt>(Path::new(get("--receipt")?))?)?,
+        )?,
+        _ => unreachable!(),
+    }
+    println!("{}", output.display());
+    Ok(())
+}
+fn recompose_source(
+    source: &Path,
+    digest: &str,
+    project: &Path,
+    project_hash: &str,
+    output: &Path,
+) -> Result<()> {
+    let project = project.canonicalize().map_err(|e| e.to_string())?;
+    let root = project.parent().ok_or("project directory absent")?;
+    if source_tree_hash(root)? != project_hash {
+        return Err("source project differs from frozen tree".into());
+    }
+    let parent = output
+        .parent()
+        .ok_or("output parent absent")?
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    if parent.starts_with(root) {
+        return Err("source rebuild output must be outside project inputs".into());
+    }
+    fs::create_dir(output).map_err(|e| e.to_string())?;
+    let output = output.canonicalize().map_err(|e| e.to_string())?;
+    let log = fs::File::create(output.join("build.log")).map_err(|e| e.to_string())?;
+    let started = Instant::now();
+    let mut command = Command::new("dotnet");
+    command
+        .arg("build")
+        .arg(&project)
+        .args([
+            "-c",
+            "Release",
+            "-p:AutomaticallyUseReferenceAssemblyPackages=true",
+            "-p:UseSharedCompilation=false",
+        ])
+        .arg(format!("-p:OutputPath={}/bin/", output.display()))
+        .stdout(Stdio::from(log.try_clone().map_err(|e| e.to_string())?))
+        .stderr(Stdio::from(log));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    let (status, timed_out) = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break (status, false),
+            Ok(None) => {}
+            Err(error) => {
+                stop_build(&mut child);
+                return Err(error.to_string());
+            }
+        }
+        if started.elapsed() >= Duration::from_secs(900) {
+            stop_build(&mut child);
+            break (child.wait().map_err(|e| e.to_string())?, true);
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
+    let unchanged = hash(source)? == digest && source_tree_hash(root)? == project_hash;
+    let candidate = output
+        .join("bin")
+        .join(source.file_name().ok_or("assembly filename absent")?);
+    let artifact = if candidate.is_file() {
+        Some(hash(&candidate)?)
+    } else {
+        None
+    };
+    let qualified = status.success() && unchanged && artifact.is_some() && !timed_out;
+    write_new(
+        &output.join("receipt.json"),
+        &json!({"schema":"continuum-source-recomposition/v1","sourceSha256":digest,"projectSha256":project_hash,"sourceUnchanged":unchanged,
+        "candidateSha256":artifact,"buildExitCode":status.code(),"timedOut":timed_out,"wallSeconds":started.elapsed().as_secs_f64(),
+        "qualification":if qualified {"source-rebuilt-runtime-and-interface-unqualified"}else{"failed"}}),
+    )?;
+    if !qualified {
+        return Err("source rebuild failed; retained log and receipt".into());
+    }
+    Ok(())
+}
+fn stop_build(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let _ = Command::new("/bin/kill")
+            .args(["-KILL", "--", &format!("-{}", child.id())])
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+fn managed(arguments: &[&str]) -> Result<Value> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("repository root unavailable")?;
+    let dll = root.join(
+        "tools/KspContinuum.Reconstruction/bin/Release/net8.0/KspContinuum.Reconstruction.dll",
+    );
+    if !dll.is_file() {
+        return Err(
+            "build tools/KspContinuum.Reconstruction in Release before this operation".into(),
+        );
+    }
+    let output = Command::new("dotnet")
+        .arg(dll)
+        .args(arguments)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
+}
+struct Lease(PathBuf);
+fn path_argument(path: Option<&Path>) -> Result<Option<&str>> {
+    path.map(|path| {
+        path.to_str()
+            .ok_or_else(|| "non-UTF8 launch path".to_string())
+    })
+    .transpose()
+}
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+fn smoke(
+    instance: &Path,
+    reservation: &Path,
+    output: &Path,
+    selection: &continuum_research_lab::launch::ResolvedLaunch,
+    expected_profile: Option<&continuum_research_lab::profile::FrozenLaunch>,
+) -> Result<()> {
+    let admission_started = Instant::now();
+    selection.validate()?;
+    let selection_sha = selection.identity_sha256()?;
+    let pixel_bundle = selection.diagnostics.backend_pixel_proof_bundle.as_deref();
+    let pixel_bundle_hash = pixel_bundle.map(hash).transpose()?;
+    let menu_recipe = selection.diagnostics.backend_menu_presentation.as_deref();
+    let menu_recipe_hash = menu_recipe.map(hash).transpose()?;
+    let s = &selection.startup;
+    let timeout = selection.timeout_seconds;
+    let startup_unlimited = s.unlimited;
+    let startup_profile = selection.diagnostics.profile;
+    let startup_reuse_bundle_data = s.reuse_bundle_data;
+    let startup_file_bundles = s.file_bundles;
+    let startup_build_cache = s.build_cache;
+    let startup_cache = path_argument(s.cache.as_deref())?;
+    let startup_cached_bundles = s.cached_bundles;
+    let startup_native_admission = s.native_admission;
+    let graphics_api = selection.graphics_api.as_str();
+    let startup_prepared_bundles = s.prepared_bundles;
+    let startup_catalog_mode = s.catalog_mode.as_str();
+    let startup_catalog = path_argument(s.catalog.as_deref())?;
+    let startup_texture_prefetch = s.texture_prefetch;
+    let startup_texture_observe = selection.diagnostics.texture_observe;
+    let startup_dds_mapped = s.dds_mapped;
+    let startup_audio_prefetch = s.audio_prefetch;
+    let startup_readiness = s.readiness;
+    let startup_deferred_terrain = s.deferred_terrain;
+    let startup_site_proof = selection.diagnostics.site_proof.as_deref();
+    let startup_resource_image_mode = s.resource_image_mode.as_str();
+    let startup_resource_image = path_argument(s.resource_image.as_deref())?;
+    let startup_work_scheduler = s.work_scheduler;
+    let startup_prepared_bindings = s.prepared_bindings;
+    let native_asset_installation = selection.native_asset_installation.as_deref();
+    let flight = &selection.flight;
+    let startup_world_timing = selection.diagnostics.world_timing;
+    let startup_construction_timing = selection.diagnostics.construction_timing;
+    let catalog_preparation = startup_catalog_mode.starts_with("prepare");
+    let catalog_before = match startup_catalog {
+        Some(path) => {
+            if startup_catalog_mode == "reuse" {
+                Some(hash(Path::new(path))?)
+            } else if Path::new(path).exists() {
+                return Err("catalog preparation output exists".into());
+            } else {
+                None
+            }
+        }
+        None => None,
+    };
+    if output.exists() {
+        return Err("run output already exists".into());
+    }
+    let instance = instance.canonicalize().map_err(|e| e.to_string())?;
+    if instance
+        .join("continuum-native-asset-transaction.local.json")
+        .exists()
+    {
+        return Err(
+            "native asset transaction is unfinished; restore or complete it before launch".into(),
+        );
+    }
+    let native_pointer = instance.join("continuum-native-asset-installation.local.json");
+    if native_pointer.exists() {
+        let pointer: Value = read(&native_pointer)?;
+        let installed = native_asset_installation
+            .ok_or("this instance requires its native asset treatment receipt")?;
+        if pointer["installationReceipt"].as_str() != installed.to_str()
+            || pointer["installationSha256"].as_str() != Some(hash(installed)?.as_str())
+        {
+            return Err(
+                "native asset treatment receipt differs from the installed checkpoint".into(),
+            );
+        }
+    }
+    let ownership: Value = read(&instance.join("continuum-lab.local.json"))?;
+    if ownership["scope"] != "disposable-lab" {
+        return Err("instance is not marked as a disposable laboratory copy".into());
+    }
+    let flight_inputs = flight
+        .as_ref()
+        .map(|request| request.snapshot(&instance))
+        .transpose()?;
+    let session: Value = read(reservation)?;
+    if session["schema"] != "continuum-lab-reservation/v1"
+        || session["host"] != "forge"
+        || session["active"] != true
+        || session["authorization"] != "user-reserved-until-revoked"
+    {
+        return Err("active user-reserved Forge session required".into());
+    }
+    let host = Command::new("scutil")
+        .args(["--get", "LocalHostName"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !host.status.success() || String::from_utf8_lossy(&host.stdout).trim() != "forge" {
+        return Err("reservation does not admit this host".into());
+    }
+    let lease_path = reservation.with_extension("run-lock");
+    let mut lease = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lease_path)
+        .map_err(|e| format!("laboratory lease unavailable: {e}"))?;
+    let _guard = Lease(lease_path);
+    use std::io::Write;
+    writeln!(lease, "ownerPid={}", std::process::id()).map_err(|e| e.to_string())?;
+    let executable = instance.join("KSP.app/Contents/MacOS/KSP");
+    let native_assets = native_asset_installation
+        .map(|path| native_assets::Admission::admit(&instance, path))
+        .transpose()?;
+    let assembly = instance.join("KSP.app/Contents/Resources/Data/Managed/Assembly-CSharp.dll");
+    let assembly_hash = hash(&assembly)?;
+    let executable_hash = hash(&executable)?;
+    let bundle_hashes = if startup_native_admission {
+        expected_bundle_hashes(Path::new(startup_cache.unwrap()))?
+    } else {
+        startup_bundle_hashes(&instance)?
+    };
+    fs::create_dir(output).map_err(|e| e.to_string())?;
+    if let Some(inputs) = &flight_inputs {
+        write_new(&output.join("flight-inputs.json"), inputs)?;
+    }
+    let stdout = fs::File::create(output.join("player-stdout.log")).map_err(|e| e.to_string())?;
+    let stderr = fs::File::create(output.join("player-stderr.log")).map_err(|e| e.to_string())?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let log_path = output
+        .canonicalize()
+        .map_err(|e| e.to_string())?
+        .join("Player.log");
+    let run_id = format!("{}-{}", stamp, std::process::id());
+    let admission = if startup_native_admission {
+        Some(continuum_research_lab::admission::admit(
+            &instance,
+            Path::new(startup_cache.unwrap()),
+            &run_id,
+            &bundle_hashes,
+        )?)
+    } else {
+        None
+    };
+    let proof_path = output
+        .canonicalize()
+        .map_err(|e| e.to_string())?
+        .join("cache-admission.json");
+    let proof_hash = if let Some(admission) = &admission {
+        write_new(&proof_path, &admission.proof)?;
+        Some(hash(&proof_path)?)
+    } else {
+        None
+    };
+    let resolved_profile =
+        continuum_research_lab::profile::FrozenLaunch::capture(&instance, selection)?;
+    if let Some(expected) = expected_profile {
+        resolved_profile.require_matches(expected)?;
+    }
+    let resolved_profile_path = output.join("resolved-launch.json");
+    write_new(&resolved_profile_path, &resolved_profile)?;
+    let resolved_profile_sha = hash(&resolved_profile_path)?;
+    let asset_generation_sha = resolved_profile.asset_generation.identity()?;
+    let observer_directory = instance.join("GameData/KspContinuum/PluginData");
+    let observer_output = output.canonicalize().map_err(|e| e.to_string())?;
+    let started = Instant::now();
+    let admission_seconds = admission_started.elapsed().as_secs_f64();
+    let mut child = Command::new(&executable)
+        .current_dir(&instance)
+        .env_remove("CONTINUUM_MONO_JIT_SAMPLE")
+        .env_remove("CONTINUUM_MONO_JIT_MAP")
+        .envs(if flight.as_ref().is_some_and(|request| request.native_sample) {
+            vec![
+                ("CONTINUUM_PROCESS_CAPTURE", std::ffi::OsString::from("1")),
+                ("CONTINUUM_MONO_JIT_SAMPLE", observer_output.join("native-flight-sample.txt").into_os_string()),
+                ("CONTINUUM_MONO_JIT_MAP", observer_output.join("mono-jit-map.json").into_os_string()),
+            ]
+        } else { Vec::new() })
+        .env("CONTINUUM_AERO_STEP_CONTEXT",selection.diagnostics.aero_step_context.as_deref().unwrap_or(""))
+        .env("CONTINUUM_AERO_DRAG_TRANSACTION",if selection.diagnostics.aero_drag_transaction {"1"} else {""})
+        .env("CONTINUUM_FIXED_STEP_OWNER_ATTRIBUTION",if selection.diagnostics.fixed_step_owner_attribution {"1"} else {""})
+        .env("CONTINUUM_FIXED_DISPATCH_ATTRIBUTION",if selection.diagnostics.fixed_dispatch_attribution {"1"} else {""})
+        .env("CONTINUUM_ORDERED_BODY_AERO_CAPTURE",selection.diagnostics.ordered_body_aero_capture.as_deref().unwrap_or(Path::new("")))
+        .env("CONTINUUM_NATIVE_ASSEMBLY_SCENE",selection.diagnostics.native_assembly_scene.as_deref().unwrap_or(Path::new("")))
+        .env("CONTINUUM_LIVE_RIGID_OWNER",selection.diagnostics.live_rigid_owner.as_deref().unwrap_or(Path::new("")))
+        .env("CONTINUUM_LIVE_RIGID_SCENARIO",selection.diagnostics.live_rigid_scenario.as_deref().unwrap_or(""))
+        .env("CONTINUUM_PLAYABLE_RIGID", if selection.playable_rigid { output.as_os_str() } else { std::ffi::OsStr::new("") })
+        .env("CONTINUUM_PLAYABLE_RIGID_AUDIT_STEPS", selection.rigid_audit_steps.unwrap_or(1).to_string())
+        .env("CONTINUUM_LOOP_THREAD_CPU", if selection.diagnostics.loop_thread_cpu { "1" } else { "" })
+        .args(selection.control_port.map(|port| format!("--continuum-control-port={port}")))
+        .env("CONTINUUM_ZERO_NATIVE_FORCE_PRUNING",selection.diagnostics.zero_native_force_pruning.as_deref().unwrap_or(""))
+        .env("CONTINUUM_SCIENTIFIC_ATTACHMENT_NODES",selection.diagnostics.scientific_attachment_nodes.as_deref().unwrap_or(""))
+        .env("CONTINUUM_TRAIL_EMITTER_RECORDING",selection.diagnostics.trail_emitter.as_ref().map(|s|s.recording.as_path()).unwrap_or(Path::new("")))
+        .env("CONTINUUM_TRAIL_EMITTER_PART_ID",selection.diagnostics.trail_emitter.as_ref().map(|s|s.part.as_str()).unwrap_or(""))
+        .env("CONTINUUM_TRAIL_EMITTER_MODE",selection.diagnostics.trail_emitter.as_ref().map(|s|s.mode.as_str()).unwrap_or(""))
+        .env("CONTINUUM_VESSEL_RUNTIME_RECORDING",if selection.diagnostics.trail_emitter.is_some() {std::ffi::OsString::new()} else {std::env::var_os("CONTINUUM_VESSEL_RUNTIME_RECORDING").unwrap_or_default()})
+        .env("CONTINUUM_CYLINDER_OCCLUSION_MODE",selection.diagnostics.cylinder_occlusion_replacement.as_deref().unwrap_or(""))
+        .env(
+            "CONTINUUM_MULTISCALE_SCENE",
+            selection
+                .diagnostics
+                .multiscale_scene
+                .as_deref()
+                .unwrap_or(Path::new("")),
+        )
+        .env(
+            "CONTINUUM_MENU_MATERIAL_FACTS",
+            selection
+                .diagnostics
+                .menu_material_facts
+                .as_deref()
+                .unwrap_or(Path::new("")),
+        )
+        .args(if selection.live_play {
+            continuum_research_lab::play::arguments(flight.as_ref().unwrap(), output)?
+        } else if menu_recipe.is_some() {
+            vec![]
+        } else if flight.is_none() {
+            vec!["--continuum-native-boundary-bench".to_string()]
+        } else {
+            selection.flight_arguments()
+        })
+        .args([
+            "-screen-width",
+            "1920",
+            "-screen-height",
+            "1080",
+            "-logFile",
+        ])
+        .arg(&log_path)
+        .arg(format!("--continuum-research-run={run_id}"))
+        .args(if selection.diagnostics.checkpoint_reload { vec!["--continuum-checkpoint-reload"] } else { vec![] })
+        .args(selection.diagnostics.convection_replacement.as_ref().map(|mode| vec![format!("--continuum-convection-replacement={mode}")]).unwrap_or_default())
+        .args(selection.diagnostics.docking.as_ref().map(|d| d.arguments()).unwrap_or_default())
+        .args(selection.diagnostics.flight_lighting.as_ref().map(|mode| vec![format!("--continuum-flight-lighting={mode}")]).unwrap_or_default())
+        .args(
+            selection
+                .diagnostics
+                .convection_capture
+                .as_ref()
+                .map(|path| vec![format!("--continuum-convection-capture={}", path.display())])
+                .unwrap_or_default(),
+        )
+        .args(if selection.diagnostics.integrator_update_attribution {
+            vec!["--continuum-flight-integrator-update-attribution"]
+        } else {
+            vec![]
+        })
+        .args(
+            pixel_bundle
+                .map(|path| {
+                    vec![format!(
+                        "--continuum-backend-pixel-proof-bundle={}",
+                        path.display()
+                    )]
+                })
+                .unwrap_or_default(),
+        )
+        .args(
+            menu_recipe
+                .map(|path| {
+                    vec![format!(
+                        "--continuum-backend-menu-presentation={}",
+                        path.display()
+                    )]
+                })
+                .unwrap_or_default(),
+        )
+        .arg(format!(
+            "--continuum-launch-profile-sha256={resolved_profile_sha}"
+        ))
+        .arg(format!(
+            "--continuum-asset-generation-sha256={asset_generation_sha}"
+        ))
+        .args(if startup_world_timing {
+            vec!["--continuum-startup-world-timing"]
+        } else {
+            vec![]
+        })
+        .args(if selection.diagnostics.part_construction_timing {
+            vec!["--continuum-startup-part-construction-timing"]
+        } else {
+            vec![]
+        })
+        .args(if startup_construction_timing {
+            vec!["--continuum-startup-construction-timing"]
+        } else {
+            vec![]
+        })
+        .args(if startup_prepared_bindings {
+            vec!["--continuum-startup-prepared-bindings"]
+        } else {
+            vec![]
+        })
+        .args(match startup_catalog_mode {
+            "prepare" => vec!["--continuum-startup-prepare-catalog"],
+            "prepare-minimal" => vec![
+                "--continuum-startup-prepare-catalog",
+                "--continuum-startup-metadata-only-prepare",
+            ],
+            "reuse" => vec!["--continuum-startup-cached-catalog"],
+            _ => vec![],
+        })
+        .args(startup_catalog.map(|path| format!("--continuum-startup-catalog={path}")))
+        .args(if startup_texture_prefetch {
+            vec!["--continuum-startup-texture-prefetch"]
+        } else {
+            vec![]
+        })
+        .args(if startup_texture_observe {
+            vec!["--continuum-startup-texture-observe"]
+        } else {
+            vec![]
+        })
+        .args(if startup_dds_mapped {
+            vec!["--continuum-startup-dds-mapped"]
+        } else {
+            vec![]
+        })
+        .args(if startup_audio_prefetch {
+            vec!["--continuum-startup-audio-prefetch"]
+        } else {
+            vec![]
+        })
+        .args(if startup_readiness {
+            vec!["--continuum-startup-readiness"]
+        } else {
+            vec![]
+        })
+        .args(if selection.startup.stock_terrain_ready {
+            vec!["--continuum-startup-stock-terrain-ready"]
+        } else {
+            vec![]
+        })
+        .args(if startup_deferred_terrain {
+            vec!["--continuum-startup-deferred-terrain"]
+        } else {
+            vec![]
+        })
+        .args(
+            startup_site_proof
+                .map(|site| vec![format!("--continuum-startup-site-proof={site}")])
+                .unwrap_or_default(),
+        )
+        .args(if startup_resource_image_mode != "none" {
+            vec![
+                format!("--continuum-startup-resource-image-mode={startup_resource_image_mode}"),
+                format!(
+                    "--continuum-startup-resource-image={}",
+                    startup_resource_image.unwrap()
+                ),
+            ]
+        } else {
+            vec![]
+        })
+        .args(if startup_work_scheduler {
+            vec!["--continuum-startup-work-scheduler"]
+        } else {
+            vec![]
+        })
+        .args(if graphics_api == "metal" {
+            vec!["-force-metal"]
+        } else {
+            vec![]
+        })
+        .args(if startup_prepared_bundles {
+            vec!["--continuum-startup-prepared-bundles"]
+        } else {
+            vec![]
+        })
+        .args(if startup_unlimited {
+            vec!["--continuum-startup-unlimited"]
+        } else {
+            vec![]
+        })
+        .args(if startup_profile {
+            vec!["--continuum-startup-profile"]
+        } else {
+            vec![]
+        })
+        .args(if startup_reuse_bundle_data {
+            vec!["--continuum-startup-reuse-bundle-data"]
+        } else {
+            vec![]
+        })
+        .args(if startup_file_bundles {
+            vec!["--continuum-startup-file-bundles"]
+        } else {
+            vec![]
+        })
+        .args(if startup_build_cache {
+            vec!["--continuum-startup-build-cache"]
+        } else {
+            vec![]
+        })
+        .args(startup_cache.map(|path| format!("--continuum-startup-cache={path}")))
+        .args(if startup_cached_bundles {
+            vec!["--continuum-startup-cached-bundles"]
+        } else {
+            vec![]
+        })
+        .args(if let Some(digest) = &proof_hash {
+            vec![
+                "--continuum-startup-native-admission".to_string(),
+                format!("--continuum-startup-admission={}", proof_path.display()),
+                format!("--continuum-startup-admission-sha256={digest}"),
+            ]
+        } else {
+            vec![]
+        })
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if selection.live_play {
+        if let Err(error) = write_new(
+            &output.join("live-session.json"),
+            &json!({"schema":"continuum-owned-live-session/v1",
+            "runId":run_id,"ownedPid":child.id(),"status":"spawned","resolvedLaunchSha256":resolved_profile_sha,
+            "qualification":"owned-process-marker-only; completion-requires-final-receipt"}),
+        ) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    }
+    let mut observation = None;
+    let mut menu_elapsed = None;
+    let mut live_ready = false;
+    let mut native_sample = continuum_research_lab::flight::NativeSample::new(
+        flight
+            .as_ref()
+            .map(|request| request.native_sample)
+            .unwrap_or(false),
+    );
+    let (status, timed_out) = loop {
+        if observation.is_none() {
+            if let Ok(entries) = fs::read_dir(&observer_directory) {
+                for entry in entries.flatten() {
+                    if !entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("reconstruction-")
+                    {
+                        continue;
+                    }
+                    if let Ok(value) = read::<Value>(&entry.path()) {
+                        if value["schema"] == "continuum-managed-runtime-observation/v1"
+                            && value["runId"] == run_id
+                            && value["assemblySha256"] == assembly_hash
+                        {
+                            menu_elapsed = Some(started.elapsed().as_secs_f64());
+                            observation = Some(value);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        native_sample.poll(&observer_directory, &run_id, child.id(), output);
+        match child.try_wait() {
+            Ok(Some(status)) => break (status, false),
+            Ok(None) => {}
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error.to_string());
+            }
+        }
+        let reserved = read::<Value>(reservation)
+            .map(|v| v["active"] == true)
+            .unwrap_or(false);
+        if selection.live_play && !live_ready {
+            live_ready =
+                continuum_research_lab::play::ready(output, &run_id, child.id()).unwrap_or(false);
+        }
+        if !reserved || (!live_ready && started.elapsed() >= Duration::from_secs(timeout)) {
+            child.kill().map_err(|e| e.to_string())?;
+            break (child.wait().map_err(|e| e.to_string())?, true);
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
+    let native_sample_receipt = native_sample.finish(child.id(), output);
+    let generated_catalog_hash = if catalog_preparation {
+        startup_catalog.and_then(|path| hash(Path::new(path)).ok())
+    } else {
+        None
+    };
+    let source_unchanged = (if selection.live_play {
+        continuum_research_lab::play::immutable_unchanged(&resolved_profile)
+    } else {
+        resolved_profile.unchanged()
+    }) && hash(&resolved_profile_path)? == resolved_profile_sha
+        && hash(&assembly)? == assembly_hash
+        && native_assets
+            .as_ref()
+            .map(|assets| assets.unchanged())
+            .unwrap_or(true)
+        && (!catalog_preparation || generated_catalog_hash.is_some())
+        && catalog_before
+            .as_ref()
+            .map(|expected| {
+                startup_catalog
+                    .map(|path| {
+                        hash(Path::new(path))
+                            .map(|actual| actual == *expected)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap_or(true)
+        && startup_bundle_hashes(&instance)? == bundle_hashes
+        && admission
+            .as_ref()
+            .map(|value| value.unchanged())
+            .unwrap_or(true)
+        && proof_hash
+            .as_ref()
+            .map(|expected| {
+                hash(&proof_path)
+                    .map(|actual| actual == *expected)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(true);
+    let mut flight_error = None;
+    let mut flight_summary = None;
+    let mut flight_entry = None;
+    if selection.diagnostics.checkpoint_reload {
+        let result = (|| -> Result<Value> {
+            let request = flight.as_ref().ok_or("reload flight selection absent")?;
+            let path = instance.join("saves").join(&request.save).join(format!("{}.sfs", request.checkpoint));
+            let source = flight_inputs.as_ref().and_then(|v| v["files"][path.to_string_lossy().as_ref()].as_str()).ok_or("reload source pin absent")?;
+            continuum_research_lab::checkpoint_reload::retain(&observer_directory, output, &run_id, child.id(), request.expected_parts.ok_or("reload part pin absent")?, source, path.parent().unwrap())
+        })();
+        match result { Ok(value) => flight_summary = Some(value), Err(error) => flight_error = Some(error) }
+    } else if let Some(docking) = selection.diagnostics.docking.as_ref() {
+        let result = (|| -> Result<Value> {
+            let request = flight.as_ref().ok_or("docking flight selection absent")?;
+            let path = instance.join("saves").join(&request.save).join(format!("{}.sfs", request.checkpoint));
+            let source = flight_inputs.as_ref().and_then(|v| v["files"][path.to_string_lossy().as_ref()].as_str()).ok_or("docking source pin absent")?;
+            continuum_research_lab::docking::retain(docking, &observer_directory, output, &run_id, child.id(), request.expected_parts.ok_or("docking part pin absent")?, source)
+        })();
+        match result { Ok(value) => flight_summary = Some(value), Err(error) => flight_error = Some(error) }
+    } else if let Some(request) = flight.as_ref().filter(|_| !selection.live_play) {
+        let result = (|| -> Result<Value> {
+            flight_entry = continuum_research_lab::flight::retain_entry(
+                &observer_directory,
+                &run_id,
+                child.id(),
+                output,
+            )?;
+            let directory = continuum_research_lab::flight::capture_directory(
+                &observer_directory,
+                &run_id,
+                child.id(),
+            )?
+            .ok_or_else(|| match &flight_entry {
+                Some(entry) => format!(
+                    "owned flight capture not found; entry status={} reason={}",
+                    entry["report"]["status"], entry["report"]["reason"]
+                ),
+                None => "owned flight capture not found; no owned entry sidecar".to_string(),
+            })?;
+            let (start, end, report) = continuum_research_lab::flight::retain(&directory, output)?;
+            let mut summary = if selection.diagnostics.live_rigid_scenario.as_deref() == Some("control-warp") {
+                let owner_path=selection.diagnostics.live_rigid_owner.as_ref().ok_or("controlled rigid owner path missing")?;
+                let owner=read(owner_path)?;
+                let mut result=continuum_research_lab::flight::analyze_controlled_rigid(request,&run_id,child.id(),&report,&start,&end,&owner)?;
+                result["liveRigidOwnerEvidence"]=json!({"path":owner_path,"sha256":hash(owner_path)?,"schema":owner["schema"],"physicsSteps":owner["physicsSteps"],"status":owner["status"]});
+                result
+            } else { continuum_research_lab::flight::analyze(request,&run_id,child.id(),&report,&start,&end)? };
+            if let Some(mode) = selection.diagnostics.convection_replacement.as_deref() {
+                summary["convectionReplacement"] = continuum_research_lab::convection_replacement::summarize(
+                    mode, &report["convectionReplacement"], &run_id, child.id(),
+                )?;
+            }
+            if let Some(mode) = selection.diagnostics.cylinder_occlusion_replacement.as_deref() {
+                summary["cylinderOcclusionReplacement"] = continuum_research_lab::cylinder_occlusion::summarize(
+                    mode, &report["cylinderOcclusionReplacement"], &report, &run_id, child.id(),
+                )?;
+            }
+            if selection.diagnostics.aero_step_context.is_some() || selection.diagnostics.fixed_step_owner_attribution || selection.diagnostics.trail_emitter.is_some() {
+                summary["fixedOwnerTreatments"] = continuum_research_lab::fixed_owner::summarize(&selection.diagnostics,&report,child.id())?;
+            }
+            if selection.diagnostics.fixed_dispatch_attribution || selection.diagnostics.ordered_body_aero_capture.is_some() {
+                summary["comparisonEligibility"] = json!("intrusive-original-command-and-dispatch-observation; prohibited-clean-FPS-comparison");
+            }
+            if let Some(path) = selection.diagnostics.ordered_body_aero_capture.as_deref() {
+                summary["orderedBodyAeroCapture"] = continuum_research_lab::ordered_body_aero::summarize(path, &report, child.id())?;
+            }
+            if selection.diagnostics.zero_native_force_pruning.is_some() {
+                summary["zeroNativeForcePruning"] = continuum_research_lab::zero_native_force::summarize(&report, child.id())?;
+                summary["comparisonEligibility"] = json!("intrusive-adjacent-root-comparison; prohibited-clean-FPS-comparison");
+            }
+            continuum_research_lab::flight::validate_entry(
+                request,
+                &run_id,
+                child.id(),
+                flight_entry.as_ref(),
+                &report,
+                flight_inputs
+                    .as_ref()
+                    .ok_or("flight input snapshot absent")?,
+            )?;
+            continuum_research_lab::flight::validate_controls(
+                request,
+                selection.diagnostics.flight_lighting.as_deref(),
+                &run_id,
+                child.id(),
+                output,
+                &report,
+            )?;
+            if let Some(mode) = selection.diagnostics.flight_lighting.as_deref() {
+                let no_entry_treatment = Value::Null;
+                let placement = if mode == "three-quarter-inspection" {
+                    flight_entry.as_ref().map(|entry| &entry["report"]).unwrap_or(&no_entry_treatment)
+                } else {
+                    &flight_entry.as_ref().ok_or("lighting entry evidence absent")?["report"]
+                };
+                summary["lighting"] = continuum_research_lab::lighting::validate(
+                    mode, &read::<Value>(&output.join("flight-lighting.json"))?, &report, &run_id, child.id(),
+                    placement,
+                )?;
+            }
+            summary["localCamera"] = continuum_research_lab::flight::local_camera_summary(
+                request,
+                &read::<Value>(&output.join("local-camera.json"))?,
+                &report,
+                &run_id,
+                child.id(),
+            )?;
+            summary["processCapture"] = continuum_research_lab::process_capture::summarize(&report, &run_id, child.id())?;
+            if let Some(library) = &request.gpu_timing_library {
+                summary["gpuTiming"] = continuum_research_lab::gpu_timing::retain_summary(
+                    output,
+                    &run_id,
+                    child.id(),
+                    library,
+                    flight_inputs.as_ref().ok_or("GPU flight inputs absent")?,
+                    &report,
+                )?;
+            }
+            for (name, key) in [
+                ("diagnostic-controls.json", "diagnosticControls"),
+                ("diagnostic-controls-end.json", "diagnosticControlsEnd"),
+                ("aero-batch.json", "aeroBatchEvidence"),
+                ("aero-field.json", "aeroFieldEvidence"),
+                ("part-batch.json", "partBatchEvidence"),
+                ("flight-view.json", "flightViewEvidence"),
+                ("perturbation.json", "perturbationEvidence"),
+                ("gpu-timing.json", "gpuTimingEvidence"),
+            ] {
+                let path = output.join(name);
+                if path.exists() {
+                    summary[key] = json!({"sha256":hash(&path)?,"report":read::<Value>(&path)?});
+                }
+            }
+            if request.screenshot {
+                summary["flightViewPngSha256"] = json!(hash(&output.join("flight-view.png"))?);
+            }
+            summary["entryEvidence"] = json!(flight_entry);
+            summary["cameraReadbacks"] = json!({
+                "requestedCapture":if let Some(mode) = selection.diagnostics.flight_lighting.as_deref() { json!({"contract":"continuum-solar-relative-camera/v1","preset":mode,"distanceMeters":summary["lighting"]["receipt"]["cameraDistanceMeters"].as_f64().unwrap_or(150.0),"fieldOfViewDegrees":60.0,"inputLocked":true}) } else { json!({"contract":"continuum-root-relative-camera/v1","pitch":0.2,"heading":0.3,"distanceMeters":50.0,"fieldOfViewDegrees":60.0,"inputLocked":true}) },
+                "captureStart":summary["diagnosticControls"]["report"],
+                "captureEnd":summary["diagnosticControlsEnd"]["report"],
+                "scope":"Root-relative camera pose is checked at camera pre-cull throughout capture; renderer suppression is witnessed separately by each replacement lifecycle."});
+            write_new(&output.join("flight-summary.json"), &summary)?;
+
+            Ok(summary)
+        })();
+        match result {
+            Ok(summary) => flight_summary = Some(summary),
+            Err(error) => flight_error = Some(error),
+        }
+    }
+    if flight
+        .as_ref()
+        .map(|request| request.native_sample)
+        .unwrap_or(false)
+        && (native_sample_receipt["status"] != "completed"
+            || native_sample_receipt["outputSha256"].is_null())
+    {
+        flight_error.get_or_insert_with(|| {
+            "requested owned native sample incomplete; retained diagnostic receipt".to_string()
+        });
+    }
+    let mono_jit_map = if flight.as_ref().is_some_and(|request| request.native_sample) {
+        let result = (|| -> Result<Value> {
+            let path = output.join("mono-jit-map.json");
+            let map: Value = read(&path)?;
+            if map["schema"] != "continuum-mono-jit-sample-map/v1"
+                || map["status"] != "completed"
+                || map["runId"] != run_id
+                || map["processId"] != child.id()
+                || map["sampleHeaderPid"] != child.id()
+                || map["sampleSha256"] != hash(&output.join("native-flight-sample.txt"))?
+                || map["runtimeLibrarySha256"] != hash(&instance.join("KSP.app/Contents/Frameworks/libmonobdwgc-2.0.dylib"))?
+            { return Err("Mono JIT map ownership, runtime or sample identity rejected".into()); }
+            let end: Value = read(&output.join("flight-capture-end.json"))?;
+            let signal_directory = continuum_research_lab::flight::capture_directory(&observer_directory, &run_id, child.id())?
+                .ok_or("owned JIT capture signal directory absent")?;
+            let original_signal = signal_directory.join("capture-end.json");
+            if read::<Value>(&original_signal)? != end { return Err("JIT capture signal changed during retention".into()); }
+            let signal_hash = hash(&original_signal)?;
+            let capture_end = end["clockTimestamp"].as_u64().ok_or("capture-end clock absent")?;
+            let begin = map["mapBeginTicks"].as_u64().ok_or("JIT mapping begin absent")?;
+            let finish = map["mapEndTicks"].as_u64().ok_or("JIT mapping end absent")?;
+            if map["signalSha256"] != signal_hash || map["captureEndTicks"] != capture_end
+                || begin < capture_end || finish < begin || map["clockFrequency"] != end["clockFrequency"]
+            { return Err("Mono JIT map post-capture boundary rejected".into()); }
+            let rows = map["rows"].as_array().filter(|rows| rows.len() <= 8192).ok_or("JIT address rows absent or unbounded")?;
+            let mut mapped = 0;
+            for row in rows {
+                if row["status"] != "mapped" { continue; }
+                let number = |key: &str| -> Result<u64> {
+                    let value = row[key].as_str().ok_or("JIT address absent")?;
+                    u64::from_str_radix(value.trim_start_matches("0x"), 16).map_err(|e| e.to_string())
+                };
+                let pc = number("pc")?; let start = number("codeStart")?; let end = number("codeEnd")?;
+                if pc < start || pc >= end || end - start != row["codeSize"].as_u64().ok_or("JIT code size absent")?
+                    || row["methodName"].as_str().is_none_or(str::is_empty)
+                { return Err("JIT method code interval rejected".into()); }
+                mapped += 1;
+            }
+            if mapped == 0 || map["mappedCount"] != mapped || map["addressCount"] != rows.len()
+            { return Err("JIT positive mapping coverage rejected".into()); }
+            Ok(json!({"status":"completed","sha256":hash(&path)?,"report":map,
+                "scope":"Late same-process JIT metadata lookup; stack presence is inclusive and nonadditive. Does not independently prove sampled-time code lifetime or exclusive CPU duration."}))
+        })();
+        match result {
+            Ok(value) => Some(value),
+            Err(error) => {
+                flight_error.get_or_insert_with(|| format!("requested Mono JIT attribution incomplete: {error}"));
+                Some(json!({"status":"failed","error":error}))
+            }
+        }
+    } else { None };
+    let mut flight_failure_evidence = None;
+    let mut flight_recovery_error = None;
+    if flight_error.is_some() {
+        let mut retained = json!({});
+        type Recover = fn(&Path, &str, u32, &Path) -> Result<()>;
+        let recoveries: [(&str, &str, Recover); 5] = [
+            (
+                "flight-admission.json",
+                "admission",
+                continuum_research_lab::flight::recover_failed_admission,
+            ),
+            (
+                "local-camera.json",
+                "localCamera",
+                continuum_research_lab::flight::recover_failed_local_camera,
+            ),
+            (
+                "aero-batch.json",
+                "aeroBatch",
+                continuum_research_lab::flight::recover_failed_aero_batch,
+            ),
+            (
+                "part-batch.json",
+                "partBatch",
+                continuum_research_lab::flight::recover_failed_part_batch,
+            ),
+            (
+                "aero-field.json",
+                "aeroField",
+                continuum_research_lab::flight::recover_failed_aero_field,
+            ),
+        ];
+        for (name, key, recover) in recoveries {
+            let path = output.join(name);
+            if !path.exists() {
+                if let Err(error) = recover(&observer_directory, &run_id, child.id(), output) {
+                    flight_recovery_error = Some(error);
+                }
+            }
+            if path.exists() {
+                match (hash(&path), read::<Value>(&path)) {
+                    (Ok(digest), Ok(report)) => {
+                        retained[key] = json!({"sha256":digest,"report":report})
+                    }
+                    _ => {
+                        flight_recovery_error =
+                            Some(format!("retained failed {name} evidence unreadable"))
+                    }
+                }
+            }
+        }
+        if retained
+            .as_object()
+            .map(|value| !value.is_empty())
+            .unwrap_or(false)
+        {
+            flight_failure_evidence = Some(retained);
+        }
+    }
+    let flight_sources_unchanged = flight_inputs
+        .as_ref()
+        .map(|inputs| {
+            if selection.live_play {
+                source_unchanged
+            } else {
+                continuum_research_lab::flight::unchanged(inputs)
+            }
+        })
+        .unwrap_or(true);
+    let mut deferred_terrain_evidence = None;
+    let mut deferred_terrain_error = None;
+    if startup_deferred_terrain {
+        let result = fs::read_to_string(output.join("Player.log"))
+            .map_err(|error| error.to_string())
+            .and_then(|log| continuum_research_lab::startup::deferred_terrain(&log));
+        match result {
+            Ok(evidence) => {
+                write_new(&output.join("startup-deferred-terrain.json"), &evidence)?;
+                deferred_terrain_evidence = Some(evidence);
+            }
+            Err(error) => deferred_terrain_error = Some(error),
+        }
+    }
+    let mut site_proof_evidence = None;
+    let mut site_proof_error = None;
+    if let Some(site) = startup_site_proof {
+        match continuum_research_lab::startup::retain_site_proof(
+            &observer_directory,
+            &run_id,
+            child.id(),
+            output,
+            site,
+            startup_deferred_terrain,
+        ) {
+            Ok(evidence) => site_proof_evidence = Some(evidence),
+            Err(error) => site_proof_error = Some(error),
+        }
+    }
+    if let Some(value) = &observation {
+        write_new(&output.join("runtime-observation.json"), value)?;
+    }
+    let (generation_evidence, generation_error) =
+        match continuum_research_lab::profile::retain_generation(
+            &observer_directory,
+            output,
+            &run_id,
+            child.id(),
+            &instance,
+            &resolved_profile_sha,
+            &asset_generation_sha,
+        ) {
+            Ok(evidence) => {
+                let error =
+                    continuum_research_lab::profile::validate_generation(&evidence, selection)
+                        .err();
+                (Some(evidence), error)
+            }
+            Err(error) => (None, Some(error)),
+        };
+    let pixel_bundle_after_hash = pixel_bundle.map(hash).transpose();
+    let (pixel_evidence, mut pixel_error) = if let Some(bundle) = pixel_bundle {
+        match backend_pixel::retain(
+            &observer_directory,
+            output,
+            &run_id,
+            child.id(),
+            bundle,
+            pixel_bundle_hash.as_deref().unwrap(),
+        ) {
+            Ok(evidence) => (Some(evidence), None),
+            Err(error) => (None, Some(error)),
+        }
+    } else {
+        (None, None)
+    };
+    match &pixel_bundle_after_hash {
+        Ok(value) if value == &pixel_bundle_hash => {}
+        Ok(_) => {
+            pixel_error.get_or_insert("backend pixel bundle changed during owned run".into());
+        }
+        Err(error) => {
+            pixel_error.get_or_insert(format!(
+                "backend pixel bundle post-run hash failed: {error}"
+            ));
+        }
+    }
+    let (construction_evidence, construction_error) = if startup_construction_timing {
+        match retain_construction_timing(&observer_directory, output, &run_id, child.id()) {
+            Ok(evidence) => (Some(evidence), None),
+            Err(error) => (None, Some(error)),
+        }
+    } else {
+        (None, None)
+    };
+    let (bindings_evidence, bindings_error) = if startup_prepared_bindings {
+        match continuum_research_lab::provider_proofs::bindings(
+            &observer_directory,
+            output,
+            &run_id,
+            child.id(),
+        ) {
+            Ok(evidence) => (Some(evidence), None),
+            Err(error) => (None, Some(error)),
+        }
+    } else {
+        (None, None)
+    };
+    let (menu_evidence, menu_error) = if let Some(recipe) = menu_recipe {
+        match backend_menu::retain(
+            &observer_directory,
+            output,
+            &run_id,
+            child.id(),
+            recipe,
+            menu_recipe_hash.as_deref().unwrap(),
+        ) {
+            Ok(evidence) => (Some(evidence), None),
+            Err(error) => (None, Some(error)),
+        }
+    } else {
+        (None, None)
+    };
+    let (provider_evidence, provider_error) = if flight
+        .as_ref()
+        .is_some_and(|request| request.mechjeb_provider_plan)
+    {
+        match continuum_research_lab::provider_proofs::mechjeb(
+            &observer_directory,
+            output,
+            &run_id,
+            child.id(),
+        ) {
+            Ok(evidence) => (Some(evidence), None),
+            Err(error) => (None, Some(error)),
+        }
+    } else {
+        (None, None)
+    };
+    let (live_evidence, live_error) = if selection.live_play {
+        let retained = continuum_research_lab::play::retain(output, &run_id, child.id()).and_then(|mut proof| {
+            if selection.playable_rigid {
+                let helper_sha = hash(&instance.join("GameData/KspContinuum/Plugins/KspContinuum.dll"))?;
+                proof["playableRigid"] = continuum_research_lab::playable_rigid::retain(output, &run_id, child.id(), &helper_sha, selection.rigid_audit_steps.unwrap_or(1))?;
+                if selection.diagnostics.loop_thread_cpu {
+                    proof["mainThreadWork"] = continuum_research_lab::playable_rigid::thread_work_summary(&proof["playableRigid"])?;
+                }
+            }
+            Ok(proof)
+        });
+        match retained {
+            Ok(evidence) => (Some(evidence), None),
+            Err(error) => (None, Some(error)),
+        }
+    } else {
+        (None, None)
+    };
+    let live_receipt = if selection.live_play {
+        Some(json!({"evidence":live_evidence,"error":live_error,
+        "flightReadyObserved":live_ready,"operatorWritableReadbacks":continuum_research_lab::play::mutable_readbacks(&resolved_profile)}))
+    } else {
+        None
+    };
+    write_new(
+        &output.join("receipt.json"),
+        &json!({"schema":"continuum-lab-process-smoke/v1","scope":if selection.live_play {"ordinary-private-flight"} else if flight.is_some() {"timed-diagnostic-flight"} else if catalog_preparation {"asset-catalog-preparation-process"} else {"menu-native-boundary-process-smoke"},
+        "livePlay":live_receipt,
+        "startedUnixSeconds":stamp,"ownedPid":child.id(),"reservationSha256":hash(reservation)?,"assemblySha256":assembly_hash,"playerSha256":executable_hash,
+        "sourceUnchanged":source_unchanged,"flightSourcesUnchanged":flight_sources_unchanged,
+        "resolvedLaunchSha256":resolved_profile_sha,"selectionSha256":selection_sha,
+        "assetGenerationSha256":asset_generation_sha,"assetGenerationEvidence":generation_evidence,"assetGenerationError":generation_error,
+        "flightRequest":flight,"flightCapture":flight_summary,"flightCaptureError":flight_error,"flightEntry":flight_entry,
+        "flightNativeSample":native_sample_receipt,"flightMonoJitMap":mono_jit_map,"flightFailureEvidence":flight_failure_evidence,"flightRecoveryError":flight_recovery_error,
+        "captureCpuRss":flight_summary.as_ref().map(|summary| &summary["processCapture"]),"wallSeconds":started.elapsed().as_secs_f64(),"exitCode":status.code(),
+        "runId":run_id,"mainMenuStartObservedWallSeconds":menu_elapsed,"startupBoundary":"first-owned-addon-Start-in-main-menu","startupPollingResolutionSeconds":0.1,
+        "admissionWallSeconds":admission_seconds,"admissionPlusMenuSeconds":menu_elapsed.map(|seconds| seconds+admission_seconds),
+        "startupUnlimitedRequested":startup_unlimited,
+        "graphicsApiRequested":graphics_api,
+        "backendPixelProofBundle":pixel_bundle,"backendPixelProofBundleSha256":pixel_bundle_hash,"backendPixelProofBundleAfterSha256":pixel_bundle_after_hash.as_ref().ok().and_then(|v|v.as_ref()),"backendPixelProofEvidence":pixel_evidence,"backendPixelProofError":pixel_error,
+        "backendMenuPresentationRecipe":menu_recipe,"backendMenuPresentationRecipeSha256":menu_recipe_hash,"backendMenuPresentationEvidence":menu_evidence,"backendMenuPresentationError":menu_error,
+        "startupPreparedBundlesRequested":startup_prepared_bundles,
+        "startupTexturePrefetchRequested":startup_texture_prefetch,
+        "startupTextureObserveRequested":startup_texture_observe,
+        "startupDdsMappedRequested":startup_dds_mapped,
+        "startupAudioPrefetchRequested":startup_audio_prefetch,
+        "startupReadinessRequested":startup_readiness,
+        "startupStockTerrainReadinessRequested":selection.startup.stock_terrain_ready,
+        "startupDeferredTerrainRequested":startup_deferred_terrain,
+        "startupSiteProofRequested":startup_site_proof,
+        "startupSiteProofEvidence":site_proof_evidence,"startupSiteProofError":site_proof_error,
+        "startupDeferredTerrainEvidence":deferred_terrain_evidence,"startupDeferredTerrainError":deferred_terrain_error,
+        "startupResourceImageModeRequested":startup_resource_image_mode,"startupResourceImage":startup_resource_image,
+        "startupWorkSchedulerRequested":startup_work_scheduler,
+        "startupConstructionTimingRequested":startup_construction_timing,
+        "startupConstructionTimingEvidence":construction_evidence,"startupConstructionTimingError":construction_error,
+        "startupPreparedBindingsRequested":startup_prepared_bindings,"startupPreparedBindingsEvidence":bindings_evidence,"startupPreparedBindingsError":bindings_error,
+        "mechjebProviderPlanEvidence":provider_evidence,"mechjebProviderPlanError":provider_error,
+        "nativeAssetInstallation":native_assets.as_ref().map(|assets| assets.receipt()),
+        "startupCatalogModeRequested":startup_catalog_mode,"startupCatalog":startup_catalog,"startupCatalogSha256":catalog_before,
+        "generatedCatalogSha256":generated_catalog_hash,
+        "startupProfileRequested":startup_profile,
+        "startupReuseBundleDataRequested":startup_reuse_bundle_data,
+        "startupFileBundlesRequested":startup_file_bundles,
+        "startupBuildCacheRequested":startup_build_cache,"startupCache":startup_cache,"bundleSha256":bundle_hashes,
+        "startupCachedBundlesRequested":startup_cached_bundles,
+        "startupNativeAdmissionRequested":startup_native_admission,"cacheAdmissionSha256":proof_hash,"cacheAdmissionFiles":admission.as_ref().map(|value|&value.files),
+        "status":if timed_out {"interrupted"} else if status.success()&&source_unchanged&&flight_sources_unchanged&&flight_error.is_none()&&live_error.is_none()&&deferred_terrain_error.is_none()&&site_proof_error.is_none()&&generation_error.is_none()&&pixel_error.is_none()&&construction_error.is_none()&&bindings_error.is_none()&&provider_error.is_none()&&menu_error.is_none() {"passed"} else {"failed"},
+        "qualification":if selection.live_play {"ordinary-flight-session-only; performance-mission-and-endurance-open"} else if flight.is_some() {"diagnostic-window-only; behavior-and-gameplay-not-qualified"} else if catalog_preparation {"catalog-content-and-fresh-process-reuse-proof-required"} else {"process-exit-only-native-receipt-review-and-flight-proof-required"}}),
+    )?;
+    if timed_out
+        || !status.success()
+        || !source_unchanged
+        || !flight_sources_unchanged
+        || flight_error.is_some()
+        || live_error.is_some()
+        || deferred_terrain_error.is_some()
+        || site_proof_error.is_some()
+        || generation_error.is_some()
+        || pixel_error.is_some()
+        || construction_error.is_some()
+        || bindings_error.is_some()
+        || provider_error.is_some()
+        || menu_error.is_some()
+    {
+        return Err("owned process smoke failed; retained logs and receipt".into());
+    }
+    Ok(())
+}
+
+fn retain_construction_timing(
+    directory: &Path,
+    output: &Path,
+    run: &str,
+    pid: u32,
+) -> Result<Value> {
+    let mut owned = Vec::new();
+    let mut rejected = 0;
+    let mut foreign = None;
+    for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if !name.starts_with("startup-construction-timing-") || !name.ends_with(".json") {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 1024 * 1024
+        {
+            return Err("construction report is not a bounded owned regular file".into());
+        }
+        let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+        let parsed = serde_json::from_slice::<Value>(&bytes);
+        match parsed {
+            Ok(report)
+                if report["runId"].as_str() == Some(run)
+                    && report["processId"].as_u64() == Some(u64::from(pid)) =>
+            {
+                owned.push((bytes, report))
+            }
+            Ok(_) => {
+                if foreign.is_none() {
+                    foreign = Some(bytes);
+                }
+            }
+            Err(_) => {
+                if rejected < 4 {
+                    fs::write(
+                        output.join(format!("startup-construction-unbound-{rejected}.json")),
+                        &bytes,
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+                rejected += 1;
+            }
+        }
+    }
+    if owned.len() != 1 {
+        if owned.is_empty() {
+            if let Some(bytes) = foreign {
+                fs::write(
+                    output.join("startup-construction-unbound-foreign.json"),
+                    bytes,
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        } else {
+            for (index, (bytes, _)) in owned.iter().enumerate().take(4) {
+                fs::write(
+                    output.join(format!("startup-construction-ambiguous-{index}.json")),
+                    bytes,
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        return Err(format!("expected one nonce/PID-owned construction report, found {}; malformed reports {rejected}", owned.len()));
+    }
+    let (bytes, report) = owned.pop().unwrap();
+    let path = output.join("startup-construction-timing.json");
+    if path.exists() {
+        return Err("construction evidence destination already exists".into());
+    }
+    fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    validate_construction_timing(&report)?;
+    Ok(
+        json!({"sha256":hash(&path)?,"report":report,"scope":"intrusive-construction-readiness-attribution; no optimization or CPU-exclusive claim"}),
+    )
+}
+
+fn validate_construction_timing(report: &Value) -> Result<()> {
+    continuum_research_lab::launch::validate_construction_closure(report)?;
+    let fail = || "construction report malformed, incomplete or inconsistent".to_string();
+    if report["schema"] != "continuum-startup-construction-timing/v1"
+        || report["status"] != "menu-observed"
+        || report["clockFrequency"]
+            .as_u64()
+            .filter(|n| *n > 0)
+            .is_none()
+        || report["installedTicks"]
+            .as_u64()
+            .filter(|n| *n > 0)
+            .is_none()
+        || report["stackErrors"].as_u64() != Some(0)
+        || report["databaseReadyAtMenu"].as_bool() != Some(true)
+        || report["childCallsiteInstalled"].as_bool() != Some(true)
+    {
+        return Err(fail());
+    }
+    let initial = report["databaseInitialStateObserved"]
+        .as_bool()
+        .ok_or_else(fail)?;
+    let bootstrap = if initial {
+        "state0-observed-not-earlier-native-bootstrap"
+    } else {
+        "state0-unobserved-no-bootstrap-cost-attribution"
+    };
+    if report["bootstrapCoverage"] != bootstrap {
+        return Err(fail());
+    }
+    for name in ["databaseCompleted", "loaderCompleted"] {
+        report[name].as_bool().ok_or_else(fail)?;
+    }
+    for name in [
+        "firstDatabaseTicks",
+        "lastDatabaseTicks",
+        "databaseOuterActiveTicks",
+        "databaseOuterSteps",
+        "loaderSteps",
+    ] {
+        report[name].as_u64().ok_or_else(fail)?;
+    }
+    for name in ["scopes", "children", "resumes", "readiness"] {
+        let rows = report[name].as_array().ok_or_else(fail)?;
+        if rows.len() > 256 {
+            return Err(fail());
+        }
+    }
+    let children = report["children"].as_array().unwrap();
+    let child_coverage = if children.is_empty() {
+        "installed-no-dispatch-observed"
+    } else {
+        "actual-child-prime-calls-observed-not-asynchronous-worker-cost"
+    };
+    if report["childCoverage"] != child_coverage {
+        return Err(fail());
+    }
+    let scope = |row: &Value| -> Result<()> {
+        if row["name"].as_str().filter(|s| !s.is_empty()).is_none() {
+            return Err(fail());
+        }
+        for key in [
+            "calls",
+            "errors",
+            "inclusiveTicks",
+            "exclusiveTicks",
+            "maximumTicks",
+        ] {
+            row[key].as_u64().ok_or_else(fail)?;
+        }
+        if row["exclusiveTicks"].as_u64() > row["inclusiveTicks"].as_u64()
+            || row["maximumTicks"].as_u64() > row["inclusiveTicks"].as_u64()
+        {
+            return Err(fail());
+        }
+        Ok(())
+    };
+    let expected_scopes = [
+        "GameDatabase.LoadObjects.MoveNext",
+        "LoadingScreen.LoadSystems.MoveNext",
+        "AssemblyLoader.Initialize",
+        "AssemblyLoader.LoadPluginInfo",
+        "AssemblyLoader.LoadPlugin",
+        "AssemblyLoader.LoadAssemblies",
+        "GameDatabase.SetupMainLoaders",
+        "GameDatabase.translateLoadedNodes",
+        "UrlDir..ctor",
+    ];
+    let scopes = report["scopes"].as_array().unwrap();
+    if scopes.len() != expected_scopes.len() {
+        return Err(fail());
+    }
+    for (row, expected) in scopes.iter().zip(expected_scopes) {
+        scope(row)?;
+        if row["name"] != expected {
+            return Err(fail());
+        }
+    }
+    for row in children {
+        scope(&row["synchronous"])?;
+        if row["iteratorType"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .is_none()
+        {
+            return Err(fail());
+        }
+        let complete = row["completed"].as_u64().ok_or_else(fail)?;
+        let suspended = row["suspended"].as_u64().ok_or_else(fail)?;
+        let errors = row["errors"].as_u64().ok_or_else(fail)?;
+        if complete
+            .checked_add(suspended)
+            .and_then(|n| n.checked_add(errors))
+            != row["synchronous"]["calls"].as_u64()
+        {
+            return Err(fail());
+        }
+        if row["synchronous"]["errors"].as_u64() != Some(errors) {
+            return Err(fail());
+        }
+    }
+    for row in report["readiness"].as_array().unwrap() {
+        scope(&row["construction"])?;
+        if row["systemType"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .is_none()
+        {
+            return Err(fail());
+        }
+        for key in ["startObserved", "readyObserved"] {
+            row[key].as_bool().ok_or_else(fail)?;
+        }
+        for key in [
+            "startCalls",
+            "polls",
+            "notReadyPolls",
+            "errors",
+            "firstObservedTicks",
+            "lastObservedTicks",
+            "startTicks",
+            "readyTicks",
+            "pollTicks",
+            "waitGapTicks",
+        ] {
+            row[key].as_u64().ok_or_else(fail)?;
+        }
+        if row["notReadyPolls"].as_u64() > row["polls"].as_u64()
+            || row["startObserved"].as_bool() != Some(row["startCalls"].as_u64().unwrap() > 0)
+            || row["readyObserved"].as_bool() != Some(row["readyTicks"].as_u64().unwrap() > 0)
+        {
+            return Err(fail());
+        }
+    }
+    for row in report["resumes"].as_array().unwrap() {
+        row["state"].as_i64().ok_or_else(fail)?;
+        for key in [
+            "calls",
+            "nullYields",
+            "budgetNullYields",
+            "objectYields",
+            "activeTicks",
+            "wakeTicks",
+            "maximumWakeTicks",
+        ] {
+            row[key].as_u64().ok_or_else(fail)?;
+        }
+        if row["budgetNullYields"].as_u64() > row["nullYields"].as_u64()
+            || row["maximumWakeTicks"].as_u64() > row["wakeTicks"].as_u64()
+        {
+            return Err(fail());
+        }
+    }
+    Ok(())
+}
+
+fn expected_bundle_hashes(cache: &Path) -> Result<BTreeMap<String, String>> {
+    let manifest_path = cache.join("manifest.json");
+    if fs::metadata(&manifest_path)
+        .map_err(|e| e.to_string())?
+        .len()
+        > 65536
+    {
+        return Err("cache manifest too large".into());
+    }
+    let manifest: Value = read(&manifest_path)?;
+    let rows = manifest["bundles"].as_array().ok_or("cache rows absent")?;
+    if rows.len() != 3 {
+        return Err("three source rows required".into());
+    }
+    let mut hashes = BTreeMap::new();
+    for relative in [
+        "MakingHistory/AssetBundles/makinghistory_assets",
+        "MakingHistory/AssetBundles/makinghistory_scene",
+        "Serenity/AssetBundles/serenity_assets",
+    ] {
+        let matching: Vec<_> = rows
+            .iter()
+            .filter(|row| row["relativePath"] == relative)
+            .collect();
+        if matching.len() != 1 {
+            return Err("source row missing or duplicate".into());
+        }
+        let digest = matching[0]["sourceSha256"]
+            .as_str()
+            .ok_or("source hash absent")?;
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("source hash malformed".into());
+        }
+        hashes.insert(
+            format!("GameData/SquadExpansion/{relative}"),
+            digest.to_string(),
+        );
+    }
+    Ok(hashes)
+}
+fn startup_bundle_hashes(instance: &Path) -> Result<BTreeMap<String, String>> {
+    let mut hashes = BTreeMap::new();
+    for relative in [
+        "GameData/SquadExpansion/MakingHistory/AssetBundles/makinghistory_assets",
+        "GameData/SquadExpansion/MakingHistory/AssetBundles/makinghistory_scene",
+        "GameData/SquadExpansion/Serenity/AssetBundles/serenity_assets",
+    ] {
+        let path = instance.join(relative);
+        if path.exists() {
+            hashes.insert(relative.to_string(), hash(&path)?);
+        }
+    }
+    Ok(hashes)
+}

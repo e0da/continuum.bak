@@ -71,12 +71,15 @@ namespace KspContinuum
                 if (!loading)
                 {
                     if (menuReadyFrame < 0 || Time.frameCount <= menuReadyFrame) return;
+                    if (BackendMenuPresentation.MaterialFactsPending) return;
                     if (HighLogic.LoadedScene != GameScenes.MAINMENU) throw new InvalidOperationException("Scene changed before scale checkpoint loading.");
                     loadedGame = GamePersistence.LoadGame(ScaleCheckpointLoadState.Checkpoint, ScaleCheckpointLoadState.Save, true, true);
                     if (loadedGame == null || !loadedGame.compatible || loadedGame.flightState == null ||
                         loadedGame.flightState.activeVesselIdx < 0 || loadedGame.flightState.activeVesselIdx >= loadedGame.flightState.protoVessels.Count)
                         throw new InvalidOperationException("Scale checkpoint is not a compatible flight with an active vessel.");
                     ScaleCheckpointLoadState.BindVessel(loadedGame.flightState.protoVessels[loadedGame.flightState.activeVesselIdx].vesselID);
+                    AtmosphericEntryPreparation.Prepare(loadedGame, receiptDirectory, Environment.GetCommandLineArgs());
+                    DockingQualification.PrepareSeed(loadedGame, Environment.GetCommandLineArgs());
                     HighLogic.SaveFolder = ScaleCheckpointLoadState.Save; HighLogic.CurrentGame = loadedGame;
                     loadedGame.startScene = GameScenes.FLIGHT; loading = true; loadedGame.Start(); return;
                 }

@@ -4,7 +4,7 @@ A replacement solver is a plausible research direction. Getting code into the ga
 
 ## What is established
 
-The installed Mac KSP executable is x86_64. Its managed assemblies expose Unity rigid bodies, joints, forces, and local physics scenes. KSP supplies additional flight integration, mass, aerodynamic, thermal, and part behavior. The project has not measured which layer dominates a real flight.
+The installed Mac KSP executable is x86_64. Its managed assemblies expose Unity rigid bodies, joints, forces, and local physics scenes. KSP supplies additional flight integration, mass, aerodynamic, thermal, and part behavior. Current [flight evidence](research-replacement-architecture.md) identifies repeated rendering as a major cost in the frozen 196-part atmospheric fixture and measures native physics and managed fixed work separately. The dominant layer for larger craft and physics warp remains unresolved.
 
 Unity supports [native libraries called from managed code](https://docs.unity3d.com/2019.4/Documentation/Manual/NativePlugins.html). [Harmony](https://harmony.pardeike.net/v2/articles/patching.html) supports managed method patches; this is not a universal hook into Unity's native physics internals. [Community Fixes](https://github.com/KSPModdingLibs/KSPCommunityFixes) demonstrates substantial KSP managed-code replacement. These establish possible entry mechanisms, not a working solver handoff.
 

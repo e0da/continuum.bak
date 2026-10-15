@@ -66,7 +66,7 @@ namespace KspContinuum
             long started = Stopwatch.GetTimestamp();
             LiveControlRequest request = LiveControlRequest.Parse(command);
             LiveControlReply reply = control.Execute(request, Time.frameCount, observedFixedCallbacks,
-                () => Capture(vessel), StartSweep, SweepStatus, RequestQuit);
+                () => Capture(vessel), StartSweep, SweepStatus, RequestQuit, RigidOperation, ClockOperation);
             reply.observerNanoseconds = (long)((Stopwatch.GetTimestamp() - started) *
                 (1000000000.0 / Stopwatch.Frequency));
             if (request.operation == LiveControlOperation.SubscribeSweep && reply.status == "ok")
@@ -125,6 +125,44 @@ namespace KspContinuum
             if (state == "waiting-for-orbit" || state == "running") return "experiment-busy";
             quitRequested = true;
             return null;
+        }
+
+        static LiveRigidStatus RigidOperation(LiveControlOperation operation)
+        {
+            string reason = null;
+            if (operation == LiveControlOperation.RigidEnable) reason = PlayableRigidFlightService.SetEnabled(true);
+            else if (operation == LiveControlOperation.RigidDisable) reason = PlayableRigidFlightService.SetEnabled(false);
+            else if (operation == LiveControlOperation.RigidRetry) reason = PlayableRigidFlightService.Retry();
+            else if (operation == LiveControlOperation.RigidWarp4) reason = PlayableRigidFlightService.SetPhysicsWarp(true);
+            else if (operation == LiveControlOperation.RigidNormal) reason = PlayableRigidFlightService.SetPhysicsWarp(false);
+            else if (operation == LiveControlOperation.RigidSave) reason = PlayableRigidFlightService.Quicksave(false);
+            else if (operation == LiveControlOperation.RigidLoad) reason = PlayableRigidFlightService.Quicksave(true);
+            LiveRigidStatus status = PlayableRigidFlightService.Snapshot();
+            if (operation == LiveControlOperation.RigidCapture) reason = PlayableRigidFlightService.CaptureFrames(out status.frameReceiptPath);
+            status.operationError = reason;
+            return status;
+        }
+
+        static LiveClockStatus ClockOperation(LiveControlOperation operation)
+        {
+            string reason=null,lightingPath=null;
+            if(operation==LiveControlOperation.ClockEnable)reason=OwnedClockFlightService.SetEnabled(true);
+            else if(operation==LiveControlOperation.ClockDisable)reason=OwnedClockFlightService.SetEnabled(false);
+            else if(operation==LiveControlOperation.ClockNormal)reason=OwnedClockFlightService.SetWarp(1);
+            else if(operation==LiveControlOperation.ClockWarp32)reason=OwnedClockFlightService.SetWarp(32);
+            else if(operation==LiveControlOperation.ClockWarp128)reason=OwnedClockFlightService.SetWarp(128);
+            else if(operation==LiveControlOperation.ClockPause)reason=OwnedClockFlightService.SetPaused(true);
+            else if(operation==LiveControlOperation.ClockResume)reason=OwnedClockFlightService.SetPaused(false);
+            else if(operation==LiveControlOperation.ClockSave)reason=OwnedClockFlightService.SaveCheckpoint();
+            else if(operation==LiveControlOperation.ClockRestore)reason=OwnedClockFlightService.RestoreCheckpoint();
+            else if(operation==LiveControlOperation.ClockLighting)
+            {
+                try { lightingPath=OwnedClockFlightService.CaptureLightingFacts(); }
+                catch(Exception error) { reason=error.GetType().Name+":"+error.Message; }
+            }
+            var report=OwnedClockFlightService.Snapshot();
+            if(reason!=null&&reason.Length>1024)reason=reason.Substring(0,1024);
+            return new LiveClockStatus{state=report.status,operationError=reason,owned=report.owned,enabled=report.enabled,universalTime=report.publishedUniversalTime,debtSeconds=report.outstandingDemandSeconds,publications=report.publications,reportJson=ReportJson.Encode(report),lightingPath=lightingPath};
         }
 
         static LiveVesselSnapshot Capture(Vessel vessel)

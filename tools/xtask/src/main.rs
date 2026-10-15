@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const DOTNET_TESTS: &[&str] = &[
+    "tests/KspContinuum.OwnedRuntime.Tests",
     "tests/KspContinuum.Tests",
     "tests/KspContinuum.Worker.Tests",
     "tests/KspContinuum.Handoff.Tests",
@@ -19,6 +20,35 @@ const DOTNET_TESTS: &[&str] = &[
     "tests/KspContinuum.Profiling.Tests",
     "tests/KspContinuum.PlayerLoop.Tests",
     "tests/KspContinuum.LiveControl.Tests",
+    "tests/KspContinuum.PlayableRigid.Tests",
+    "tests/KspContinuum.RetainedIngress.Tests",
+    "tests/KspContinuum.RetainedValidation.Tests",
+    "tests/KspContinuum.OwnedFlightTimeline.Tests",
+    "tests/KspContinuum.OwnedFlightWorker.Tests",
+    "tests/KspContinuum.AdaptiveMechanics.Tests",
+    "tests/KspContinuum.FlightEvents.Tests",
+    "tests/KspContinuum.FlightInterpolation.Tests",
+    "tests/KspContinuum.CausalTimeline.Tests",
+    "tests/KspContinuum.ExecutionPlan.Tests",
+    "tests/KspContinuum.Deadlines.Tests",
+    "tests/KspContinuum.FlightForecast.Tests",
+    "tests/KspContinuum.TopologyTransfer.Tests",
+    "tests/KspContinuum.EmbeddedMechanics.Tests",
+    "tests/KspContinuum.ScalarSupply.Tests",
+    "tests/KspContinuum.SupplyIntegration.Tests",
+    "tests/KspContinuum.OwnedClockShell.Tests",
+    "tests/KspContinuum.PatchBytes.Tests",
+    "tests/KspContinuum.ResourceRouting.Tests",
+    "tests/KspContinuum.CheckpointStreaming.Tests",
+    "tests/KspContinuum.SegmentedState.Tests",
+    "tests/KspContinuum.StateStoreProof.Tests",
+    "tests/KspContinuum.ThermalStorage.Tests",
+    "tests/KspContinuum.CompiledThermal.Tests",
+    "tests/KspContinuum.MassValidity.Tests",
+    "tests/KspContinuum.CompiledSystemsProof.Tests",
+    "tests/KspContinuum.ColumnarComparison.Tests",
+    "tests/KspContinuum.CapacitySpatial.Tests",
+    "tests/KspContinuum.ScheduleImages.Tests",
     "tests/KspContinuum.WriterCensus.Tests",
     "tests/KspContinuum.ForceObservation.Tests",
     "tests/KspContinuum.AeroCapture.Tests",
@@ -31,8 +61,11 @@ const DOTNET_TESTS: &[&str] = &[
     "tests/KspContinuum.RigidCluster.Tests",
     "tests/KspContinuum.Islands.Tests",
     "tests/KspContinuum.RigidCluster6Dof.Tests",
+    "tests/KspContinuum.RigidAssembly.Tests",
+    "tests/KspContinuum.NativeAssembly.Tests",
     "tests/KspContinuum.StructuralExperiment.Tests",
     "tests/KspContinuum.Tools.Tests",
+    "tests/KspContinuum.Reconstruction.Tests",
     "src/KspContinuum.Mission/Tests/Mission.Tests.csproj",
 ];
 
@@ -49,6 +82,12 @@ fn run() -> Result {
     let root = repository_root()?;
     let arguments: Vec<String> = env::args().skip(1).collect();
     match arguments.first().map(String::as_str) {
+        Some("lab") => {
+            let mut command = Command::new("cargo");
+            command.current_dir(&root).args(["run", "--release", "--manifest-path", "tools/research-lab/Cargo.toml", "--"]).args(&arguments[1..]);
+            let status = command.status().map_err(|e| e.to_string())?;
+            if status.success() { Ok(()) } else { Err(format!("laboratory exited with {status}")) }
+        }
         Some("portable") => portable(&root),
         Some("field") => field(&root),
         Some("structural") => structural(&root),
@@ -126,6 +165,7 @@ fn native_cpu_throughput_bench(root: &Path, output: &str) -> Result {
 }
 
 fn field(root: &Path) -> Result {
+    checked(root, "cargo", &["test", "--manifest-path", "tools/research-lab/Cargo.toml"])?;
     checked(
         root,
         "cargo",
@@ -161,6 +201,16 @@ fn repository_root() -> Result<PathBuf> {
 }
 
 fn portable(root: &Path) -> Result {
+    checked(root, "cargo", &["test", "--locked", "--manifest-path", "tools/part-systems/Cargo.toml"])?;
+    checked(
+        root,
+        "dotnet",
+        &["build", "tools/KspContinuum.FlightFixture", "-c", "Release"],
+    )?;
+    for project in ["tools/KspContinuum.RuntimeMap", "tools/KspContinuum.SourceAtlas", "tools/KspContinuum.OwnedFlightLab", "tools/KspContinuum.OwnedFlightTimelineLab", "tools/KspContinuum.CausalFlightLab"] {
+        checked(root, "dotnet", &["build", project, "-c", "Release"])?;
+    }
+    checked(root, "dotnet", &["run", "--project", "tools/KspContinuum.SourceAtlas", "-c", "Release", "--", "self-test"])?;
     for project in DOTNET_TESTS {
         checked(
             root,

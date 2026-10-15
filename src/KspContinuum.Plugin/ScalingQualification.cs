@@ -18,8 +18,61 @@ namespace KspContinuum
         float eligibleSince;
         int expectedParts = -1;
         bool physicsWarp, atmosphericStress, setDragStressCandidate, warpRequested;
+        bool normalAtmosphere, catchupApplied;
+        double simulationSeconds, wallTimeout = 60, settleSeconds = 10;
+        double? requestedCatchup;
+        float originalPhysicsLimit, originalMaximumDelta, qualificationStarted;
         Guid? atmosphericVesselId;
         float warpRequestedAt;
+        bool admissionExported;
+        [Serializable] public sealed class AdmissionSnapshot
+        {
+            public string schema = "continuum-flight-admission/v1", runId, status, reason, scene, vesselId, expectedVesselId, situation, body, warpMode, throttleText;
+            public int processId, frame, parts, expectedParts, warpRateIndex, stableWarpFrames;
+            public long clockTimestamp, clockFrequency;
+            public float realtimeSeconds, qualificationStartedSeconds, elapsedSeconds, eligibleSinceSeconds, warpRate, throttle;
+            public double simulationSeconds, wallTimeoutSeconds, settleSeconds, altitudeMeters;
+            public bool globalsReady, selectionRequested, selectionReady, actualVesselPresent, eligibleVesselPresent, loaded, packed, paused, ctrlStatePresent, throttleFinite,
+                selectedVesselMatches, partCountMatches, environmentMatches, eligible, selectionGatePassed, normalRate, settleComplete, warpEntered, normalAtmosphere, atmosphericStress, physicsWarp, strategySweep, warpRequested;
+        }
+        void ExportAdmission(string status, string reason)
+        {
+            if (admissionExported) return; admissionExported = true;
+            try
+            {
+                Vessel actual = FlightGlobals.ActiveVessel, eligibleVessel = FlightGlobals.ready ? actual : null;
+                float throttle = actual == null || actual.ctrlState == null ? 0 : actual.ctrlState.mainThrottle;
+                bool finite = !float.IsNaN(throttle) && !float.IsInfinity(throttle);
+                var value = new AdmissionSnapshot { status = status, reason = reason, processId = System.Diagnostics.Process.GetCurrentProcess().Id,
+                    frame = Time.frameCount, clockTimestamp = System.Diagnostics.Stopwatch.GetTimestamp(), clockFrequency = System.Diagnostics.Stopwatch.Frequency,
+                    scene = HighLogic.LoadedScene.ToString(), realtimeSeconds = Time.realtimeSinceStartup, qualificationStartedSeconds = qualificationStarted,
+                    elapsedSeconds = Time.realtimeSinceStartup - qualificationStarted, eligibleSinceSeconds = eligibleSince,
+                    simulationSeconds = simulationSeconds, wallTimeoutSeconds = wallTimeout, settleSeconds = settleSeconds,
+                    globalsReady = FlightGlobals.ready, selectionRequested = ScaleCheckpointLoadState.Requested, selectionReady = ScaleCheckpointLoadState.Ready,
+                    actualVesselPresent = actual != null, eligibleVesselPresent = eligibleVessel != null, vesselId = actual == null ? null : actual.id.ToString(),
+                    expectedVesselId = ScaleCheckpointLoadState.VesselId.ToString(), parts = actual == null ? 0 : actual.parts.Count, expectedParts = expectedParts,
+                    loaded = actual != null && actual.loaded, packed = actual != null && actual.packed, paused = FlightDriver.Pause,
+                    situation = actual == null ? null : actual.situation.ToString(), body = actual == null || actual.mainBody == null ? null : actual.mainBody.bodyName,
+                    altitudeMeters = actual == null ? 0 : actual.altitude, ctrlStatePresent = actual != null && actual.ctrlState != null,
+                    throttle = finite ? throttle : 0, throttleText = throttle.ToString("R", CultureInfo.InvariantCulture), throttleFinite = finite,
+                    warpRate = TimeWarp.CurrentRate, warpRateIndex = TimeWarp.CurrentRateIndex, warpMode = TimeWarp.WarpMode.ToString(),
+                    normalAtmosphere = normalAtmosphere, atmosphericStress = atmosphericStress, physicsWarp = physicsWarp, strategySweep = strategySweep, warpRequested = warpRequested,
+                    stableWarpFrames = stableWarpFrames };
+                foreach (string argument in Environment.GetCommandLineArgs()) if (argument.StartsWith("--continuum-research-run=", StringComparison.Ordinal)) value.runId = argument.Substring("--continuum-research-run=".Length);
+                value.selectedVesselMatches = !value.selectionRequested || actual != null && actual.id == ScaleCheckpointLoadState.VesselId;
+                value.partCountMatches = expectedParts < 1 || actual != null && actual.parts.Count == expectedParts;
+                value.environmentMatches = eligibleVessel != null && (atmosphericStress || normalAtmosphere ? AtmosphericFlight(eligibleVessel) && (atmosphericStress || value.ctrlStatePresent && throttle < .01) : eligibleVessel.situation == Vessel.Situations.ORBITING && value.ctrlStatePresent && throttle < .01);
+                value.eligible = value.eligibleVesselPresent && value.loaded && !value.packed && !value.paused && value.environmentMatches && value.selectedVesselMatches && value.partCountMatches;
+                value.normalRate = TimeWarp.CurrentRate == 1 && TimeWarp.CurrentRateIndex == 0;
+                value.selectionGatePassed = !value.selectionRequested || value.selectionReady;
+                value.settleComplete = eligibleSince != 0 && Time.realtimeSinceStartup - eligibleSince >= (atmosphericStress ? .5 : settleSeconds);
+                value.warpEntered = TimeWarp.fetch != null && TimeWarp.WarpMode == TimeWarp.Modes.LOW && TimeWarp.CurrentRateIndex == 3 && TimeWarp.CurrentRate == RequestedPhysicsWarp;
+                string json = JsonUtility.ToJson(value);
+                Debug.Log("[Continuum flight admission] " + json);
+                if (directory != null) { string path = Path.Combine(directory, "flight-admission.json"); File.WriteAllText(path + ".tmp", json); File.Move(path + ".tmp", path); }
+            }
+            catch (Exception error) { Debug.LogError("[Continuum flight admission] export-failed " + error); }
+        }
         int stableWarpFrames;
         const float RequestedPhysicsWarp = 4;
         static readonly MethodInfo WarpModeSetter = typeof(TimeWarp).GetMethod("setMode",
@@ -75,10 +128,14 @@ namespace KspContinuum
         public void Start()
         {
             string[] arguments = Environment.GetCommandLineArgs();
+            foreach (string argument in arguments)
+                if (argument.StartsWith("--continuum-docking=", StringComparison.Ordinal) || argument == "--continuum-checkpoint-reload") return;
             if (Array.IndexOf(arguments, "--continuum-experiment-host") >= 0) { sweepState = "idle"; return; }
             if (Array.IndexOf(arguments, "--continuum-scale-profile") < 0) return;
             if (Array.IndexOf(arguments, "--continuum-live-setdrag-provider") >= 0 &&
                 Array.IndexOf(arguments, "--continuum-setdrag-quit-after-qualification") >= 0) return;
+            if (Array.IndexOf(arguments, "--continuum-input-cadence-census") >= 0 &&
+                Array.IndexOf(arguments, "--continuum-input-cadence-quit") >= 0) return;
             try
             {
                 PrepareDirectory(); quitAfterQualification = true;
@@ -87,6 +144,20 @@ namespace KspContinuum
                 strategySweep = Array.IndexOf(arguments, "--continuum-dry-buoyancy-sweep") >= 0;
                 physicsWarp = Array.IndexOf(arguments, "--continuum-physics-warp-pressure") >= 0;
                 atmosphericStress = Array.IndexOf(arguments, "--continuum-atmospheric-stress") >= 0;
+                normalAtmosphere = Array.IndexOf(arguments, "--continuum-normal-atmosphere") >= 0;
+                simulationSeconds = OptionalNumber(arguments, "--continuum-flight-seconds=", 0, 0, 300);
+                wallTimeout = OptionalNumber(arguments, "--continuum-flight-timeout=", 60, .1, 600);
+                settleSeconds = OptionalNumber(arguments, "--continuum-flight-settle=", 10, 0, 60);
+                double catchup = OptionalNumber(arguments, "--continuum-flight-catchup=", -1, .001, 1);
+                if (catchup > 0) requestedCatchup = catchup;
+                if (normalAtmosphere && (atmosphericStress || physicsWarp || strategySweep)) throw new ArgumentException("Normal atmosphere diagnostic excludes stress, warp and strategy sweep.");
+                if (simulationSeconds > 0 && strategySweep) throw new ArgumentException("Simulation-duration capture excludes strategy sweep.");
+                if (AtmosphericEntryPreparation.Requested && (!normalAtmosphere || physicsWarp || atmosphericStress || strategySweep))
+                    throw new ArgumentException("Entry recipe requires normal atmosphere diagnostic.");
+                qualificationStarted = Time.realtimeSinceStartup;
+                AtmosphericEntryPreparation.Begin(directory);
+                FlightDiagnosticControls.Apply();
+                ApplyCatchup();
                 setDragStressCandidate = Array.IndexOf(arguments, "--continuum-setdrag-stress-candidate") >= 0;
                 if (setDragStressCandidate && !atmosphericStress)
                 { Finish("setdrag-stress-requires-atmospheric-stress", 2); return; }
@@ -108,15 +179,47 @@ namespace KspContinuum
 
         public void Update()
         {
+            if (active && FlightAeroFieldRenderer.FailureReason != null)
+            { Fail(new InvalidOperationException("Aero field runtime rejected: " + FlightAeroFieldRenderer.FailureReason)); return; }
+            if (active && FlightDiagnosticControls.FailureReason != null)
+            {
+                Fail(new InvalidOperationException("Camera contract rejected: " + FlightDiagnosticControls.FailureReason));
+                return;
+            }
+            if (active && FlightAeroBatcher.FailureReason != null)
+            {
+                Fail(new InvalidOperationException("Aero batch runtime rejected: " + FlightAeroBatcher.FailureReason));
+                return;
+            }
+            if (active && FlightPartBatcher.FailureReason != null)
+            {
+                Fail(new InvalidOperationException("Part batch runtime rejected: " + FlightPartBatcher.FailureReason));
+                return;
+            }
             if (!active || capturing) return;
+            if (AtmosphericEntryPreparation.Requested && !AtmosphericEntryPreparation.Admitted)
+            {
+                if (!ScaleCheckpointLoadState.Ready) return;
+                try
+                {
+                    if (!AtmosphericEntryPreparation.Tick(FlightGlobals.ready ? FlightGlobals.ActiveVessel : null, settleSeconds)) return;
+                    qualificationStarted = Time.realtimeSinceStartup;
+                }
+                catch (Exception error) { Fail(error); return; }
+            }
+            if (simulationSeconds > 0 && Time.realtimeSinceStartup - qualificationStarted > wallTimeout)
+            { ExportAdmission("invalid", "admission-wall-timeout"); File.WriteAllText(Path.Combine(directory,"status.txt"), "invalid\nreason=admission-wall-timeout\n"); Finish("invalid",2); return; }
             if (ScaleCheckpointLoadState.Requested && !ScaleCheckpointLoadState.Ready) return;
             Vessel vessel = FlightGlobals.ready ? FlightGlobals.ActiveVessel : null;
             bool eligible = vessel != null && vessel.loaded && !vessel.packed && !FlightDriver.Pause &&
-                (atmosphericStress ? AtmosphericFlight(vessel) :
+                (atmosphericStress || normalAtmosphere ? AtmosphericFlight(vessel) && (atmosphericStress || vessel.ctrlState != null && vessel.ctrlState.mainThrottle < .01) :
                 vessel.situation == Vessel.Situations.ORBITING && vessel.ctrlState != null && vessel.ctrlState.mainThrottle < 0.01) &&
                 (!ScaleCheckpointLoadState.Requested || vessel.id == ScaleCheckpointLoadState.VesselId) &&
                 (expectedParts < 1 || vessel.parts.Count == expectedParts);
             if (!eligible) { eligibleSince = 0; stableWarpFrames = 0; return; }
+            FlightDiagnosticControls.SeedCamera();
+            try { FlightDiagnosticControls.PrepareLighting(directory); }
+            catch (Exception error) { Fail(error); return; }
             if (physicsWarp && warpRequested)
             {
                 bool entered = TimeWarp.fetch != null && TimeWarp.WarpMode == TimeWarp.Modes.LOW &&
@@ -136,11 +239,11 @@ namespace KspContinuum
                 }
                 if (setDragStressCandidate && !AeroSetDragProviderQualification.BeginStressWindow())
                 { Finish("setdrag-stress-admission-failed", 2); return; }
-                capturing = true; probe = new Probe(); StartCoroutine(Capture()); return;
+                StartCapture(false); return;
             }
             if (TimeWarp.CurrentRate != 1 || TimeWarp.CurrentRateIndex != 0) { eligibleSince = 0; return; }
             if (eligibleSince == 0) { eligibleSince = Time.realtimeSinceStartup; return; }
-            if (Time.realtimeSinceStartup - eligibleSince < (atmosphericStress ? .5f : 10f)) return;
+            if (Time.realtimeSinceStartup - eligibleSince < (atmosphericStress ? .5 : settleSeconds)) return;
             if (physicsWarp)
             {
                 if (atmosphericStress) atmosphericVesselId = vessel.id;
@@ -149,15 +252,73 @@ namespace KspContinuum
                 TimeWarp.SetRate(3, true); warpRequested = true; warpRequestedAt = Time.realtimeSinceStartup;
                 return;
             }
-            capturing = true;
-            if (strategySweep) { sweepState = "running"; StartCoroutine(CaptureSweep()); }
-            else { probe = new Probe(); StartCoroutine(Capture()); }
+            StartCapture(strategySweep);
+        }
+        void StartCapture(bool sweep)
+        {
+            try
+            {
+                capturing = true;
+                if (sweep) { sweepState = "running"; StartCoroutine(CaptureSweep()); }
+                else { ApplyCatchup(); probe = NewProbe(); StartCoroutine(Capture()); }
+            }
+            catch (Exception error) { capturing = false; Fail(error); }
+        }
+        public void FixedUpdate() { Probe.ObserveFixedCallback(); }
+        Probe NewProbe()
+        {
+            string runId = null;
+            foreach (string argument in Environment.GetCommandLineArgs())
+                if (argument.StartsWith("--continuum-research-run=", StringComparison.Ordinal))
+                    runId = argument.Substring("--continuum-research-run=".Length);
+            FlightLocalCamera.Start(FlightGlobals.ActiveVessel, directory, runId);
+            FlightDiagnosticControls.Record(directory);
+            FlightAeroBatcher.Report batch = FlightAeroBatcher.Start(FlightGlobals.ActiveVessel, directory, runId);
+            if (batch != null && batch.status != "installed-experimental")
+                throw new InvalidOperationException("Aero batch preparation rejected: " + batch.reason);
+            FlightPartBatcher.Report parts = FlightPartBatcher.Start(FlightGlobals.ActiveVessel, directory, runId);
+            if (parts != null && parts.status != "installed-experimental")
+                throw new InvalidOperationException("Part batch preparation rejected: " + parts.reason);
+            FlightAeroFieldRenderer.Report field = FlightAeroFieldRenderer.Start(FlightGlobals.ActiveVessel, directory, runId);
+            if (field != null && field.status != "installed-experimental") throw new InvalidOperationException("Aero field preparation rejected: " + field.reason);
+            FlightGpuTiming.StartOwned(gameObject, directory, runId);
+            FlightCameraChain.Start(FlightGlobals.ActiveVessel, directory, runId);
+            FlightWorldDraw.Start(FlightGlobals.ActiveVessel, directory, runId);
+            if (FlightWorldDraw.FailureReason != null) throw new InvalidOperationException("World draw admission rejected: " + FlightWorldDraw.FailureReason);
+            return new Probe(null,false,simulationSeconds,wallTimeout,simulationSeconds > 0 ? directory : null);
+        }
+        static double OptionalNumber(string[] arguments,string prefix,double fallback,double minimum,double maximum)
+        {
+            double result = fallback; bool found=false;
+            foreach(string argument in arguments) if(argument.StartsWith(prefix,StringComparison.Ordinal))
+            {
+                if(found || !double.TryParse(argument.Substring(prefix.Length),NumberStyles.Float,CultureInfo.InvariantCulture,out result) ||
+                    double.IsNaN(result) || double.IsInfinity(result) || result<minimum || result>maximum) throw new ArgumentException("Invalid or duplicate option: "+prefix);
+                found=true;
+            }
+            return result;
+        }
+        void ApplyCatchup()
+        {
+            if(!requestedCatchup.HasValue) return;
+            if(!catchupApplied) { originalPhysicsLimit=GameSettings.PHYSICS_FRAME_DT_LIMIT; originalMaximumDelta=Time.maximumDeltaTime; catchupApplied=true; }
+            GameSettings.PHYSICS_FRAME_DT_LIMIT=(float)requestedCatchup.Value; Time.maximumDeltaTime=(float)requestedCatchup.Value;
         }
 
         IEnumerator Capture()
         {
             IEnumerator work = probe.Run(Complete);
-            try { while (active && work.MoveNext()) yield return work.Current; }
+            try
+            {
+                while (active)
+                {
+                    bool moved;
+                    try { moved = work.MoveNext(); }
+                    catch (Exception error) { Fail(error); yield break; }
+                    if (!moved) break;
+                    yield return work.Current;
+                }
+            }
             finally { var disposable = work as IDisposable; if (disposable != null) disposable.Dispose(); capturing = false; }
         }
 
@@ -218,9 +379,19 @@ namespace KspContinuum
         {
             try
             {
+                FlightCameraChain.Finish("completed");
+                FlightWorldDraw.EndWindow();
+                FlightAeroFieldRenderer.ObservePixelsAfterWindow();
+                FlightDiagnosticControls.RecordEnd(directory);
+                report.requestedCatchupSeconds=requestedCatchup; report.settleSeconds=settleSeconds;
                 File.WriteAllText(Path.Combine(directory, "markers.json"), ReportJson.Encode(report));
                 string reason; bool valid = atmosphericStress ? AtmosphericStressComplete(report, out reason) :
-                    Stable(report, physicsWarp ? RequestedPhysicsWarp : 1, out reason);
+                    Stable(report, physicsWarp ? RequestedPhysicsWarp : 1, out reason, normalAtmosphere);
+                if (FlightLocalCamera.FailureReason != null) { valid = false; reason = "local-camera-invalid: " + FlightLocalCamera.FailureReason; }
+                if (FlightCameraChain.FailureReason != null) { valid = false; reason = "camera-chain-invalid: " + FlightCameraChain.FailureReason; }
+                if (FlightWorldDraw.FailureReason != null) { valid = false; reason = "world-draw-invalid: " + FlightWorldDraw.FailureReason; }
+                if (probe != null && probe.VesselRuntimeReport != null && probe.VesselRuntimeReport.status != "complete")
+                { valid = false; reason = "vessel-runtime-" + probe.VesselRuntimeReport.status + ": " + probe.VesselRuntimeReport.reason; }
                 if (setDragStressCandidate && !AeroSetDragProviderQualification.EndStressWindow())
                 { valid = false; reason = "setdrag-stress-provider-invalid"; }
                 bool sourceUnchanged = !ScaleCheckpointLoadState.Requested || ScaleCheckpointLoadState.SourceUnchanged();
@@ -230,28 +401,91 @@ namespace KspContinuum
                     (ScaleCheckpointLoadState.Requested ? "save=" + ScaleCheckpointLoadState.Save + "\ncheckpoint=" +
                     ScaleCheckpointLoadState.Checkpoint + "\nsourceSha256=" + ScaleCheckpointLoadState.SourceSha256 +
                     "\nsourceUnchanged=" + sourceUnchanged + "\n" : ""));
-                Finish(valid ? "complete" : "invalid", valid ? 0 : 2);
+                if (valid && Array.IndexOf(Environment.GetCommandLineArgs(), "--continuum-flight-screenshot") >= 0)
+                {
+                    active = false;
+                    StartCoroutine(CaptureView(report.runId));
+                }
+                else Finish(valid ? "complete" : "invalid", valid ? 0 : 2);
             }
             catch (Exception error) { Fail(error); }
+        }
+
+        [Serializable]
+        sealed class FlightViewReport
+        {
+            public string schema = "continuum-flight-view/v1", runId, status, reason;
+            public int processId, width, height, captureFrame;
+            public double universalTime;
+        }
+
+        IEnumerator CaptureView(string runId)
+        {
+            yield return new WaitForEndOfFrame();
+            Texture2D image = null;
+            var view = new FlightViewReport { runId = runId, processId = System.Diagnostics.Process.GetCurrentProcess().Id,
+                width = Screen.width, height = Screen.height, universalTime = Planetarium.GetUniversalTime(), captureFrame = Time.frameCount };
+            int code = 0;
+            try
+            {
+                image = new Texture2D(view.width, view.height, TextureFormat.RGB24, false);
+                image.ReadPixels(new Rect(0, 0, view.width, view.height), 0, 0, false);
+                byte[] bytes = ImageConversion.EncodeToPNG(image);
+                if (bytes == null || bytes.Length == 0) throw new InvalidOperationException("Empty flight image.");
+                File.WriteAllBytes(Path.Combine(directory, "flight-view.png"), bytes);
+                view.status = "captured-after-window";
+            }
+            catch (Exception error)
+            {
+                code = 2; view.status = "capture-failed"; view.reason = error.GetType().Name + ": " + error.Message;
+                Debug.LogException(error);
+                File.WriteAllText(Path.Combine(directory, "status.txt"), "invalid\nreason=post-window-image-failed\n");
+            }
+            finally
+            {
+                if (image != null) UnityEngine.Object.Destroy(image);
+                try { File.WriteAllText(Path.Combine(directory, "flight-view.json"), JsonUtility.ToJson(view)); }
+                catch (Exception error) { Debug.LogException(error); code = 2; }
+                Finish(code == 0 ? "complete" : "invalid", code);
+            }
+        }
+
+        internal static void CaptureAtEndOfFrame(Action capture)
+        {
+            if (instance == null) throw new InvalidOperationException("Active flight capture host required.");
+            instance.StartCoroutine(EndOfFrameAction(capture));
+        }
+
+        static IEnumerator EndOfFrameAction(Action capture)
+        {
+            yield return new WaitForEndOfFrame();
+            capture();
         }
 
         static bool Stable(ProbeReport report, out string reason)
         { return Stable(report, 1, out reason); }
 
-        static bool Stable(ProbeReport report, float expectedWarp, out string reason)
+        static bool Stable(ProbeReport report, float expectedWarp, out string reason, bool atmosphere = false)
         {
-            reason = "verified-fixed-orbital-context";
-            if (report == null || report.status != "complete" || report.completedFrames != report.requestedFrames || report.frames == null || report.frames.Length == 0)
+            bool controlledRigid = Environment.GetEnvironmentVariable("CONTINUUM_LIVE_RIGID_SCENARIO") == "control-warp" &&
+                !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONTINUUM_LIVE_RIGID_OWNER")) && !atmosphere && expectedWarp == 1;
+            reason = atmosphere ? "verified-normal-atmospheric-context" : "verified-fixed-orbital-context";
+            if (report == null || report.status != "complete" || !CompletedWindow(report) || report.frames == null || report.frames.Length == 0 ||
+                report.requestedSimulatedSeconds > 0 && !report.topologyStable)
             { reason = "incomplete-capture"; return false; }
             ProfileFrame first = report.frames[0];
             foreach (ProfileFrame frame in report.frames)
                 if (frame == null || frame.vesselId != first.vesselId || frame.parts != first.parts ||
                     frame.rigidbodies != first.rigidbodies || frame.joints != first.joints || frame.colliders != first.colliders ||
                     frame.loadedVessels != first.loadedVessels || frame.loaded != true || frame.packed != false || frame.paused != false ||
-                    frame.warpRate != expectedWarp || !FinitePositive(frame.fixedDeltaSeconds) || !FinitePositive(frame.timeScale) ||
-                    frame.fixedDeltaSeconds != first.fixedDeltaSeconds || frame.timeScale != first.timeScale ||
+                    (controlledRigid ? !ControlledRigidClock(frame) : frame.warpRate != expectedWarp ||
+                        frame.fixedDeltaSeconds != first.fixedDeltaSeconds || frame.timeScale != first.timeScale || frame.warpMode != first.warpMode) ||
+                    !FinitePositive(frame.fixedDeltaSeconds) || !FinitePositive(frame.timeScale) ||
                     !frame.throttleCommand.HasValue || frame.throttleCommand.Value >= 0.01 ||
-                    frame.situation != Vessel.Situations.ORBITING.ToString())
+                    frame.maximumDeltaSeconds != first.maximumDeltaSeconds || frame.physicsFrameLimitSeconds != first.physicsFrameLimitSeconds ||
+                    frame.fixedCallbacksPerFrame < 0 ||
+                    (atmosphere ? frame.body != "Kerbin" || !frame.altitudeMeters.HasValue || !frame.atmosphereDepthMeters.HasValue ||
+                        frame.altitudeMeters.Value < 0 || frame.altitudeMeters.Value >= frame.atmosphereDepthMeters.Value : frame.situation != Vessel.Situations.ORBITING.ToString()))
                 { reason = "context-or-topology-changed"; return false; }
             if (report.playerLoop == null || report.playerLoop.schema != "ksp-continuum-playerloop/v2" ||
                 report.playerLoop.status != "observed" || report.playerLoop.integrityStatus != "verified-at-boundaries" ||
@@ -268,11 +502,29 @@ namespace KspContinuum
                  report.callbackAttribution.cleanupStatus != "removed-owned-patches" || report.callbackAttribution.patchedMethods < 1 ||
                  report.callbackAttribution.callbacks == null || report.callbackAttribution.callbacks.Length < 1))
             { reason = "callback-attribution-invalid"; return false; }
+            string integratorReason;
+            if (!IntegratorAttributionComplete(report, out integratorReason)) { reason = integratorReason; return false; }
+            if (Array.Exists(Environment.GetCommandLineArgs(), arg => arg.StartsWith("--continuum-convection-capture=", StringComparison.Ordinal)))
+            {
+                var capture = report.convectionCapture as ConvectionCapture.CaptureReport;
+                if (capture == null || capture.status != "complete" || capture.cleanupStatus != "removed-owned-patch" ||
+                    capture.capturedFrames != 4 || capture.faults != 0 || capture.runId != report.runId || string.IsNullOrEmpty(capture.sha256))
+                { reason = "convection-capture-incomplete"; return false; }
+            }
             if (report.dryBuoyancy != null && (report.dryBuoyancy.status != "complete" ||
                 report.dryBuoyancy.cleanupStatus != "restored-owned-enables" || report.dryBuoyancy.ownedComponents < 1 ||
                 report.dryBuoyancy.fixedSteps < 1 || report.dryBuoyancy.bypassed < 1 || report.dryBuoyancy.errors != 0))
             { reason = "dry-buoyancy-strategy-invalid"; return false; }
             return true;
+        }
+        static bool CompletedWindow(ProbeReport report)
+        { return report.requestedSimulatedSeconds > 0 ? report.actualSimulatedSeconds >= report.requestedSimulatedSeconds && report.completedFrames <= report.requestedFrames : report.completedFrames == report.requestedFrames; }
+
+        static bool ControlledRigidClock(ProfileFrame frame)
+        {
+            return frame.warpRate == 1 && frame.timeScale == 1 && Math.Abs(frame.fixedDeltaSeconds - .02) < 1e-6 &&
+                    (frame.warpMode == "HIGH" || frame.warpMode == "LOW") ||
+                frame.warpRate == 4 && frame.warpMode == "LOW" && frame.timeScale == 4 && Math.Abs(frame.fixedDeltaSeconds - .08) < 1e-6;
         }
 
         static bool AtmosphericFlight(Vessel vessel)
@@ -285,9 +537,11 @@ namespace KspContinuum
         bool AtmosphericStressComplete(ProbeReport report, out string reason)
         {
             reason = "verified-atmospheric-stress-capture";
-            if (report == null || report.status != "complete" || report.completedFrames != report.requestedFrames ||
+            if (report == null || report.status != "complete" || !CompletedWindow(report) ||
                 report.frames == null || report.frames.Length == 0)
             { reason = "incomplete-capture"; return false; }
+            if (report.requestedSimulatedSeconds > 0 && !report.topologyStable)
+            { reason = "atmospheric-stress-topology-changed"; return false; }
             string vesselId = atmosphericVesselId.HasValue ? atmosphericVesselId.Value.ToString("D") : null;
             foreach (ProfileFrame frame in report.frames)
                 if (frame == null || frame.vesselId != vesselId || frame.body != "Kerbin" ||
@@ -306,7 +560,18 @@ namespace KspContinuum
                  report.callbackAttribution.cleanupStatus != "removed-owned-patches" || report.callbackAttribution.patchedMethods < 1 ||
                  report.callbackAttribution.callbacks == null || report.callbackAttribution.callbacks.Length < 1))
             { reason = "callback-attribution-invalid"; return false; }
+            string integratorReason;
+            if (!IntegratorAttributionComplete(report, out integratorReason)) { reason = integratorReason; return false; }
             return true;
+        }
+
+        static bool IntegratorAttributionComplete(ProbeReport report, out string reason)
+        {
+            reason = null;
+            if (!FlightIntegratorUpdateAttribution.Requested(Environment.GetCommandLineArgs())) return true;
+            string failure;
+            if (FlightIntegratorUpdateAttribution.ValidateFinal(report.flightIntegratorUpdateAttribution as FlightIntegratorUpdateAttribution.ReportData, out failure)) return true;
+            reason = "integrator-update-attribution-" + failure; return false;
         }
 
         static bool FinitePositive(double value) { return !double.IsNaN(value) && !double.IsInfinity(value) && value > 0; }
@@ -317,16 +582,42 @@ namespace KspContinuum
         {
             sweepState = "error";
             Debug.LogException(error);
+            if (probe == null) ExportAdmission("error", error.GetType().Name + ": " + error.Message);
             try { if (directory != null) File.WriteAllText(Path.Combine(directory, "error.txt"), error.ToString()); } catch { }
             Finish("error", 2);
         }
         void Finish(string status, int code)
         {
+            if (code != 0 && probe == null && !finished) ExportAdmission(status, status);
+            try { FlightCameraChain.Stop(status); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
+            if (FlightGpuTiming.StopOwned(ok => Finish(status, ok ? code : 2)))
+            {
+                active = false;
+                if (probe != null) { probe.Dispose(); probe = null; }
+                return;
+            }
             if (finished) return;
             if (quitAfterQualification) finished = true;
             active = false;
             try { if (probe != null) probe.Dispose(); } catch (Exception error) { Debug.LogException(error); code = 2; }
+            try { MechJebProviderPlan.FinishForFlight(); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
             probe = null;
+            try { FlightLocalCamera.Finish(status); if (FlightLocalCamera.FailureReason != null) code = 2; }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
+            try { FlightAeroFieldRenderer.Finish(); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
+            try { FlightAeroBatcher.Finish(); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
+            try { FlightPartBatcher.Finish(); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
+            try { FlightWorldDraw.Stop(status); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
+            try { FlightDiagnosticControls.Restore(); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
+            try { AtmosphericEntryPreparation.ResetWarp(); }
+            catch (Exception error) { Debug.LogException(error); code = 2; }
             bool resetFailed = false;
             if (physicsWarp)
                 try
@@ -341,6 +632,7 @@ namespace KspContinuum
                     else { code = 2; resetFailed = true; }
                 }
                 catch (Exception error) { Debug.LogException(error); code = 2; resetFailed = true; }
+            if(catchupApplied) { GameSettings.PHYSICS_FRAME_DT_LIMIT=originalPhysicsLimit; Time.maximumDeltaTime=originalMaximumDelta; catchupApplied=false; }
             if (resetFailed && directory != null)
                 try { File.WriteAllText(Path.Combine(directory, "status.txt"), "invalid\nreason=physics-warp-reset-failed\n"); }
                 catch { code = 2; }

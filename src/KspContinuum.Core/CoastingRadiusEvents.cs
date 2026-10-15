@@ -27,11 +27,12 @@ namespace KspContinuum
 
     public sealed class RadiusCrossingEvent
     {
-        internal RadiusCrossingEvent(int bodyId, double time, CoastingBody body, int evaluations)
-        { BodyId = bodyId; TimeSeconds = time; Body = body; Evaluations = evaluations; }
+        internal RadiusCrossingEvent(int bodyId, double time, CoastingBody body, int evaluations, double lowerTime)
+        { BodyId = bodyId; TimeSeconds = time; Body = body; Evaluations = evaluations; LowerTimeSeconds=lowerTime; }
         public string Kind { get { return "radius-crossing"; } }
         public int BodyId { get; private set; }
         public double TimeSeconds { get; private set; }
+        public double LowerTimeSeconds { get; private set; }
         public CoastingBody Body { get; private set; }
         public int Evaluations { get; private set; }
     }
@@ -55,7 +56,7 @@ namespace KspContinuum
                 if (first == null || candidate.TimeSeconds < first.TimeSeconds ||
                     candidate.TimeSeconds == first.TimeSeconds && candidate.BodyId < first.BodyId) first = candidate;
             }
-            return first == null ? null : new RadiusCrossingEvent(first.BodyId, first.TimeSeconds, first.Body, evaluations);
+            return first == null ? null : new RadiusCrossingEvent(first.BodyId, first.TimeSeconds, first.Body, evaluations,first.LowerTimeSeconds);
         }
 
         public static bool GuardReached(double currentTimeSeconds, double eventTimeSeconds, double leadSeconds)
@@ -131,7 +132,7 @@ namespace KspContinuum
                 if (crossedFromLow) high = middle; else low = middle;
             }
             CoastingBody body = engine.SampleBodyAt(bodyId, high); evaluations++;
-            return new RadiusCrossingEvent(bodyId, high, body, evaluations);
+            return new RadiusCrossingEvent(bodyId, high, body, evaluations,low);
         }
 
         static bool Crossed(double before, double after, RadiusCrossingDirection direction)

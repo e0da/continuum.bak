@@ -54,6 +54,7 @@ static class Program
         Reject<InvalidOperationException>(() => new RigidClusterBackend(new[] { new[] { 10, 30 } }).Compute(input, CancellationToken.None), "missing body accepted");
         var cancelled = new CancellationTokenSource(); cancelled.Cancel();
         Reject<OperationCanceledException>(() => solver.Compute(input, cancelled.Token), "cancellation ignored");
+        checks += RetainedPropertiesChecks.Run();
         Console.WriteLine("PASS " + checks + " rigid-cluster assertions");
         return 0;
     }

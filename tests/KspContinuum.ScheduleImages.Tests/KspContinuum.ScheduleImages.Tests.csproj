@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><TreatWarningsAsErrors>true</TreatWarningsAsErrors></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/KspContinuum.Core/KspContinuum.Core.csproj" />
+    <ProjectReference Include="Fixture/Fixture.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="Fresh/Fresh.csproj" ReferenceOutputAssembly="false" />
+    <Compile Remove="Fixture/**/*.cs;Fresh/**/*.cs" />
+  </ItemGroup>
+  <Target Name="CopyFixtureImages" AfterTargets="Build">
+    <Copy SourceFiles="Fixture/bin/$(Configuration)/net8.0/Continuum.ScheduleImageFixture.dll;Fresh/bin/$(Configuration)/net8.0/Continuum.ScheduleImageFresh.dll" DestinationFolder="$(OutDir)images" />
+  </Target>
+</Project>

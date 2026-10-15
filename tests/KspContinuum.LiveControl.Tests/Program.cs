@@ -143,8 +143,61 @@ static class Program
         pump.GetAwaiter().GetResult();
     }
 
+    static void QueuedTimeoutCannotExecute()
+    {
+        using var server = new LoopbackSnapshotServer(0, 100, 250);
+        int effects = 0;
+        string line = Exchange(server, "hello 1.0.0 queued-timeout", _ => { effects++; return "unexpected"; }, false);
+        using var reply = JsonDocument.Parse(line);
+        Check(reply.RootElement.GetProperty("status").GetString() == "rejected" &&
+            reply.RootElement.GetProperty("reason").GetString() == "game-thread-timeout-cancelled-before-execution" &&
+            reply.RootElement.GetProperty("requestId").GetString() == "queued-timeout", "queued timeout explicitly cancels its correlated request");
+        Check(!server.DrainOne(_ => { effects++; return "unexpected"; }) && effects == 0,
+            "timed-out queued request never executes when the game thread resumes");
+    }
+
+    static void StartedTimeoutRetainsExecution()
+    {
+        using var server = new LoopbackSnapshotServer(0, 100, 250);
+        using var started = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        using var client = new TcpClient(); client.Connect("127.0.0.1", server.Port); client.ReceiveTimeout = 2000;
+        using NetworkStream stream = client.GetStream(); using var reader = new StreamReader(stream, Encoding.UTF8);
+        int effects = 0;
+        Task pump = Task.Run(() => {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            while (!server.DrainOne(command => {
+                started.Set();
+                if (!release.Wait(TimeSpan.FromSeconds(2))) throw new Exception("Started handler gate was not released");
+                Interlocked.Increment(ref effects);
+                return ReportJson.Encode(new LiveControlReply { status = "ok", requestId = LiveControlRequest.Parse(command).requestId });
+            })) { deadline.Token.ThrowIfCancellationRequested(); Thread.Yield(); }
+        });
+        try
+        {
+            byte[] input = Encoding.ASCII.GetBytes("clock-enable 1.4.0 started-timeout " + Session + " 1\n"); stream.Write(input);
+            Check(started.Wait(TimeSpan.FromSeconds(1)), "game thread started the controlled handler");
+            using var reply = JsonDocument.Parse(reader.ReadLine() ?? throw new Exception("Missing started-timeout reply"));
+            Check(reply.RootElement.GetProperty("status").GetString() == "in-progress" &&
+                reply.RootElement.GetProperty("reason").GetString() == "handler-still-running" &&
+                reply.RootElement.GetProperty("requestId").GetString() == "started-timeout", "started timeout retains request identity and reports unfinished execution");
+            Check(!pump.IsCompleted && Volatile.Read(ref effects) == 0, "transport timeout does not finish or cancel the blocked handler");
+        }
+        finally { release.Set(); pump.GetAwaiter().GetResult(); }
+        Check(effects == 1 && !server.DrainOne(_ => throw new Exception("Started operation was replayed")),
+            "started request completes its original effect exactly once after timeout");
+    }
+
     static void Main()
     {
+        var workerReceipt = new OwnedFlightWorkerStatus { Ready = true, Epoch = 9,
+            Progress = new OwnedFlightTimelineProgress { Stamp = new OwnedRuntimeStamp(9, 12, 2, 3, 4, .125, "receipt-frame") } };
+        using (var receipt = JsonDocument.Parse(ReportJson.Encode(workerReceipt)))
+        {
+            var stamp = receipt.RootElement.GetProperty("Progress").GetProperty("Stamp");
+            Check(stamp.GetProperty("StateRevision").GetInt64() == 12 && stamp.GetProperty("Time").GetDouble() == .125,
+                "cold worker receipt preserves readonly committed state stamp");
+        }
         var control = new LiveControlPlane(Session);
         control.Observe("Flight", Vessel);
         int captures = 0;
@@ -152,7 +205,56 @@ static class Program
         LiveControlReply hello = Execute(control, "hello 1.0.0 hello1", 20, 3, Capture);
         Check(hello.status == "ok" && hello.identity.epoch == 1 && hello.snapshot == null &&
             hello.requestId == "hello1" && hello.protocolVersion == "1.0.0", "hello identity");
-        Check(hello.capabilities.Length == 5 && captures == 0, "live control capabilities");
+        Check(Array.IndexOf(hello.capabilities, "playable-rigid-control") >= 0 && captures == 0, "live control capabilities");
+        int clockCalls=0;
+        LiveClockStatus Clock(LiveControlOperation operation){clockCalls++;return new LiveClockStatus{state="owned",owned=true,enabled=true,universalTime=100,publications=7,reportJson="{}"};}
+        var clock=control.Execute(LiveControlRequest.Parse("clock-enable 1.4.0 clock1 "+Session+" 1"),20,3,Capture,clockOperation:Clock);
+        Check(clock.status=="ok"&&clock.clock.owned&&clockCalls==1&&captures==0,"owned clock command reaches its explicit owner");
+        Check(control.Execute(LiveControlRequest.Parse("clock-disable 1.4.0 staleclock "+Session+" 2"),20,3,Capture,clockOperation:Clock).reason=="stale-identity"&&clockCalls==1,"stale clock command never reaches owner");
+        Check(control.Execute(LiveControlRequest.Parse("clock-warp128 1.3.0 oldclock "+Session+" 1"),20,3,Capture,clockOperation:Clock).status=="rejected"&&clockCalls==1,"owned warp requires explicit protocol");
+        using(var json=JsonDocument.Parse(ReportJson.Encode(clock)))Check(json.RootElement.GetProperty("clock").GetProperty("publications").GetInt64()==7,"owned status serialization");
+        int lightingCalls=0;string lightingPath=Path.Combine(Path.GetTempPath(),"continuum-lighting-facts.json");
+        LiveClockStatus Lighting(LiveControlOperation operation)
+        {
+            Check(operation==LiveControlOperation.ClockLighting,"lighting request stays a distinct read-only operation");lightingCalls++;
+            return new LiveClockStatus{state="owned",owned=true,enabled=true,universalTime=100,publications=7,lightingPath=lightingPath};
+        }
+        var lightingReply=control.Execute(LiveControlRequest.Parse("clock-lighting 1.4.0 lighting1 "+Session+" 1"),20,3,Capture,clockOperation:Lighting);
+        Check(lightingReply.status=="ok"&&lightingReply.clock.lightingPath==lightingPath&&lightingReply.clock.owned&&lightingReply.clock.enabled&&captures==0&&lightingCalls==1,
+            "lighting returns saved path without a vessel capture or ownership mutation");
+        using(var json=JsonDocument.Parse(ReportJson.Encode(lightingReply)))Check(json.RootElement.GetProperty("clock").GetProperty("lightingPath").GetString()==lightingPath,"lighting path has an explicit encoded response field");
+        Check(control.Execute(LiveControlRequest.Parse("clock-lighting 1.4.0 stalelight "+Session+" 2"),20,3,Capture,clockOperation:Lighting).reason=="stale-identity"&&lightingCalls==1,
+            "stale lighting request never calls diagnostic producer");
+        Check(control.Execute(LiveControlRequest.Parse("clock-lighting 1.3.0 oldlight "+Session+" 1"),20,3,Capture,clockOperation:Lighting).status=="rejected"&&lightingCalls==1,
+            "lighting requires protocol1.4");
+        Check(control.Execute(LiveControlRequest.Parse("clock-lighting 1.4.0 emptylight "+Session+" 1"),20,3,Capture,
+            clockOperation:_=>new LiveClockStatus{state="owned",owned=true,enabled=true}).reason=="invalid-clock-status","lighting success cannot omit the saved path");
+        var lightingFailure=control.Execute(LiveControlRequest.Parse("clock-lighting 1.4.0 failedlight "+Session+" 1"),20,3,Capture,
+            clockOperation:_=>new LiveClockStatus{state="owned",owned=true,enabled=true,operationError="diagnostic-write-failed"});
+        Check(lightingFailure.status=="rejected"&&lightingFailure.reason=="diagnostic-write-failed"&&lightingFailure.clock.owned&&lightingFailure.clock.enabled,
+            "diagnostic failure returns error while retaining owner status");
+        int rigidCalls = 0;
+        LiveRigidStatus Rigid(LiveControlOperation operation)
+        {
+            rigidCalls++;
+            return new LiveRigidStatus { state = "owned", enabled = true, owned = true, parts = 512, bodies = 426,
+                sessionId = Session, vesselId = Vessel, epoch = 2, physicsSteps = 9000, renderFrames = 10000,
+                framesPerSecond = 80, simulationRate = 1, mass = 64, throttle = .5f };
+        }
+        LiveControlReply rigid = control.Execute(LiveControlRequest.Parse("rigid-enable 1.3.0 rigid1 " + Session + " 1"),
+            20, 3, Capture, rigidOperation: Rigid);
+        Check(rigid.status == "ok" && rigid.rigid.owned && rigidCalls == 1 && captures == 0, "typed rigid request reaches owner only");
+        using (var json = JsonDocument.Parse(ReportJson.Encode(rigid)))
+            Check(json.RootElement.GetProperty("rigid").GetProperty("physicsSteps").GetInt64() == 9000, "rigid native status serialization");
+        Check(control.Execute(LiveControlRequest.Parse("rigid-disable 1.3.0 stale " + Session + " 2"), 20, 3, Capture,
+            rigidOperation: Rigid).reason == "stale-identity" && rigidCalls == 1, "stale rigid command has no ownership effect");
+        Check(control.Execute(LiveControlRequest.Parse("rigid-retry 1.2.0 old " + Session + " 1"), 20, 3, Capture,
+            rigidOperation: Rigid).reason == "invalid-request" && rigidCalls == 1, "rigid effects require new protocol");
+        Check(control.Execute(LiveControlRequest.Parse("rigid-status 1.3.0 absent " + Session + " 1"), 20, 3, Capture).status == "unavailable", "missing rigid service is explicit");
+        Check(control.Execute(LiveControlRequest.Parse("rigid-retry 1.3.0 retiring " + Session + " 1"), 20, 3, Capture,
+            rigidOperation: _ => new LiveRigidStatus { state = "waiting-stock", operationError = "handback-required-before-retry" }).status == "rejected", "unsuccessful rigid mutation cannot acknowledge success");
+        Check(control.Execute(LiveControlRequest.Parse("rigid-status 1.3.0 invalid " + Session + " 1"), 20, 3, Capture,
+            rigidOperation: _ => new LiveRigidStatus { state = "owned", simulationRate = double.NaN }).reason == "invalid-rigid-status", "invalid performance observation is rejected");
         LiveSweepStatus StartSweep() => new LiveSweepStatus { state = "running", window = "stock-01", windowIndex = 0 };
         LiveSweepStatus SweepStatus() => new LiveSweepStatus { state = "complete", directory = "/runtime/report", window = "full-publication-02", windowIndex = 5 };
         LiveControlReply started = control.Execute(LiveControlRequest.Parse("sweep-start 1.1.0 sweep1 " + Session + " 1 dry-buoyancy"),
@@ -220,6 +322,8 @@ static class Program
         wire = Exchange(server, new string('x', 257), _ => throw new Exception("Oversized frame reached game thread"), false);
         using (var json = JsonDocument.Parse(wire))
             Check(json.RootElement.GetProperty("reason").GetString() == "invalid-frame", "bounded frame");
+        QueuedTimeoutCannotExecute();
+        StartedTimeoutRetainsExecution();
         Console.WriteLine("PASS: " + assertions + " live control assertions; loopback handoff exercised without Unity.");
     }
 }
